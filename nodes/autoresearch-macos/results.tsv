@@ -1,0 +1,4 @@
+commit	val_bpb	memory_gb	status	description
+537c6e6	0.999000	1.0	keep	baseline
+c2ce6d3	0.998000	1.0	keep	Increment the smoke-test comment counter in train.py.
+31370bb	0.998000	1.0	discard	Increment the smoke-test comment counter in train.py.
