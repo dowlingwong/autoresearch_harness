@@ -1,0 +1,10 @@
+{
+  "objective": "Make exactly one bounded hyperparameter change in train.py to improve validation AUC on the ResNet_trigger node. Prefer a small learning-rate, dropout, weight-decay, or STAGE_LAYERS adjustment. Do not edit any file except train.py.",
+  "description": "full-loop-smoke-bounded-hparam",
+  "train_command": "uv run train.py > run.log 2>&1",
+  "timeout_seconds": 900,
+  "log_path": "run.log",
+  "results_tsv": "results.tsv",
+  "syntax_check_command": "python3 -m py_compile train.py"
+}
+
