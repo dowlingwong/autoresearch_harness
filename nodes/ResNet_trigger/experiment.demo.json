@@ -1,0 +1,10 @@
+{
+  "objective": "Modify train.py to improve validation PR AUC on the signal-versus-noise trigger task while keeping the code simple and only editing train.py.",
+  "description": "Try one bounded ResNet trigger training improvement",
+  "train_command": "uv run train.py > run.log 2>&1",
+  "timeout_seconds": 1200,
+  "log_path": "run.log",
+  "results_tsv": "results.tsv",
+  "syntax_check_command": "python3 -m py_compile train.py"
+}
+

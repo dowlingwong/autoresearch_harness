@@ -1,0 +1,10 @@
+.DS_Store
+.autoresearch_state.json
+.venv/
+__pycache__/
+*.pyc
+*.h5
+artifacts/
+experiment_memory.jsonl
+results.tsv
+run.log

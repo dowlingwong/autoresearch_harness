@@ -1,0 +1,13 @@
+[project]
+name = "resnet-trigger-node"
+version = "0.1.0"
+description = "Autoresearch worker node for CNN/ResNet trigger classification"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "h5py>=3.11.0",
+    "numpy>=2.2.0",
+    "scikit-learn>=1.6.0",
+    "torch>=2.6.0",
+]
+
