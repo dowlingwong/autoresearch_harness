@@ -1,0 +1,4 @@
+node_id,memory_mode,budget,planned_trials,raw_memory_chars,manager_context_chars,compression_ratio,repeated_bad_count,repeated_bad_rate,repeated_invalid_count,repeated_degraded_count
+resnet_trigger,none,3,3,36419,92,0.0025261539306405995,17,0.6296296296296297,0,17
+resnet_trigger,append_only_summary,3,3,36419,3767,0.10343502018177325,17,0.6296296296296297,0,17
+resnet_trigger,append_only_summary_with_rationale,3,3,36419,7106,0.19511793294708807,17,0.6296296296296297,0,17

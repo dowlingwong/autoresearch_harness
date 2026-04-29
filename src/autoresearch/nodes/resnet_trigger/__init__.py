@@ -1,0 +1,2 @@
+"""ResNet-trigger node integration."""
+

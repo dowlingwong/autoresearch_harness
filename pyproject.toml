@@ -1,0 +1,9 @@
+[project]
+name = "autoresearch-harness"
+version = "0.2.0"
+description = "Governed autonomous experimentation framework for bounded agentic optimization."
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+

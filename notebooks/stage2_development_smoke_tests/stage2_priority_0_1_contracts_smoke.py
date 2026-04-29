@@ -4,7 +4,14 @@ import sys
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+def _repo_root() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "configs" / "nodes" / "resnet_trigger.yaml").exists():
+            return parent
+    raise RuntimeError("could not locate autoresearch_harness repo root")
+
+
+ROOT = _repo_root()
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))

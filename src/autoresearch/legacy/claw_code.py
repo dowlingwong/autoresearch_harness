@@ -6,6 +6,10 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from autoresearch.control_plane.lifecycle import build_trial_records_from_legacy_loop_result
+from autoresearch.memory.append_store import TrialAppendStore
+from autoresearch.nodes.spec import load_node_spec
+
 
 class ClawCodeAdapterError(RuntimeError):
     """Raised when the legacy claw-code autoresearch CLI fails."""
@@ -77,6 +81,48 @@ class ClawCodeAutoresearchAdapter:
             args.append("--allow-any-branch")
         return self._run_json(args)
 
+    def loop_and_record(
+        self,
+        node_root: str | Path,
+        packet_path: str | Path,
+        node_spec_path: str | Path,
+        records_path: str | Path,
+        campaign_id: str,
+        manager_mode: str,
+        worker_mode: str,
+        memory_mode: str,
+        model: str,
+        host: str,
+        iterations: int = 1,
+        retry_limit: int = 1,
+        allow_any_branch: bool = False,
+    ) -> dict[str, Any]:
+        legacy_result = self.loop(
+            node_root=node_root,
+            packet_path=packet_path,
+            model=model,
+            host=host,
+            iterations=iterations,
+            retry_limit=retry_limit,
+            allow_any_branch=allow_any_branch,
+        )
+        node_spec = load_node_spec(node_spec_path)
+        records = build_trial_records_from_legacy_loop_result(
+            legacy_loop_result=legacy_result,
+            node_spec=node_spec,
+            campaign_id=campaign_id,
+            manager_mode=manager_mode,
+            worker_mode=worker_mode,
+            memory_mode=memory_mode,
+        )
+        store = TrialAppendStore(records_path)
+        store.append_many(records)
+        return {
+            "legacy_result": legacy_result,
+            "records_path": str(Path(records_path)),
+            "stage2_records": [record.to_dict() for record in records],
+        }
+
     def _run_json(self, args: list[str]) -> dict[str, Any]:
         command = ["python3", "-m", "src.main", *args]
         run = subprocess.run(
@@ -102,4 +148,3 @@ class ClawCodeAutoresearchAdapter:
         # Keep this method isolated so later phases can merge caller env vars
         # without changing the adapter interface.
         return dict(os.environ)
-

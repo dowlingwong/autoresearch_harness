@@ -1,0 +1,11 @@
+{
+  "model": "qwen2.5-coder:7b",
+  "host": "http://localhost:11434",
+  "temperature": 0.2,
+  "max_retries": 1,
+  "_notes": {
+    "model": "Any Ollama model. qwen2.5-coder:7b is the default research model.",
+    "temperature": "0.2 keeps proposals bounded; raise toward 0.5 for more variety.",
+    "langgraph_scope": "This manager may only produce ManagerProposal. It must not access budget, lifecycle, trial records, or the worker."
+  }
+}

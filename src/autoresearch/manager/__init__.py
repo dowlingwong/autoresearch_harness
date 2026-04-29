@@ -1,0 +1,2 @@
+"""Swappable manager interfaces."""
+

@@ -1,0 +1,8 @@
+{
+  "campaign_id": "smoke",
+  "node": "resnet_trigger",
+  "budget": 3,
+  "manager": "baseline_manager",
+  "memory_mode": "none"
+}
+

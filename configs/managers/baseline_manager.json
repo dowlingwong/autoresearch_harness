@@ -1,0 +1,5 @@
+{
+  "manager_mode": "baseline_manager",
+  "description": "Deterministic heuristic manager for smoke tests and baseline comparisons."
+}
+
