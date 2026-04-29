@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+from hashlib import sha256
 from typing import Any, TypedDict
 
 from autoresearch.manager.base import ManagerProposal, ManagerStatus
@@ -116,6 +117,11 @@ def _validate_proposal(state: _PlanState) -> _PlanState:
         proposal_rationale=rationale,
         target_files=node_spec.editable_paths,
         objective=objective,
+        extra={
+            "context_sha256": sha256(state.get("context_text", "").encode("utf-8")).hexdigest(),
+            "raw_proposal_sha256": sha256(raw.encode("utf-8")).hexdigest(),
+            "raw_proposal_chars": len(raw),
+        },
     )
     return {**state, "proposal": proposal}
 
@@ -196,7 +202,7 @@ class LangGraphManager:
         except ImportError as exc:
             raise ImportError(
                 "langgraph is required for LangGraphManager. "
-                "Install it into the project venv: uv pip install langgraph"
+                "Install project dependencies: uv pip install -e '.[dev]'"
             ) from exc
 
         llm = self._resolve_llm()

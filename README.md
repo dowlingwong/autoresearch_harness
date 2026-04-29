@@ -77,8 +77,6 @@ Paper Metrics + Table Export
 autoresearch_harness/
 ├── README.md
 ├── pyproject.toml
-├── .venv/                          # uv venv with langgraph + langchain-core
-│
 ├── src/autoresearch/               # Stage 2 governed framework
 │   ├── control_plane/
 │   │   ├── campaign.py             # run_dry_campaign / run_real_campaign
@@ -142,7 +140,7 @@ autoresearch_harness/
 │   ├── stage2_overview_and_demo.ipynb     # ← start here for Stage 2
 │   └── stage2_development_smoke_tests/    # unit/smoke test scripts
 │
-├── harness/claw-code/              # Stage 1 legacy harness (not moved)
+├── harness/claw-code/              # current real worker backend
 └── nodes/ResNet_trigger/           # active experiment node
 ```
 
@@ -153,11 +151,8 @@ autoresearch_harness/
 ### Install
 
 ```bash
-# Project venv (for langgraph + langchain-core)
-uv venv && uv pip install langgraph langchain-core
-
-# For real LLM campaigns (Ollama-backed)
-uv pip install langchain-ollama
+uv venv
+uv pip install -e ".[dev]"
 ```
 
 ### Inspect the node contract
@@ -207,17 +202,57 @@ python3 scripts/run_memory_ablation.py \
     --execute-dry-campaigns
 ```
 
-### Real campaign (requires Ollama running)
+### Real campaign quickstart
+
+This is the canonical real execution path. Stage 2 owns the campaign lifecycle,
+pending guard, validity checks, decision, artifact capture, and append-only
+ledger. `harness/claw-code` is called only as the current worker backend.
+
+Requires Ollama running at `http://localhost:11434` with the configured model.
 
 ```bash
+RESNET_TRIGGER_FAST_SEARCH=1 \
+RESNET_TRIGGER_FAST_N_SIGNAL=1000 \
+RESNET_TRIGGER_FAST_N_NOISE=1000 \
+RESNET_TRIGGER_FAST_TRACE_LEN=4096 \
+RESNET_TRIGGER_FAST_BATCH_SIZE=64 \
+RESNET_TRIGGER_FAST_EPOCHS=3 \
+RESNET_TRIGGER_FAST_SKIP_TEST=1 \
+RESNET_TRIGGER_EARLY_STOP_PATIENCE=2 \
+RESNET_TRIGGER_EARLY_STOP_MIN_DELTA=0.002 \
+RESNET_TRIGGER_DEVICE=cpu \
 python3 scripts/run_campaign.py \
     --node resnet_trigger \
-    --campaign-id main \
-    --budget 15 \
+    --campaign-id real_smoke \
+    --budget 1 \
     --manager prompt_manager \
     --memory-mode append_only_summary_with_rationale \
     --node-root nodes/ResNet_trigger \
-    --packet-defaults tests/stage_1_sprint_deliverable/loop_packet.json
+    --packet-defaults tests/stage_1_sprint_deliverable/loop_packet.json \
+    --model qwen2.5-coder:7b \
+    --host http://localhost:11434
+```
+
+Expected Stage 2 outputs:
+
+- `experiments/ledgers/real_smoke_trials.jsonl`
+- `experiments/artifacts/trial-001/generated_packet.json`
+- `experiments/artifacts/trial-001/legacy_loop_result.json`
+- `experiments/artifacts/trial-001/parsed_metrics.json`
+- `experiments/artifacts/trial-001/run.log`, if the worker produced a log
+- `experiments/artifacts/trial-001/patch.diff`, if a diff can be captured
+
+Recover a stale pending guard after an interrupted real run:
+
+```bash
+python3 scripts/recover_pending.py list
+python3 scripts/recover_pending.py inspect experiments/ledgers/real_smoke_trials_pending.json
+python3 scripts/recover_pending.py fail experiments/ledgers/real_smoke_trials_pending.json \
+    --node resnet_trigger \
+    --manager-mode prompt_manager \
+    --worker-mode claw_style_worker \
+    --memory-mode append_only_summary_with_rationale \
+    --message "worker interrupted during smoke run"
 ```
 
 ### Real memory ablation (requires Ollama)
@@ -248,7 +283,8 @@ Every trial produces one append-only JSON record. Key fields:
   "proposal_summary": "reduce-lr-5e-4",
   "proposal_rationale": "...",
   "targeted_files": ["train.py"],
-  "patch_ref": "experiments/artifacts/trial-007/generated_packet.json",
+  "patch_ref": "experiments/artifacts/trial-007/patch.diff",
+  "raw_log_ref": "experiments/artifacts/trial-007/run.log",
   "execution_status": "success",
   "validity_status": "valid",
   "parsed_metrics": {"val_auc": 0.7876},
@@ -261,6 +297,14 @@ Every trial produces one append-only JSON record. Key fields:
   "provenance": {
     "proposal_id": "...", "patch_id": "...",
     "run_id": "...", "metric_id": "...", "decision_id": "..."
+  },
+  "extra": {
+    "manager": {"context_sha256": "..."},
+    "worker": {
+      "generated_packet_ref": "experiments/artifacts/trial-007/generated_packet.json",
+      "parsed_metrics_ref": "experiments/artifacts/trial-007/parsed_metrics.json",
+      "legacy_loop_result_ref": "experiments/artifacts/trial-007/legacy_loop_result.json"
+    }
   }
 }
 ```
@@ -296,6 +340,9 @@ The control plane never calls a manager directly to write trial state. Managers 
 ## Smoke tests
 
 ```bash
+# CI-friendly unittest suite
+python3 -m unittest discover tests
+
 # Contracts and lifecycle
 PYTHONPATH=$PWD/src python3 notebooks/stage2_development_smoke_tests/stage2_priority_0_1_contracts_smoke.py
 
@@ -312,10 +359,11 @@ PYTHONPATH=$PWD/src python3 notebooks/stage2_development_smoke_tests/stage2_prio
 PYTHONPATH=$PWD/src python3 notebooks/stage2_development_smoke_tests/stage2_proposal_to_trial_smoke.py
 
 # LangGraph manager (FakeListChatModel, no Ollama)
-.venv/bin/python notebooks/stage2_development_smoke_tests/stage2_langgraph_manager_smoke.py
+python3 notebooks/stage2_development_smoke_tests/stage2_langgraph_manager_smoke.py
 ```
 
-All six suites pass (39 tests total).
+The `tests/` suite is intended for CI. The notebook smoke scripts are retained
+as development checks and documentation for the Stage 2 milestones.
 
 ---
 
@@ -346,15 +394,15 @@ Outputs written to `paper/tables/` and `paper/figures/`:
 
 **Proposals drive worker packets.** `ClawWorker.run_trial()` generates a temporary `AutoresearchExperimentPacket` JSON from the `ManagerProposal`. The packet's `objective` always comes from the proposal, never from a static file. This is what makes memory ablation meaningful: different memory modes produce different objectives, which flow into different worker instructions.
 
-**Pending-trial guard.** Before calling the worker, the control plane writes `{campaign_id}_pending.json`. If the process crashes mid-trial, the guard remains and the next run raises `PendingTrialError` rather than silently overwriting state. Delete the guard file to recover.
+**Pending-trial guard.** Before calling the worker, the control plane writes a `*_pending.json` guard next to the ledger. If the process crashes mid-trial, the next run raises `PendingTrialError` rather than silently overwriting state. Use `scripts/recover_pending.py` to list, inspect, mark failed, or clear stale guards.
 
 **LangGraph is scoped to the manager layer only.** The `langgraph_manager` graph (`prepare_context → generate_proposal → validate_proposal`) may only produce a `ManagerProposal`. It has no access to budget, lifecycle, trial records, worker execution, or append-only memory writes.
 
 ---
 
-## Stage 1 legacy harness
+## Worker backend
 
-`harness/claw-code/` is the Stage 1 control plane. It is not moved or modified by Stage 2. The Stage 2 `ClawWorker` calls it as a subprocess via `ClawCodeAutoresearchAdapter`. The legacy loop's keep/discard decision is ignored; the Stage 2 control plane makes the authoritative decision from the parsed metric.
+`harness/claw-code/` is the current real worker backend. The Stage 2 `ClawWorker` calls it as a subprocess via `ClawCodeAutoresearchAdapter`, then converts the result into `WorkerResult`. The legacy loop's keep/discard recommendation is ignored as an authority; the Stage 2 control plane makes the authoritative decision from the parsed metric, edit scope, node contract, and current campaign state.
 
 ---
 

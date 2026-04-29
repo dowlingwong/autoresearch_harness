@@ -4,6 +4,7 @@ import json
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from autoresearch.control_plane.budget import BudgetState
 from autoresearch.control_plane.decision import decide_trial
@@ -38,15 +39,29 @@ def _pending_guard_path(records_path: Path) -> Path:
     return records_path.parent / (records_path.stem + "_pending.json")
 
 
-def _acquire_pending(records_path: Path, trial_id: str) -> Path:
+def _acquire_pending(records_path: Path, *, campaign_id: str, trial_id: str, budget_index: int) -> Path:
     guard = _pending_guard_path(records_path)
     if guard.exists():
         existing = json.loads(guard.read_text())
         raise PendingTrialError(
             f"Campaign already has a pending trial: {existing.get('trial_id')}. "
-            "Delete the guard file to recover from a crash: " + str(guard)
+            "Use scripts/recover_pending.py to inspect, fail, or clear it: " + str(guard)
         )
-    guard.write_text(json.dumps({"trial_id": trial_id, "started": _iso_now()}))
+    guard.write_text(
+        json.dumps(
+            {
+                "campaign_id": campaign_id,
+                "trial_id": trial_id,
+                "budget_index": budget_index,
+                "records_path": str(records_path),
+                "started": _iso_now(),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     return guard
 
 
@@ -57,6 +72,87 @@ def _release_pending(guard: Path) -> None:
 
 def _iso_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def list_pending_guards(search_root: str | Path) -> list[Path]:
+    """Return pending-trial guard files below a ledger directory or repo root."""
+    root = Path(search_root)
+    if root.is_file():
+        return [root] if root.name.endswith("_pending.json") else []
+    return sorted(root.rglob("*_pending.json")) if root.exists() else []
+
+
+def inspect_pending_guard(guard_path: str | Path) -> dict[str, Any]:
+    """Load one pending guard as a JSON object."""
+    path = Path(guard_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise PendingTrialError(f"pending guard is not a JSON object: {path}")
+    payload["guard_path"] = str(path)
+    return payload
+
+
+def clear_pending_guard(guard_path: str | Path) -> Path:
+    """Remove a pending guard without appending a failure record."""
+    path = Path(guard_path)
+    if path.exists():
+        path.unlink()
+    return path
+
+
+def mark_pending_failed(
+    *,
+    guard_path: str | Path,
+    node_spec: NodeSpec,
+    manager_mode: str = "unknown_manager",
+    worker_mode: str = "unknown_worker",
+    memory_mode: str = "unknown",
+    failure_message: str = "Recovered stale pending trial.",
+) -> TrialRecord:
+    """Append a failed-invalid TrialRecord for a stale pending guard, then clear it."""
+    guard = inspect_pending_guard(guard_path)
+    records_ref = str(guard.get("records_path") or "").strip()
+    if not records_ref:
+        raise PendingTrialError(f"pending guard does not include records_path: {guard_path}")
+    records_path = Path(records_ref)
+
+    budget_index = int(guard.get("budget_index", 1))
+    campaign_id = str(guard.get("campaign_id") or str(guard.get("trial_id", "")).rsplit("-trial-", 1)[0])
+    trial_id = str(guard.get("trial_id") or f"{campaign_id}-trial-{budget_index:03d}")
+    now = _iso_now()
+    record = TrialRecord(
+        trial_id=trial_id,
+        campaign_id=campaign_id,
+        node_id=node_spec.name,
+        budget_index=budget_index,
+        timestamp_start=str(guard.get("started") or now),
+        timestamp_end=now,
+        manager_mode=manager_mode,
+        worker_mode=worker_mode,
+        memory_mode=memory_mode,
+        proposal_summary="pending-trial-recovered-as-failed",
+        proposal_rationale="",
+        targeted_files=node_spec.editable_paths,
+        patch_ref="",
+        git_commit_before="",
+        git_commit_after="",
+        execution_status=ExecutionStatus.FAILED,
+        validity_status=ValidityStatus.INVALID,
+        failure_category=FailureCategory.RUNTIME_ERROR,
+        raw_log_ref="",
+        parsed_metrics={},
+        current_best_before=None,
+        delta_vs_best=None,
+        decision=TrialDecision.FAILED_INVALID,
+        decision_rationale=f"Pending guard recovered as failed: {failure_message}",
+        wall_clock_seconds=0.0,
+        cumulative_budget_consumed=budget_index,
+        provenance=build_trial_provenance(trial_id),
+        extra={"pending_guard": guard, "recovery_failure_message": failure_message},
+    )
+    TrialAppendStore(records_path).append(record)
+    clear_pending_guard(guard_path)
+    return record
 
 
 def run_real_campaign(
@@ -105,7 +201,12 @@ def run_real_campaign(
         )
         proposal = manager.propose_next_trial(status, memory_context, node_spec)
 
-        guard = _acquire_pending(records_path, trial_id)
+        guard = _acquire_pending(
+            records_path,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            budget_index=budget_index,
+        )
         ts_start = _iso_now()
         try:
             worker_result = worker.run_trial(proposal, node_spec, budget_index)
@@ -133,6 +234,7 @@ def run_real_campaign(
             memory_mode=memory_mode,
             proposal_summary=proposal.proposal_summary,
             proposal_rationale=proposal.proposal_rationale,
+            proposal_extra=proposal.extra,
             worker_result=worker_result,
             current_best=current_best,
             timestamp_start=ts_start,
@@ -191,6 +293,7 @@ def run_dry_campaign(
             memory_mode=memory_mode,
             proposal_summary=proposal.proposal_summary,
             proposal_rationale=proposal.proposal_rationale,
+            proposal_extra=proposal.extra,
             worker_result=worker_result,
             current_best=current_best,
         )
@@ -212,6 +315,7 @@ def _record_from_worker_result(
     memory_mode: str,
     proposal_summary: str,
     proposal_rationale: str,
+    proposal_extra: dict[str, Any] | None = None,
     worker_result: WorkerResult,
     current_best: float | None,
     timestamp_start: str | None = None,
@@ -220,7 +324,14 @@ def _record_from_worker_result(
     scope = validate_edit_scope(worker_result.changed_files, node_spec)
     metric = worker_result.parsed_metrics.get(node_spec.metric_name)
     validity = ValidityStatus.VALID if worker_result.success and scope.valid and metric is not None else ValidityStatus.INVALID
-    failure = None if scope.valid else FailureCategory.INVALID_EDIT_SCOPE
+    if not scope.valid:
+        failure = FailureCategory.INVALID_EDIT_SCOPE
+    elif not worker_result.success:
+        failure = FailureCategory.RUNTIME_ERROR
+    elif metric is None:
+        failure = FailureCategory.METRIC_MISSING
+    else:
+        failure = None
     decision = decide_trial(
         validity_status=validity,
         candidate_metric=metric,
@@ -242,7 +353,7 @@ def _record_from_worker_result(
         memory_mode=memory_mode,
         proposal_summary=proposal_summary,
         proposal_rationale=proposal_rationale,
-        targeted_files=worker_result.changed_files,
+        targeted_files=worker_result.changed_files or node_spec.editable_paths,
         patch_ref=worker_result.patch_ref,
         git_commit_before=worker_result.git_commit_before,
         git_commit_after=worker_result.git_commit_after,
@@ -258,6 +369,12 @@ def _record_from_worker_result(
         wall_clock_seconds=1.0,
         cumulative_budget_consumed=budget_index,
         provenance=build_trial_provenance(trial_id),
+        extra={
+            "manager": proposal_extra or {},
+            "worker": worker_result.extra,
+            "worker_failure_message": worker_result.failure_message,
+            "scope_validation": scope.__dict__,
+        },
     )
 
 

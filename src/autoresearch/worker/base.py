@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+from typing import Any
 from typing import Protocol
 
 from autoresearch.manager.base import ManagerProposal
@@ -18,6 +19,7 @@ class WorkerResult:
     git_commit_before: str
     git_commit_after: str
     failure_message: str | None = None
+    extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         payload = asdict(self)
@@ -47,4 +49,3 @@ class DryRunWorker:
             git_commit_before=f"dry-before-{budget_index:03d}",
             git_commit_after=f"dry-after-{budget_index:03d}",
         )
-

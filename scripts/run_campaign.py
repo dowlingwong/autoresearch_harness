@@ -11,16 +11,6 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-# Add the project .venv site-packages so that langgraph / langchain-core are
-# importable when this script is run with the system Python instead of
-# .venv/bin/python.  This is a no-op when the venv is already active.
-_VENV_SITE = ROOT / ".venv" / "lib"
-if _VENV_SITE.exists():
-    for _p in sorted(_VENV_SITE.iterdir()):
-        _site = _p / "site-packages"
-        if _site.exists() and str(_site) not in sys.path:
-            sys.path.insert(0, str(_site))
-
 from autoresearch.control_plane.campaign import run_dry_campaign, run_real_campaign
 from autoresearch.evaluation.campaign_summary import load_campaign_summary
 from autoresearch.nodes.registry import load_registered_node

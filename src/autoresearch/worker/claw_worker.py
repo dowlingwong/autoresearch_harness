@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
 from autoresearch.legacy.claw_code import ClawCodeAutoresearchAdapter
@@ -117,7 +119,13 @@ class ClawWorker:
             retry_limit=1,
         )
 
-        return _extract_worker_result(result, node_spec, str(generated_packet_path))
+        return _extract_worker_result(
+            result,
+            node_spec,
+            packet_ref=str(generated_packet_path),
+            artifact_dir=artifact_dir,
+            node_root=self.node_root,
+        )
 
     def run_trial_with_packet_path(
         self,
@@ -139,15 +147,31 @@ class ClawWorker:
             iterations=1,
             retry_limit=1,
         )
-        return _extract_worker_result(result, node_spec, str(packet_path))
+        return _extract_worker_result(
+            result,
+            node_spec,
+            packet_ref=str(packet_path),
+            artifact_dir=self.artifacts_dir / f"trial-{budget_index:03d}",
+            node_root=self.node_root,
+        )
 
 
 def _extract_worker_result(
     loop_result: dict,
     node_spec: NodeSpec,
     packet_ref: str,
+    artifact_dir: str | Path | None = None,
+    node_root: str | Path | None = None,
 ) -> WorkerResult:
     """Parse a raw loop_autoresearch() return dict into a typed WorkerResult."""
+    artifact_path = Path(artifact_dir).resolve() if artifact_dir is not None else None
+    if artifact_path is not None:
+        artifact_path.mkdir(parents=True, exist_ok=True)
+        (artifact_path / "legacy_loop_result.json").write_text(
+            json.dumps(loop_result, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
     history = loop_result.get("history", [])
     item = history[0] if isinstance(history, list) and history else {}
     run_payload = item.get("run", item) if isinstance(item, dict) else {}
@@ -168,13 +192,76 @@ def _extract_worker_result(
     else:
         changed_files = ()
 
+    raw_log_ref = str(experiment.get("log_path", "")) if isinstance(experiment, dict) else ""
+    raw_log_artifact = _capture_raw_log(raw_log_ref, artifact_path, node_root)
+    parsed_metrics_ref = _write_parsed_metrics(metrics, artifact_path)
+    patch_diff_ref = _write_patch_diff(run_payload, artifact_path, node_root)
+    extra = {
+        "generated_packet_ref": packet_ref,
+        "patch_diff_ref": patch_diff_ref,
+        "raw_log_ref": raw_log_artifact or raw_log_ref,
+        "parsed_metrics_ref": parsed_metrics_ref,
+        "legacy_loop_result_ref": str(artifact_path / "legacy_loop_result.json") if artifact_path else "",
+        "legacy_recommended_status": str(run_payload.get("recommended_status", "")) if isinstance(run_payload, dict) else "",
+        "legacy_worker_stop_reason": str(last_result.get("stop_reason", "")) if isinstance(last_result, dict) else "",
+    }
+
     return WorkerResult(
         worker_mode=ClawWorker.mode,
         changed_files=changed_files,
         success=bool(experiment.get("success", False)),
         parsed_metrics=metrics,
-        raw_log_ref=str(experiment.get("log_path", "")),
-        patch_ref=packet_ref,
+        raw_log_ref=raw_log_artifact or raw_log_ref,
+        patch_ref=patch_diff_ref or packet_ref,
         git_commit_before=str(run_payload.get("base_commit", "")) if isinstance(run_payload, dict) else "",
         git_commit_after=str(run_payload.get("commit", "")) if isinstance(run_payload, dict) else "",
+        extra=extra,
     )
+
+
+def _capture_raw_log(raw_log_ref: str, artifact_dir: Path | None, node_root: str | Path | None) -> str:
+    if artifact_dir is None or not raw_log_ref:
+        return ""
+    source = Path(raw_log_ref)
+    if not source.is_absolute() and node_root is not None:
+        source = Path(node_root) / source
+    if not source.exists():
+        return ""
+    target = artifact_dir / "run.log"
+    shutil.copyfile(source, target)
+    return str(target)
+
+
+def _write_parsed_metrics(metrics: dict[str, float], artifact_dir: Path | None) -> str:
+    if artifact_dir is None:
+        return ""
+    target = artifact_dir / "parsed_metrics.json"
+    target.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return str(target)
+
+
+def _write_patch_diff(run_payload: dict, artifact_dir: Path | None, node_root: str | Path | None) -> str:
+    if artifact_dir is None or node_root is None:
+        return ""
+    before = str(run_payload.get("base_commit", "")).strip()
+    after = str(run_payload.get("commit", "")).strip()
+    commands: list[list[str]] = []
+    if before and after and "unknown" not in {before, after} and not after.endswith("-dirty"):
+        commands.append(["git", "diff", f"{before}..{after}", "--"])
+    if before and after.endswith("-dirty") and "unknown" not in before:
+        commands.append(["git", "diff", before, "--"])
+    commands.append(["git", "diff", "--"])
+
+    for command in commands:
+        run = subprocess.run(
+            command,
+            cwd=Path(node_root),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if run.returncode == 0 and run.stdout.strip():
+            target = artifact_dir / "patch.diff"
+            target.write_text(run.stdout, encoding="utf-8")
+            return str(target)
+    return ""

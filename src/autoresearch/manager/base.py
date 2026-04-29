@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from typing import Protocol
+from dataclasses import asdict, dataclass, field
+from typing import Any, Protocol
 
 from autoresearch.memory.summarizer import MemoryContext
 from autoresearch.nodes.spec import NodeSpec
@@ -26,6 +26,7 @@ class ManagerProposal:
     proposal_rationale: str
     target_files: tuple[str, ...]
     objective: str
+    extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         payload = asdict(self)
@@ -43,4 +44,3 @@ class Manager(Protocol):
         node_spec: NodeSpec,
     ) -> ManagerProposal:
         ...
-
