@@ -1,2 +1,2 @@
 campaign_id,total_trials,kept_count,discarded_count,failed_invalid_count,acceptance_rate,invalid_rate,complete_provenance_rate,editable_scope_violation_count,trials_with_rationale,command_failure_rate,metric_parsing_failure_rate,artifact_capture_completeness
-langgraph_smoke,3,3,0,0,1.0,0.0,1.0,0,3,0.0,0.0,1.0
+resnet_real_incremental,2,2,0,0,1.0,0.0,1.0,0,2,0.0,0.0,1.0

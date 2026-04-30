@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from importlib import import_module
 from pathlib import Path
+from typing import Any
 
 from autoresearch.legacy.claw_code import ClawCodeAutoresearchAdapter
 from autoresearch.manager.base import ManagerProposal
@@ -60,6 +62,7 @@ class ClawWorker:
         packet_defaults: dict | None = None,
         model: str = "qwen2.5-coder:7b",
         host: str = "http://localhost:11434",
+        allow_any_branch: bool = False,
     ) -> None:
         self.repo_root = Path(repo_root).resolve()
         self.node_root = Path(node_root).resolve()
@@ -71,6 +74,7 @@ class ClawWorker:
         self.packet_defaults = packet_defaults or {}
         self.model = model
         self.host = host
+        self.allow_any_branch = allow_any_branch
         self.adapter = ClawCodeAutoresearchAdapter(self.repo_root)
 
     @classmethod
@@ -82,6 +86,7 @@ class ClawWorker:
         artifacts_dir: str | Path | None = None,
         model: str = "qwen2.5-coder:7b",
         host: str = "http://localhost:11434",
+        allow_any_branch: bool = False,
     ) -> "ClawWorker":
         """Load packet defaults (timeout, log_path, etc.) from a JSON file.
 
@@ -98,6 +103,7 @@ class ClawWorker:
             packet_defaults=defaults,
             model=model,
             host=host,
+            allow_any_branch=allow_any_branch,
         )
 
     def run_trial(self, proposal: ManagerProposal, node_spec: NodeSpec, budget_index: int) -> WorkerResult:
@@ -117,6 +123,7 @@ class ClawWorker:
             host=self.host,
             iterations=1,
             retry_limit=1,
+            allow_any_branch=self.allow_any_branch,
         )
 
         return _extract_worker_result(
@@ -125,6 +132,8 @@ class ClawWorker:
             packet_ref=str(generated_packet_path),
             artifact_dir=artifact_dir,
             node_root=self.node_root,
+            fallback_command=str(packet["train_command"]),
+            fallback_log_path=str(packet["log_path"]),
         )
 
     def run_trial_with_packet_path(
@@ -146,6 +155,7 @@ class ClawWorker:
             host=self.host,
             iterations=1,
             retry_limit=1,
+            allow_any_branch=self.allow_any_branch,
         )
         return _extract_worker_result(
             result,
@@ -153,6 +163,8 @@ class ClawWorker:
             packet_ref=str(packet_path),
             artifact_dir=self.artifacts_dir / f"trial-{budget_index:03d}",
             node_root=self.node_root,
+            fallback_command=node_spec.run_command,
+            fallback_log_path="run.log",
         )
 
 
@@ -162,6 +174,8 @@ def _extract_worker_result(
     packet_ref: str,
     artifact_dir: str | Path | None = None,
     node_root: str | Path | None = None,
+    fallback_command: str | None = None,
+    fallback_log_path: str | None = None,
 ) -> WorkerResult:
     """Parse a raw loop_autoresearch() return dict into a typed WorkerResult."""
     artifact_path = Path(artifact_dir).resolve() if artifact_dir is not None else None
@@ -188,14 +202,30 @@ def _extract_worker_result(
 
     changed_files: tuple[str, ...]
     if isinstance(last_result, dict) and last_result.get("changed_files"):
-        changed_files = tuple(str(f) for f in last_result["changed_files"])
+        changed_files = tuple(_normalize_changed_file(str(f), node_root) for f in last_result["changed_files"])
     else:
-        changed_files = ()
+        changed_files = _detect_changed_files(node_root)
 
-    raw_log_ref = str(experiment.get("log_path", "")) if isinstance(experiment, dict) else ""
+    fallback_run: dict[str, Any] = {}
+    if not experiment.get("success") and changed_files and fallback_command and node_root is not None:
+        fallback_run = _run_fallback_experiment(
+            node_spec=node_spec,
+            node_root=Path(node_root),
+            command=fallback_command,
+            log_path=fallback_log_path or "run.log",
+        )
+        if fallback_run.get("success"):
+            metrics[node_spec.metric_name] = float(fallback_run["metric"])
+            experiment = {
+                "success": True,
+                "log_path": str(fallback_run["log_path"]),
+                "fallback_stage2_run": True,
+            }
+
+    raw_log_ref = str(experiment.get("log_path", "") or fallback_log_path or "") if isinstance(experiment, dict) else ""
     raw_log_artifact = _capture_raw_log(raw_log_ref, artifact_path, node_root)
     parsed_metrics_ref = _write_parsed_metrics(metrics, artifact_path)
-    patch_diff_ref = _write_patch_diff(run_payload, artifact_path, node_root)
+    patch_diff_ref = _write_patch_diff(run_payload, artifact_path, node_root, changed_files)
     extra = {
         "generated_packet_ref": packet_ref,
         "patch_diff_ref": patch_diff_ref,
@@ -204,6 +234,7 @@ def _extract_worker_result(
         "legacy_loop_result_ref": str(artifact_path / "legacy_loop_result.json") if artifact_path else "",
         "legacy_recommended_status": str(run_payload.get("recommended_status", "")) if isinstance(run_payload, dict) else "",
         "legacy_worker_stop_reason": str(last_result.get("stop_reason", "")) if isinstance(last_result, dict) else "",
+        "stage2_fallback_run": fallback_run,
     }
 
     return WorkerResult(
@@ -240,17 +271,23 @@ def _write_parsed_metrics(metrics: dict[str, float], artifact_dir: Path | None) 
     return str(target)
 
 
-def _write_patch_diff(run_payload: dict, artifact_dir: Path | None, node_root: str | Path | None) -> str:
+def _write_patch_diff(
+    run_payload: dict,
+    artifact_dir: Path | None,
+    node_root: str | Path | None,
+    changed_files: tuple[str, ...] = (),
+) -> str:
     if artifact_dir is None or node_root is None:
         return ""
     before = str(run_payload.get("base_commit", "")).strip()
     after = str(run_payload.get("commit", "")).strip()
     commands: list[list[str]] = []
+    pathspec = ["--", *(changed_files or ["."])]
     if before and after and "unknown" not in {before, after} and not after.endswith("-dirty"):
-        commands.append(["git", "diff", f"{before}..{after}", "--"])
+        commands.append(["git", "diff", f"{before}..{after}", *pathspec])
     if before and after.endswith("-dirty") and "unknown" not in before:
-        commands.append(["git", "diff", before, "--"])
-    commands.append(["git", "diff", "--"])
+        commands.append(["git", "diff", before, *pathspec])
+    commands.append(["git", "diff", *pathspec])
 
     for command in commands:
         run = subprocess.run(
@@ -265,3 +302,97 @@ def _write_patch_diff(run_payload: dict, artifact_dir: Path | None, node_root: s
             target.write_text(run.stdout, encoding="utf-8")
             return str(target)
     return ""
+
+
+def _detect_changed_files(node_root: str | Path | None) -> tuple[str, ...]:
+    if node_root is None:
+        return ()
+    run = subprocess.run(
+        ["git", "diff", "--name-only", "--", "."],
+        cwd=Path(node_root),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if run.returncode != 0:
+        return ()
+    return tuple(
+        path
+        for path in (_normalize_changed_file(line.strip(), node_root) for line in run.stdout.splitlines())
+        if path
+    )
+
+
+def _normalize_changed_file(path: str, node_root: str | Path | None) -> str:
+    if node_root is None:
+        return path
+    root_run = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=Path(node_root),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if root_run.returncode != 0:
+        return path
+    repo_root = Path(root_run.stdout.strip()).resolve()
+    absolute = (repo_root / path).resolve()
+    try:
+        return str(absolute.relative_to(Path(node_root).resolve()))
+    except ValueError:
+        return path
+
+
+def _run_fallback_experiment(
+    *,
+    node_spec: NodeSpec,
+    node_root: Path,
+    command: str,
+    log_path: str,
+) -> dict[str, Any]:
+    run = subprocess.run(
+        ["/bin/zsh", "-lc", command],
+        cwd=node_root,
+        capture_output=True,
+        text=True,
+        timeout=int(node_spec.default_budget.max_wall_clock_hours * 3600)
+        if node_spec.default_budget.max_wall_clock_hours
+        else None,
+        check=False,
+    )
+    target_log = Path(log_path)
+    if not target_log.is_absolute():
+        target_log = node_root / target_log
+    if run.returncode != 0:
+        return {
+            "success": False,
+            "returncode": run.returncode,
+            "log_path": str(target_log),
+            "stderr_tail": run.stderr[-1000:],
+        }
+    try:
+        parser = _resolve_metric_parser(node_spec.metric_parser)
+        parsed = parser(target_log)
+        metric = getattr(parsed, "metric_value", None)
+        if metric is None and isinstance(parsed, dict):
+            metric = parsed.get("metric_value")
+        return {
+            "success": True,
+            "returncode": run.returncode,
+            "log_path": str(target_log),
+            "metric": float(metric),
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "returncode": run.returncode,
+            "log_path": str(target_log),
+            "parse_error": str(exc),
+        }
+
+
+def _resolve_metric_parser(spec: str):
+    module_name, _, attr = spec.partition(":")
+    if not module_name or not attr:
+        raise ValueError(f"invalid metric parser spec: {spec}")
+    return getattr(import_module(module_name), attr)

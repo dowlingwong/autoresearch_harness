@@ -1,2 +1,2 @@
 campaign_id,node_id,metric_name,metric_direction,initial_metric,best_metric,final_accepted_metric,net_gain,gain_per_trial,gain_per_accepted_trial,gain_per_budget_unit,total_wall_clock_seconds,gain_per_hour
-langgraph_smoke,resnet_trigger,val_auc,maximize,0.781,0.783,0.783,0.0020000000000000018,0.0006666666666666673,0.0006666666666666673,0.0006666666666666673,3.0,2.400000000000002
+resnet_real_incremental,resnet_trigger,val_auc,maximize,0.779911,0.782756,0.782756,0.0028449999999999864,0.0014224999999999932,0.0014224999999999932,0.0014224999999999932,152.6,0.06711664482306652

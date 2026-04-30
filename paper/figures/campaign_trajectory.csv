@@ -1,0 +1,3 @@
+budget_index,trial_id,metric,running_best,decision
+1,resnet_real_incremental-trial-000,0.779911,0.779911,kept
+1,resnet_real_incremental-trial-001,0.782756,0.782756,kept

@@ -273,7 +273,8 @@ python3 scripts/run_campaign.py \
   --node-root nodes/ResNet_trigger \
   --packet-defaults tests/stage_1_sprint_deliverable/loop_packet.json \
   --model qwen2.5-coder:7b \
-  --host http://localhost:11434
+  --host http://localhost:11434 \
+  --allow-any-branch
 ```
 
 Afterward inspect:

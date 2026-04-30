@@ -56,6 +56,11 @@ Optionally supply a packet-defaults file to override timeout/log_path/syntax_che
     parser.add_argument("--model", default="qwen2.5-coder:7b")
     parser.add_argument("--host", default="http://localhost:11434")
     parser.add_argument(
+        "--allow-any-branch",
+        action="store_true",
+        help="Allow the legacy worker backend to run outside an autoresearch/<tag> branch. Use only for local smoke tests.",
+    )
+    parser.add_argument(
         "--llm-stub", action="store_true",
         help="Inject a FakeListChatModel into langgraph_manager instead of calling Ollama. "
              "For smoke-testing the LangGraph pipeline without a running LLM.",
@@ -111,6 +116,7 @@ Optionally supply a packet-defaults file to override timeout/log_path/syntax_che
                 artifacts_dir=args.artifacts_dir,
                 model=args.model,
                 host=args.host,
+                allow_any_branch=args.allow_any_branch,
             )
         else:
             worker = ClawWorker(
@@ -119,6 +125,7 @@ Optionally supply a packet-defaults file to override timeout/log_path/syntax_che
                 artifacts_dir=args.artifacts_dir,
                 model=args.model,
                 host=args.host,
+                allow_any_branch=args.allow_any_branch,
             )
 
         result = run_real_campaign(
