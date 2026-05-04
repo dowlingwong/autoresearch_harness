@@ -1,2 +1,2 @@
 repeated_bad_count,repeated_bad_rate,repeated_invalid_count,repeated_degraded_count,flagged_trial_ids
-0,0.0,0,0,
+12,0.8,8,4,"resnet_real_3x5_memory_packet-trial-002,resnet_real_3x5_memory_packet-trial-003,resnet_real_3x5_memory_packet-trial-004,resnet_real_3x5_memory_packet-trial-007,resnet_real_3x5_memory_packet-trial-008,resnet_real_3x5_memory_packet-trial-009,resnet_real_3x5_memory_packet-trial-010,resnet_real_3x5_memory_packet-trial-011,resnet_real_3x5_memory_packet-trial-012,resnet_real_3x5_memory_packet-trial-013,resnet_real_3x5_memory_packet-trial-014,resnet_real_3x5_memory_packet-trial-015"

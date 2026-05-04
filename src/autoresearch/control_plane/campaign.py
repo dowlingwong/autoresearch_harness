@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -9,7 +9,7 @@ from typing import Any
 from autoresearch.control_plane.budget import BudgetState
 from autoresearch.control_plane.decision import decide_trial
 from autoresearch.control_plane.permissions import validate_edit_scope
-from autoresearch.manager.base import ManagerStatus
+from autoresearch.manager.base import ManagerProposal, ManagerStatus
 from autoresearch.manager.baseline_manager import BaselineManager
 from autoresearch.manager.prompt_manager import PromptManager
 from autoresearch.memory.append_store import TrialAppendStore
@@ -199,7 +199,10 @@ def run_real_campaign(
             metric_name=node_spec.metric_name,
             metric_direction=node_spec.metric_direction,
         )
-        proposal = manager.propose_next_trial(status, memory_context, node_spec)
+        proposal = _proposal_with_worker_memory(
+            manager.propose_next_trial(status, memory_context, node_spec),
+            memory_context=memory_context,
+        )
 
         guard = _acquire_pending(
             records_path,
@@ -283,7 +286,10 @@ def run_dry_campaign(
             metric_name=node_spec.metric_name,
             metric_direction=node_spec.metric_direction,
         )
-        proposal = manager.propose_next_trial(status, memory_context, node_spec)
+        proposal = _proposal_with_worker_memory(
+            manager.propose_next_trial(status, memory_context, node_spec),
+            memory_context=memory_context,
+        )
         worker_result = worker.run_trial(proposal, node_spec, budget_index)
         record = _record_from_worker_result(
             campaign_id=campaign_id,
@@ -387,6 +393,15 @@ def _manager(manager_mode: str, llm: object | None = None):
         from autoresearch.manager.langgraph_manager import LangGraphManager
         return LangGraphManager(llm=llm)
     raise ValueError(f"unknown manager mode: {manager_mode}")
+
+
+def _proposal_with_worker_memory(proposal: ManagerProposal, *, memory_context) -> ManagerProposal:
+    """Attach read-only prior-trial memory for workers that can use it."""
+    extra = dict(proposal.extra)
+    extra.setdefault("worker_memory_mode", memory_context.mode.value)
+    extra.setdefault("worker_memory_context_text", memory_context.context_text)
+    extra.setdefault("worker_repeated_bad_stats", memory_context.repeated_bad_stats.to_dict())
+    return replace(proposal, extra=extra)
 
 
 def _current_best(records: list[TrialRecord], metric_name: str) -> float | None:

@@ -29,8 +29,9 @@ def _packet_from_proposal(
     timeout_seconds = int(
         defaults.get("timeout_seconds", node_spec.default_budget.max_wall_clock_hours * 3600)
     )
+    objective = _objective_with_worker_memory(proposal)
     return {
-        "objective": proposal.objective,
+        "objective": objective,
         "description": f"{proposal.proposal_summary} [trial-{budget_index:03d}]",
         "train_command": defaults.get("train_command", node_spec.run_command),
         "timeout_seconds": timeout_seconds,
@@ -39,7 +40,37 @@ def _packet_from_proposal(
         "syntax_check_command": defaults.get(
             "syntax_check_command", "python3 -m py_compile train.py"
         ),
+        "stage2_memory_mode": proposal.extra.get("worker_memory_mode", ""),
+        "stage2_memory_context": proposal.extra.get("worker_memory_context_text", ""),
+        "stage2_repeated_bad_stats": proposal.extra.get("worker_repeated_bad_stats", {}),
     }
+
+
+def _objective_with_worker_memory(proposal: ManagerProposal) -> str:
+    context = str(proposal.extra.get("worker_memory_context_text", "")).strip()
+    if not context:
+        return proposal.objective
+    repeated = proposal.extra.get("worker_repeated_bad_stats", {})
+    repeated_ids = []
+    if isinstance(repeated, dict):
+        repeated_ids = list(repeated.get("flagged_trial_ids", []) or [])
+    warning = ""
+    if repeated_ids:
+        warning = (
+            "\nRepeated-bad warning: avoid making changes similar to these prior "
+            f"bad trials: {', '.join(str(item) for item in repeated_ids[:12])}."
+        )
+    return "\n\n".join(
+        [
+            proposal.objective,
+            (
+                "Prior Stage 2 trial memory follows. Use it to avoid repeating "
+                "discarded, invalid, no-op, or failed changes. If a prior idea did "
+                "not work, choose a materially different bounded train.py change."
+                f"{warning}\n{context}"
+            ),
+        ]
+    )
 
 
 class ClawWorker:
@@ -110,6 +141,7 @@ class ClawWorker:
         trial_id = f"trial-{budget_index:03d}"
         artifact_dir = self.artifacts_dir / trial_id
         artifact_dir.mkdir(parents=True, exist_ok=True)
+        pre_trial_diff = _git_diff_text(self.node_root)
 
         # Generate packet driven by the Stage 2 manager proposal
         packet = _packet_from_proposal(proposal, node_spec, budget_index, self.packet_defaults)
@@ -134,6 +166,7 @@ class ClawWorker:
             node_root=self.node_root,
             fallback_command=str(packet["train_command"]),
             fallback_log_path=str(packet["log_path"]),
+            pre_trial_diff=pre_trial_diff,
         )
 
     def run_trial_with_packet_path(
@@ -176,6 +209,7 @@ def _extract_worker_result(
     node_root: str | Path | None = None,
     fallback_command: str | None = None,
     fallback_log_path: str | None = None,
+    pre_trial_diff: str = "",
 ) -> WorkerResult:
     """Parse a raw loop_autoresearch() return dict into a typed WorkerResult."""
     artifact_path = Path(artifact_dir).resolve() if artifact_dir is not None else None
@@ -204,7 +238,7 @@ def _extract_worker_result(
     if isinstance(last_result, dict) and last_result.get("changed_files"):
         changed_files = tuple(_normalize_changed_file(str(f), node_root) for f in last_result["changed_files"])
     else:
-        changed_files = _detect_changed_files(node_root)
+        changed_files = _detect_changed_files(node_root, pre_trial_diff=pre_trial_diff)
 
     fallback_run: dict[str, Any] = {}
     if not experiment.get("success") and changed_files and fallback_command and node_root is not None:
@@ -304,8 +338,10 @@ def _write_patch_diff(
     return ""
 
 
-def _detect_changed_files(node_root: str | Path | None) -> tuple[str, ...]:
+def _detect_changed_files(node_root: str | Path | None, pre_trial_diff: str = "") -> tuple[str, ...]:
     if node_root is None:
+        return ()
+    if pre_trial_diff == _git_diff_text(node_root):
         return ()
     run = subprocess.run(
         ["git", "diff", "--name-only", "--", "."],
@@ -321,6 +357,19 @@ def _detect_changed_files(node_root: str | Path | None) -> tuple[str, ...]:
         for path in (_normalize_changed_file(line.strip(), node_root) for line in run.stdout.splitlines())
         if path
     )
+
+
+def _git_diff_text(node_root: str | Path | None) -> str:
+    if node_root is None:
+        return ""
+    run = subprocess.run(
+        ["git", "diff", "--", "."],
+        cwd=Path(node_root),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return run.stdout if run.returncode == 0 else ""
 
 
 def _normalize_changed_file(path: str, node_root: str | Path | None) -> str:

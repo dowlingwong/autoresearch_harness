@@ -1,0 +1,17 @@
+diff --git a/nodes/ResNet_trigger/train.py b/nodes/ResNet_trigger/train.py
+index 9d51c39..12d9a34 100644
+--- a/nodes/ResNet_trigger/train.py
++++ b/nodes/ResNet_trigger/train.py
+@@ -59,10 +59,10 @@ TRAIN_FRACTION = 0.70
+ VAL_FRACTION = 0.15
+ EPS = 1e-6
+ 
+-BATCH_SIZE = 32
++BATCH_SIZE = 64
+ EPOCHS = 5
+ LEARNING_RATE = 1e-3
+-WEIGHT_DECAY = 1e-4
++WEIGHT_DECAY = 5e-5
+ 
+ STAGE_LAYERS = [1, 1, 1]
+ KERNEL_SIZE = 7

@@ -1,0 +1,9 @@
+{
+  "objective": "Change LEARNING_RATE from 1e-3 to 5e-4 and keep all other hyperparameters unchanged.",
+  "description": "lower-learning-rate [trial-007]",
+  "train_command": "uv run train.py > run.log 2>&1",
+  "timeout_seconds": 900,
+  "log_path": "run.log",
+  "results_tsv": "results.tsv",
+  "syntax_check_command": "python3 -m py_compile train.py"
+}

@@ -1,0 +1,29 @@
+{
+  "objective": "Make exactly one bounded hyperparameter change in train.py to improve validation AUC on the ResNet_trigger node. Start from a clean baseline worktree for every campaign, modify only train.py, and avoid repeating prior Stage 2 discarded or invalid ideas.",
+  "description": "resnet-trigger-clean-baseline-stage2",
+  "train_command": "rm -f run.log results.tsv artifacts/metrics_latest.json artifacts/history_latest.json artifacts/config_latest.json artifacts/split_latest.json artifacts/timing_latest.json && RESNET_TRIGGER_FAST_SEARCH=1 RESNET_TRIGGER_FAST_N_SIGNAL=1000 RESNET_TRIGGER_FAST_N_NOISE=1000 RESNET_TRIGGER_FAST_TRACE_LEN=4096 RESNET_TRIGGER_FAST_BATCH_SIZE=64 RESNET_TRIGGER_FAST_EPOCHS=3 RESNET_TRIGGER_FAST_SKIP_TEST=1 RESNET_TRIGGER_EARLY_STOP_PATIENCE=2 RESNET_TRIGGER_EARLY_STOP_MIN_DELTA=0.002 RESNET_TRIGGER_DEVICE=cpu uv run train.py > run.log 2>&1",
+  "timeout_seconds": 900,
+  "log_path": "run.log",
+  "results_tsv": "results.tsv",
+  "syntax_check_command": "python3 -m py_compile train.py",
+  "baseline_policy": {
+    "recommended_node_root": "use a fresh git worktree or reset train.py before every campaign",
+    "editable_paths": [
+      "train.py"
+    ],
+    "baseline_train_py_constants": {
+      "BATCH_SIZE": 32,
+      "EPOCHS": 5,
+      "LEARNING_RATE": "1e-3",
+      "WEIGHT_DECAY": "1e-4",
+      "STAGE_LAYERS": [
+        1,
+        1,
+        1
+      ],
+      "KERNEL_SIZE": 7,
+      "DROPOUT": 0.0,
+      "GRAD_CLIP_NORM": 1.0
+    }
+  }
+}

@@ -1,0 +1,135 @@
+{
+  "baseline": {
+    "baseline_created": false,
+    "reason": "baseline already recorded",
+    "setup": {
+      "branch": "DETACHED",
+      "cache_dir": "/Users/wongdowling/.cache/autoresearch",
+      "data_ready": true,
+      "results_tsv_initialized": false,
+      "results_tsv_path": "/private/tmp/autoresearch_resnet_3x5_memory/nodes/ResNet_trigger/results.tsv",
+      "root": "/private/tmp/autoresearch_resnet_3x5_memory/nodes/ResNet_trigger",
+      "suggested_tag": "apr30",
+      "tokenizer_ready": true
+    },
+    "state": {
+      "baseline_bpb": 0.220089,
+      "baseline_commit": "d589d88",
+      "best_bpb": 0.220089,
+      "best_commit": "d589d88",
+      "branch": "DETACHED",
+      "last_decision": "baseline",
+      "pending_experiment": null,
+      "root": "/private/tmp/autoresearch_resnet_3x5_memory/nodes/ResNet_trigger",
+      "updated_at": "2026-04-30T09:05:35Z"
+    }
+  },
+  "history": [
+    {
+      "decision": {
+        "decision": "no_pending_experiment",
+        "state": {
+          "baseline_bpb": 0.220089,
+          "baseline_commit": "d589d88",
+          "best_bpb": 0.220089,
+          "best_commit": "d589d88",
+          "branch": "DETACHED",
+          "last_decision": "baseline",
+          "pending_experiment": null,
+          "root": "/private/tmp/autoresearch_resnet_3x5_memory/nodes/ResNet_trigger",
+          "updated_at": "2026-04-30T09:05:35Z"
+        }
+      },
+      "iteration": 1,
+      "run": {
+        "error": "worker did not modify train.py",
+        "experiment": null,
+        "recommended_status": "discard",
+        "results_tsv": "/private/tmp/autoresearch_resnet_3x5_memory/nodes/ResNet_trigger/results.tsv",
+        "setup": {
+          "branch": "DETACHED",
+          "cache_dir": "/Users/wongdowling/.cache/autoresearch",
+          "data_ready": true,
+          "results_tsv_initialized": false,
+          "results_tsv_path": "/private/tmp/autoresearch_resnet_3x5_memory/nodes/ResNet_trigger/results.tsv",
+          "root": "/private/tmp/autoresearch_resnet_3x5_memory/nodes/ResNet_trigger",
+          "suggested_tag": "apr30",
+          "tokenizer_ready": true
+        },
+        "state": {
+          "baseline_bpb": 0.220089,
+          "baseline_commit": "d589d88",
+          "best_bpb": 0.220089,
+          "best_commit": "d589d88",
+          "branch": "DETACHED",
+          "last_decision": "baseline",
+          "pending_experiment": null,
+          "root": "/private/tmp/autoresearch_resnet_3x5_memory/nodes/ResNet_trigger",
+          "updated_at": "2026-04-30T09:05:35Z"
+        },
+        "worker": {
+          "created_at": "2026-04-30T09:33:05Z",
+          "host": "http://localhost:11434",
+          "last_error": "Agent stopped after reaching max_turns=8.",
+          "last_packet": {
+            "acceptance_tests": [
+              "python3 -m py_compile train.py"
+            ],
+            "branch_policy": "Stay on the current branch. Do not create or switch branches.",
+            "commit_policy": "Do not commit. The manager records and evaluates the experiment after your edit.",
+            "escalation_policy": "Stop if a required file outside train.py would need modification or if syntax cannot be preserved.",
+            "objective": "Change LEARNING_RATE from 1e-3 to 5e-4 and keep all other hyperparameters unchanged.\n\nPrior Stage 2 trial memory follows. Use it to avoid repeating discarded, invalid, no-op, or failed changes. If a prior idea did not work, choose a materially different bounded train.py change.\nRepeated-bad warning: avoid making changes similar to these prior bad trials: resnet_real_3x5_memory_packet-trial-002, resnet_real_3x5_memory_packet-trial-003, resnet_real_3x5_memory_packet-trial-004, resnet_real_3x5_memory_packet-trial-007, resnet_real_3x5_memory_packet-trial-008, resnet_real_3x5_memory_packet-trial-009, resnet_real_3x5_memory_packet-trial-010, resnet_real_3x5_memory_packet-trial-011, resnet_real_3x5_memory_packet-trial-012, resnet_real_3x5_memory_packet-trial-013, resnet_real_3x5_memory_packet-trial-014.\nresnet_real_3x5_memory_packet-trial-001: decision=failed_invalid; summary=lower-learning-rate; metric=missing; delta=None; rationale=Invalid trial: runtime_error.; failure=runtime_error\nresnet_real_3x5_memory_packet-trial-002: decision=failed_invalid; summary=small-dropout; metric=missing; delta=None; rationale=Invalid trial: runtime_error.; failure=runtime_error\nresnet_real_3x5_memory_packet-trial-003: decision=failed_invalid; summary=lower-weight-decay; metric=missing; delta=None; rationale=Invalid trial: runtime_error.; failure=runtime_error\nresnet_real_3x5_memory_packet-trial-004: decision=failed_invalid; summary=tiny-dropout; metric=missing; delta=None; rationale=Invalid trial: runtime_error.; failure=runtime_error\nresnet_real_3x5_memory_packet-trial-005: decision=kept; summary=moderate-weight-decay; metric=0.780311; delta=None; rationale=First valid metric becomes the current best.; failure=none\nresnet_real_3x5_memory_packet-trial-006: decision=discarded; summary=larger-batch; metric=0.780311; delta=0.0; rationale=Candidate did not improve current best; delta=0.000000.; failure=degraded_metric\nresnet_real_3x5_memory_packet-trial-007: decision=failed_invalid; summary=smaller-batch; metric=missing; delta=None; rationale=Invalid trial: runtime_error.; failure=runtime_error\nresnet_real_3x5_memory_packet-trial-008: decision=discarded; summary=slightly-more-epochs; metric=0.780311; delta=0.0; rationale=Candidate did not improve current best; delta=0.000000.; failure=degraded_metric\nresnet_real_3x5_memory_packet-trial-009: decision=discarded; summary=lower-grad-clip; metric=0.779422; delta=-0.0008889999999999176; rationale=Candidate did not improve current best; delta=-0.000889.; failure=degraded_metric\nresnet_real_3x5_memory_packet-trial-010: decision=failed_invalid; summary=larger-grad-clip; metric=missing; delta=None; rationale=Invalid trial: runtime_error.; failure=runtime_error\nresnet_real_3x5_memory_packet-trial-011: decision=discarded; summary=smaller-kernel; metric=0.770133; delta=-0.01017800000000002; rationale=Candidate did not improve current best; delta=-0.010178.; failure=degraded_metric\nresnet_real_3x5_memory_packet-trial-012: decision=failed_invalid; summary=larger-kernel; metric=missing; delta=None; rationale=Invalid trial: runtime_error.; failure=runtime_error\nresnet_real_3x5_memory_packet-trial-013: decision=failed_invalid; summary=fast-mode-more-data; metric=missing; delta=None; rationale=Invalid trial: runtime_error.; failure=runtime_error\nresnet_real_3x5_memory_packet-trial-014: decision=failed_invalid; summary=fast-mode-longer-trace; metric=missing; delta=None; rationale=Invalid trial: runtime_error.; failure=runtime_error\nrepeated_bad_warnings=resnet_real_3x5_memory_packet-trial-002,resnet_real_3x5_memory_packet-trial-003,resnet_real_3x5_memory_packet-trial-004,resnet_real_3x5_memory_packet-trial-007,resnet_real_3x5_memory_packet-trial-008,resnet_real_3x5_memory_packet-trial-009,resnet_real_3x5_memory_packet-trial-010,resnet_real_3x5_memory_packet-trial-011,resnet_real_3x5_memory_packet-trial-012,resnet_real_3x5_memory_packet-trial-013,resnet_real_3x5_memory_packet-trial-014\nbest_strategy=moderate-weight-decay; metric=0.780311",
+            "repo": "/private/tmp/autoresearch_resnet_3x5_memory/nodes/ResNet_trigger",
+            "reporting_contract": "Return a concise summary of the train.py change, intended effect on val_bpb, and any blockers.",
+            "scope": "Modify only train.py in the autoresearch repo. You may read program.md, README.md, and train.py for context, but train.py is the only file you may change. Editing any other path is failure. Do not edit prepare.py, pyproject.toml, or dependencies. Do not run the full training experiment yourself; the manager will run it after your code change. Use syntax and git inspection tools when helpful."
+          },
+          "last_result": {
+            "artifacts": [],
+            "changed_files": [],
+            "error": "Agent stopped after reaching max_turns=8.",
+            "final_answer": "",
+            "state": "failed",
+            "stop_reason": "error",
+            "tool_calls": [],
+            "tool_trace": [],
+            "verification": {
+              "acceptance_tests": [],
+              "tool_runs": {
+                "run_build": [],
+                "run_tests": []
+              }
+            },
+            "worker_id": "0f5c9033b3fe40c7bdbc98d68e0777b7"
+          },
+          "model": "qwen2.5-coder:7b",
+          "root": "/private/tmp/autoresearch_resnet_3x5_memory/nodes/ResNet_trigger",
+          "run_count": 1,
+          "state": "failed",
+          "updated_at": "2026-04-30T09:33:53Z",
+          "worker_id": "0f5c9033b3fe40c7bdbc98d68e0777b7"
+        }
+      }
+    }
+  ],
+  "setup": {
+    "branch": "DETACHED",
+    "cache_dir": "/Users/wongdowling/.cache/autoresearch",
+    "data_ready": true,
+    "results_tsv_initialized": false,
+    "results_tsv_path": "/private/tmp/autoresearch_resnet_3x5_memory/nodes/ResNet_trigger/results.tsv",
+    "root": "/private/tmp/autoresearch_resnet_3x5_memory/nodes/ResNet_trigger",
+    "suggested_tag": "apr30",
+    "tokenizer_ready": true
+  },
+  "state": {
+    "baseline_bpb": 0.220089,
+    "baseline_commit": "d589d88",
+    "best_bpb": 0.220089,
+    "best_commit": "d589d88",
+    "branch": "DETACHED",
+    "last_decision": "baseline",
+    "pending_experiment": null,
+    "root": "/private/tmp/autoresearch_resnet_3x5_memory/nodes/ResNet_trigger",
+    "updated_at": "2026-04-30T09:05:35Z"
+  }
+}

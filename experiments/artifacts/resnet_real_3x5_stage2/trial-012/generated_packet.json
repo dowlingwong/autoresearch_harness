@@ -1,0 +1,9 @@
+{
+  "objective": "Change WEIGHT_DECAY from 1e-4 to 3e-5 and keep all other hyperparameters unchanged.",
+  "description": "lower-weight-decay [trial-012]",
+  "train_command": "uv run train.py > run.log 2>&1",
+  "timeout_seconds": 900,
+  "log_path": "run.log",
+  "results_tsv": "results.tsv",
+  "syntax_check_command": "python3 -m py_compile train.py"
+}

@@ -16,7 +16,7 @@ from autoresearch.control_plane.campaign import (
     run_dry_campaign,
     run_real_campaign,
 )
-from autoresearch.manager.base import ManagerStatus
+from autoresearch.manager.base import ManagerProposal, ManagerStatus
 from autoresearch.manager.baseline_manager import BaselineManager
 from autoresearch.manager.langgraph_manager import LangGraphManager
 from autoresearch.manager.prompt_manager import PromptManager
@@ -25,7 +25,7 @@ from autoresearch.memory.schemas import FailureCategory, TrialDecision, Validity
 from autoresearch.memory.summarizer import MemoryMode, build_memory_context
 from autoresearch.nodes.registry import load_registered_node
 from autoresearch.worker.base import WorkerResult
-from autoresearch.worker.claw_worker import _extract_worker_result
+from autoresearch.worker.claw_worker import _extract_worker_result, _packet_from_proposal
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -84,6 +84,34 @@ class TestManagers(unittest.TestCase):
         self.assertEqual(proposal.manager_mode, "baseline_manager")
         self.assertEqual(proposal.target_files, spec.editable_paths)
         self.assertTrue(proposal.objective)
+
+    def test_baseline_manager_avoids_prior_summaries_when_memory_available(self):
+        spec = node_spec()
+        ctx = build_memory_context([], MemoryMode.APPEND_ONLY_SUMMARY, spec, 1)
+        first = BaselineManager().propose_next_trial(
+            ManagerStatus("c", 1, None, spec.metric_name, spec.metric_direction),
+            ctx,
+            spec,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            records_path = Path(tmp) / "trials.jsonl"
+            run_real_campaign(
+                node_spec=spec,
+                campaign_id="memory",
+                budget=1,
+                manager_mode="baseline_manager",
+                memory_mode="append_only_summary",
+                records_path=records_path,
+                worker=FakeWorker([worker_result()]),
+            )
+            records = TrialAppendStore(records_path).read_all()
+        ctx = build_memory_context(records, MemoryMode.APPEND_ONLY_SUMMARY, spec, 2)
+        second = BaselineManager().propose_next_trial(
+            ManagerStatus("c", 2, 0.81, spec.metric_name, spec.metric_direction),
+            ctx,
+            spec,
+        )
+        self.assertNotEqual(second.proposal_summary, first.proposal_summary)
 
     def test_prompt_manager_uses_memory_mode(self):
         spec = node_spec()
@@ -209,6 +237,31 @@ class TestCampaigns(unittest.TestCase):
             self.assertEqual(record.failure_category, FailureCategory.RUNTIME_ERROR)
             self.assertEqual(record.extra["worker_failure_message"], "worker crashed")
 
+    def test_real_campaign_passes_memory_context_to_worker_proposal(self):
+        class CapturingWorker(FakeWorker):
+            def __init__(self, results):
+                super().__init__(results)
+                self.proposals = []
+
+            def run_trial(self, proposal, node_spec, budget_index):
+                self.proposals.append(proposal)
+                return super().run_trial(proposal, node_spec, budget_index)
+
+        spec = node_spec()
+        worker = CapturingWorker([worker_result(), worker_result(metrics={})])
+        with tempfile.TemporaryDirectory() as tmp:
+            run_real_campaign(
+                node_spec=spec,
+                campaign_id="worker-memory",
+                budget=2,
+                manager_mode="baseline_manager",
+                memory_mode="append_only_summary_with_rationale",
+                records_path=Path(tmp) / "trials.jsonl",
+                worker=worker,
+            )
+        self.assertEqual(worker.proposals[0].extra["worker_memory_context_text"], "best_strategy=none")
+        self.assertIn("decision=kept", worker.proposals[1].extra["worker_memory_context_text"])
+
 
 class TestPendingRecovery(unittest.TestCase):
     def test_list_inspect_mark_failed_and_clear_pending_guard(self):
@@ -249,6 +302,25 @@ class TestPendingRecovery(unittest.TestCase):
 
 
 class TestClawWorkerExtraction(unittest.TestCase):
+    def test_packet_includes_worker_memory_context(self):
+        spec = node_spec()
+        proposal = ManagerProposal(
+            manager_mode="test",
+            proposal_summary="new-change",
+            proposal_rationale="because",
+            target_files=("train.py",),
+            objective="Edit train.py once.",
+            extra={
+                "worker_memory_mode": "append_only_summary_with_rationale",
+                "worker_memory_context_text": "trial-001: decision=failed_invalid; summary=small-dropout",
+                "worker_repeated_bad_stats": {"flagged_trial_ids": ["trial-001"]},
+            },
+        )
+        packet = _packet_from_proposal(proposal, spec, 2)
+        self.assertIn("Prior Stage 2 trial memory", packet["objective"])
+        self.assertIn("small-dropout", packet["objective"])
+        self.assertEqual(packet["stage2_memory_mode"], "append_only_summary_with_rationale")
+
     def test_extract_worker_result_captures_artifacts(self):
         spec = node_spec()
         with tempfile.TemporaryDirectory() as tmp:

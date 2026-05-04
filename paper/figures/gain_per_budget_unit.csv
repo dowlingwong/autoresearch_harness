@@ -1,2 +1,2 @@
 campaign_id,gain_per_budget_unit,total_trials
-resnet_real_incremental,0.0014224999999999932,2
+resnet_real_3x5_memory_packet,0.0,15
