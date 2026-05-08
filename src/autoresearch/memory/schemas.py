@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from enum import StrEnum
 from typing import Any
+
+# StrEnum was added to the stdlib in Python 3.11. Fall back to the
+# `strenum` backport package on older interpreters (e.g. CI on 3.10).
+try:
+    from enum import StrEnum
+except ImportError:  # pragma: no cover
+    from strenum import StrEnum  # type: ignore[no-redef]
 
 
 class ExecutionStatus(StrEnum):
@@ -27,6 +33,7 @@ class FailureCategory(StrEnum):
     METRIC_MISSING = "metric_missing"
     INVALID_EDIT_SCOPE = "invalid_edit_scope"
     DEGRADED_METRIC = "degraded_metric"
+    NO_OP_PATCH = "no_op_patch"
 
 
 @dataclass(frozen=True)
@@ -71,6 +78,15 @@ class TrialRecord:
     cumulative_budget_consumed: int
     provenance: TrialProvenance
     extra: dict[str, Any] = field(default_factory=dict)
+    # Reproducibility hashes — populated when available; None for dry-run trials.
+    # training_seed:    RNG seed used by the training script (if logged by the worker).
+    # fast_config_hash: SHA-256 of the fast-training config YAML.
+    # node_state_hash:  SHA-256 of each editable file *before* the patch was applied.
+    # patch_hash:       SHA-256 of the patch diff file produced by the worker.
+    training_seed: str | None = None
+    fast_config_hash: str | None = None
+    node_state_hash: str | None = None
+    patch_hash: str | None = None
 
     def __post_init__(self) -> None:
         errors: list[str] = []
@@ -101,6 +117,11 @@ class TrialRecord:
         payload["failure_category"] = self.failure_category.value if self.failure_category else None
         payload["decision"] = self.decision.value
         payload["provenance"] = self.provenance.to_dict()
+        # Reproducibility hashes are serialised as-is (str or None).
+        payload["training_seed"] = self.training_seed
+        payload["fast_config_hash"] = self.fast_config_hash
+        payload["node_state_hash"] = self.node_state_hash
+        payload["patch_hash"] = self.patch_hash
         return payload
 
     @classmethod
@@ -146,5 +167,9 @@ class TrialRecord:
             cumulative_budget_consumed=int(payload["cumulative_budget_consumed"]),
             provenance=TrialProvenance(**dict(payload["provenance"])),
             extra=dict(payload.get("extra", {})),
+            training_seed=payload.get("training_seed") or None,
+            fast_config_hash=payload.get("fast_config_hash") or None,
+            node_state_hash=payload.get("node_state_hash") or None,
+            patch_hash=payload.get("patch_hash") or None,
         )
 

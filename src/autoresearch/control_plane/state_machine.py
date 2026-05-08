@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from enum import StrEnum
+try:
+    from enum import StrEnum
+except ImportError:  # pragma: no cover
+    from strenum import StrEnum  # type: ignore[no-redef]
 
 
 class TrialState(StrEnum):

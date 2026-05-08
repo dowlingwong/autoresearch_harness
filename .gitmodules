@@ -1,0 +1,4 @@
+[submodule "harness/claw-code"]
+	path = harness/claw-code
+	url = https://github.com/dowlingwong/claw-code.git
+	branch = main

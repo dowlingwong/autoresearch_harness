@@ -6,6 +6,43 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+
+def _sha256_file(path_str: str) -> str | None:
+    """Return the hex SHA-256 digest of the file at *path_str*, or None if unavailable.
+
+    Returns None for blank paths and for paths that do not exist on disk
+    (e.g. dry-run synthetic refs).
+    """
+    import hashlib
+
+    if not path_str or not path_str.strip():
+        return None
+    path = Path(path_str)
+    if not path.exists():
+        return None
+    h = hashlib.sha256()
+    h.update(path.read_bytes())
+    return h.hexdigest()
+
+
+def _patch_is_empty(patch_ref: str) -> bool:
+    """Return True if *patch_ref* refers to a patch file that contains no diff content.
+
+    A patch is considered empty (no-op) when:
+    - the patch_ref string is blank (worker returned no path), or
+    - the file exists on disk and contains only whitespace.
+
+    Returns False for paths that do not exist on disk (e.g. dry-run synthetic refs),
+    so this check never triggers spuriously in dry-run campaigns.
+    """
+    if not patch_ref or not patch_ref.strip():
+        return True
+    path = Path(patch_ref)
+    if not path.exists():
+        return False  # synthetic / dry-run path — not a real empty patch
+    content = path.read_text(encoding="utf-8", errors="replace")
+    return not content.strip()
+
 from autoresearch.control_plane.budget import BudgetState
 from autoresearch.control_plane.decision import decide_trial
 from autoresearch.control_plane.permissions import validate_edit_scope
@@ -329,8 +366,20 @@ def _record_from_worker_result(
 ) -> TrialRecord:
     scope = validate_edit_scope(worker_result.changed_files, node_spec)
     metric = worker_result.parsed_metrics.get(node_spec.metric_name)
-    validity = ValidityStatus.VALID if worker_result.success and scope.valid and metric is not None else ValidityStatus.INVALID
-    if not scope.valid:
+
+    # Detect no-op patches: worker succeeded but produced no real diff.
+    # This must be checked before the validity decision so it is recorded as
+    # failed_invalid / no_op_patch rather than silently treated as a valid trial.
+    no_op = worker_result.success and _patch_is_empty(worker_result.patch_ref)
+
+    validity = (
+        ValidityStatus.VALID
+        if worker_result.success and scope.valid and metric is not None and not no_op
+        else ValidityStatus.INVALID
+    )
+    if no_op:
+        failure = FailureCategory.NO_OP_PATCH
+    elif not scope.valid:
         failure = FailureCategory.INVALID_EDIT_SCOPE
     elif not worker_result.success:
         failure = FailureCategory.RUNTIME_ERROR
@@ -381,6 +430,13 @@ def _record_from_worker_result(
             "worker_failure_message": worker_result.failure_message,
             "scope_validation": scope.__dict__,
         },
+        # Reproducibility hashes: patch_hash is computed here from the patch file;
+        # the others are best captured by the worker before edits are applied and
+        # forwarded via worker_result.extra so they can be picked up below.
+        patch_hash=_sha256_file(worker_result.patch_ref),
+        node_state_hash=worker_result.extra.get("node_state_hash") or None,
+        fast_config_hash=worker_result.extra.get("fast_config_hash") or None,
+        training_seed=worker_result.extra.get("training_seed") or None,
     )
 
 

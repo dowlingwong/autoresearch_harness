@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
-from enum import StrEnum
+try:
+    from enum import StrEnum
+except ImportError:  # pragma: no cover
+    from strenum import StrEnum  # type: ignore[no-redef]
 
 from autoresearch.memory.schemas import TrialRecord
 from autoresearch.memory.similarity import RepeatedBadStats, compute_repeated_bad_stats
