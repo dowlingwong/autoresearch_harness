@@ -2,3 +2,6 @@
 	path = harness/claw-code
 	url = https://github.com/dowlingwong/claw-code.git
 	branch = main
+[submodule "A-Governed-Harness-for-Auditable-LLM-Driven-ML-Experimentation"]
+	path = A-Governed-Harness-for-Auditable-LLM-Driven-ML-Experimentation
+	url = https://github.com/dowlingwong/A-Governed-Harness-for-Auditable-LLM-Driven-ML-Experimentation.git
