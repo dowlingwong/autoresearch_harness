@@ -6,6 +6,9 @@ Usage
 # Dry-run: print what would be changed without touching anything
 python3 scripts/reset_node_state.py --node resnet_trigger --dry-run
 
+# Reset editable files to a fixed baseline ref instead of moving HEAD
+python3 scripts/reset_node_state.py --node resnet_trigger --baseline-ref d589d88
+
 # Reset node files only (does not touch any ledger or artifacts)
 python3 scripts/reset_node_state.py --node resnet_trigger
 
@@ -18,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -29,6 +33,7 @@ if str(SRC) not in sys.path:
 
 from autoresearch.common.paths import (
     ARTIFACTS_DIR,
+    EXPERIMENTS_DIR,
     LEDGERS_DIR,
 )
 from autoresearch.nodes.registry import load_registered_node
@@ -45,14 +50,16 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _git_checkout(rel_path: str, node_root: Path, dry_run: bool) -> None:
-    """Restore *rel_path* inside *node_root* to its last committed state."""
+def _git_checkout(rel_path: str, node_root: Path, dry_run: bool, baseline_ref: str | None) -> None:
+    """Restore *rel_path* inside *node_root* to HEAD or a fixed baseline ref."""
     abs_path = node_root / rel_path
+    ref_args = [baseline_ref] if baseline_ref else []
+    label = f"git checkout {baseline_ref} --" if baseline_ref else "git checkout --"
     if dry_run:
-        print(f"  [dry-run] git checkout -- {abs_path}")
+        print(f"  [dry-run] {label} {abs_path}")
         return
     result = subprocess.run(
-        ["git", "checkout", "--", str(abs_path)],
+        ["git", "checkout", *ref_args, "--", str(abs_path)],
         cwd=str(ROOT),
         capture_output=True,
         text=True,
@@ -61,12 +68,13 @@ def _git_checkout(rel_path: str, node_root: Path, dry_run: bool) -> None:
         # Tolerate: if the file was never committed (e.g. in a fresh worktree),
         # git checkout will error; warn but continue.
         print(
-            f"  [warn] git checkout -- {abs_path} exited {result.returncode}: "
+            f"  [warn] {label} {abs_path} exited {result.returncode}: "
             f"{result.stderr.strip()}",
             file=sys.stderr,
         )
     else:
-        print(f"  restored: {abs_path}")
+        source = baseline_ref or "HEAD"
+        print(f"  restored: {abs_path}  (source: {source})")
 
 
 def _remove_file(path: Path, label: str, dry_run: bool) -> None:
@@ -102,6 +110,7 @@ def reset_node(
     node_root: Path,
     campaign_id: str | None,
     dry_run: bool,
+    baseline_ref: str | None = None,
 ) -> None:
     """Restore the node's editable files and (optionally) wipe campaign data."""
 
@@ -109,6 +118,8 @@ def reset_node(
 
     print(f"\n{'[DRY-RUN] ' if dry_run else ''}Resetting node: {node_name}")
     print(f"  node_root : {node_root}")
+    if baseline_ref:
+        print(f"  baseline  : {baseline_ref}")
     if campaign_id:
         print(f"  campaign  : {campaign_id}")
     print()
@@ -116,7 +127,7 @@ def reset_node(
     # 1. Restore every editable file to its last-committed state.
     print("Step 1 — restore editable files:")
     for rel_path in spec.editable_paths:
-        _git_checkout(rel_path, node_root, dry_run)
+        _git_checkout(rel_path, node_root, dry_run, baseline_ref)
 
     # 2. (Optional) wipe campaign ledger + artifacts so the ablation starts fresh.
     if campaign_id:
@@ -124,9 +135,16 @@ def reset_node(
         ledger = LEDGERS_DIR / f"{campaign_id}_trials.jsonl"
         _remove_file(ledger, "ledger", dry_run)
 
-        # Pending guard, if any.
-        pending = LEDGERS_DIR / f"{campaign_id}_pending.json"
-        _remove_file(pending, "pending guard", dry_run)
+        # Pending guards, if any. The first form is canonical; the second is
+        # kept for older ledgers created before guard names were normalised.
+        for pending in (
+            LEDGERS_DIR / f"{campaign_id}_pending.json",
+            LEDGERS_DIR / f"{campaign_id}_trials_pending.json",
+        ):
+            _remove_file(pending, "pending guard", dry_run)
+
+        events = EXPERIMENTS_DIR / "events" / f"{campaign_id}_events.jsonl"
+        _remove_file(events, "event stream", dry_run)
 
         # Artifacts directory for this campaign.
         # Artifacts live under experiments/artifacts/<trial_id>/, not per-campaign,
@@ -192,6 +210,14 @@ def main() -> int:
         action="store_true",
         help="Print what would be done without making any changes.",
     )
+    parser.add_argument(
+        "--baseline-ref",
+        default=os.environ.get("AUTORESEARCH_BASELINE_REF"),
+        help=(
+            "Optional git ref used as the source for editable-file restore. "
+            "Defaults to AUTORESEARCH_BASELINE_REF when set; otherwise HEAD."
+        ),
+    )
     args = parser.parse_args()
 
     # Resolve node root.
@@ -203,12 +229,13 @@ def main() -> int:
         # glob over the nodes/ directory.
         spec = load_registered_node(args.node, repo_root=ROOT)
         nodes_dir = ROOT / "nodes"
-        # Try an exact match first, then a case-insensitive glob.
+        # Try an exact match first, then a case-insensitive glob. Prefer the
+        # on-disk spelling even on case-insensitive filesystems.
         candidate = nodes_dir / spec.name
-        if not candidate.exists():
-            matches = list(nodes_dir.glob("*"))
-            lower_matches = [m for m in matches if m.name.lower() == spec.name.lower()]
-            candidate = lower_matches[0] if lower_matches else candidate
+        matches = list(nodes_dir.glob("*"))
+        lower_matches = [m for m in matches if m.name.lower() == spec.name.lower()]
+        if lower_matches:
+            candidate = lower_matches[0]
         node_root = candidate
 
     if not node_root.exists():
@@ -224,6 +251,7 @@ def main() -> int:
         node_root=node_root,
         campaign_id=args.campaign_id,
         dry_run=args.dry_run,
+        baseline_ref=args.baseline_ref,
     )
     return 0
 

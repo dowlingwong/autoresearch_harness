@@ -128,7 +128,11 @@ class ClawCodeAutoresearchAdapter:
         run = subprocess.run(
             command,
             cwd=self.harness_root,
-            env={**self._pythonpath_env(), "PYTHONPATH": str(self.harness_root)},
+            env={
+                **self._pythonpath_env(),
+                "PYTHONPATH": str(self.harness_root),
+                "AUTORESEARCH_NO_LEGACY_COMMITS": "1",
+            },
             capture_output=True,
             text=True,
             check=False,

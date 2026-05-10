@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,10 +42,18 @@ def _patch_is_empty(patch_ref: str) -> bool:
     if not path.exists():
         return False  # synthetic / dry-run path — not a real empty patch
     content = path.read_text(encoding="utf-8", errors="replace")
-    return not content.strip()
+    if not content.strip():
+        return True
+    for line in content.splitlines():
+        if line.startswith(("+++", "---")):
+            continue
+        if line.startswith(("+", "-")):
+            return False
+    return True
 
 from autoresearch.control_plane.budget import BudgetState
 from autoresearch.control_plane.decision import decide_trial
+from autoresearch.control_plane.events import emit
 from autoresearch.control_plane.permissions import validate_edit_scope
 from autoresearch.manager.base import ManagerProposal, ManagerStatus
 from autoresearch.manager.baseline_manager import BaselineManager
@@ -52,6 +61,7 @@ from autoresearch.manager.prompt_manager import PromptManager
 from autoresearch.memory.append_store import TrialAppendStore
 from autoresearch.memory.provenance import build_trial_provenance
 from autoresearch.memory.schemas import ExecutionStatus, FailureCategory, TrialDecision, TrialRecord, ValidityStatus
+from autoresearch.memory.similarity import compute_repeated_bad_stats
 from autoresearch.memory.summarizer import MemoryMode, build_memory_context
 from autoresearch.nodes.spec import NodeSpec
 from autoresearch.worker.base import DryRunWorker, Worker, WorkerResult
@@ -72,8 +82,16 @@ class CampaignRunResult:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class _EditableStateSnapshot:
+    root: Path
+    contents: dict[str, bytes | None]
+
+
 def _pending_guard_path(records_path: Path) -> Path:
-    return records_path.parent / (records_path.stem + "_pending.json")
+    stem = records_path.stem
+    campaign_id = stem[:-len("_trials")] if stem.endswith("_trials") else stem
+    return records_path.parent / f"{campaign_id}_pending.json"
 
 
 def _acquire_pending(records_path: Path, *, campaign_id: str, trial_id: str, budget_index: int) -> Path:
@@ -109,6 +127,43 @@ def _release_pending(guard: Path) -> None:
 
 def _iso_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _worker_node_root(worker: Worker) -> Path | None:
+    for attr in ("node_root", "_node_root"):
+        value = getattr(worker, attr, None)
+        if value:
+            return Path(value).resolve()
+    return None
+
+
+def _editable_path(root: Path, path_str: str) -> Path:
+    path = Path(path_str)
+    return path if path.is_absolute() else root / path
+
+
+def _snapshot_editable_state(worker: Worker, node_spec: NodeSpec) -> _EditableStateSnapshot | None:
+    root = _worker_node_root(worker)
+    if root is None:
+        return None
+    contents: dict[str, bytes | None] = {}
+    for path_str in node_spec.editable_paths:
+        path = _editable_path(root, path_str)
+        contents[path_str] = path.read_bytes() if path.exists() and path.is_file() else None
+    return _EditableStateSnapshot(root=root, contents=contents)
+
+
+def _restore_editable_state(snapshot: _EditableStateSnapshot | None) -> None:
+    if snapshot is None:
+        return
+    for path_str, content in snapshot.contents.items():
+        path = _editable_path(snapshot.root, path_str)
+        if content is None:
+            if path.exists() and path.is_file():
+                path.unlink()
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
 
 
 def list_pending_guards(search_root: str | Path) -> list[Path]:
@@ -202,6 +257,8 @@ def run_real_campaign(
     records_path: str | Path,
     worker: Worker,
     manager_llm: object | None = None,
+    proposal_backend: object | None = None,
+    event_store: object | None = None,
 ) -> CampaignRunResult:
     """Run a fixed-budget campaign with a real worker.
 
@@ -215,19 +272,50 @@ def run_real_campaign(
     records_path = Path(records_path)
     records_path.parent.mkdir(parents=True, exist_ok=True)
 
-    manager = _manager(manager_mode, llm=manager_llm)
+    manager = proposal_backend or _manager(manager_mode, llm=manager_llm)
     store = TrialAppendStore(records_path)
     existing_records = store.read_all()
-    budget_state = BudgetState(total_trials=budget)
+    budget_state = BudgetState(total_trials=budget, consumed_trials=len(existing_records))
     current_best = _current_best(existing_records, node_spec.metric_name)
 
     records: list[TrialRecord] = []
+    campaign_started = time.perf_counter()
+    emit(
+        event_store,
+        campaign_id=campaign_id,
+        trial_id=None,
+        event_type="campaign_started",
+        payload={
+            "budget": budget,
+            "manager_mode": manager_mode,
+            "memory_mode": memory_mode,
+            "node_id": node_spec.name,
+        },
+    )
     while not budget_state.exhausted:
         budget_index = budget_state.next_budget_index
         trial_id = f"{campaign_id}-trial-{budget_index:03d}"
+        emit(
+            event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            event_type="trial_started",
+            payload={"trial_id": trial_id, "budget_index": budget_index},
+        )
 
         memory_context = build_memory_context(
             existing_records + records, MemoryMode(memory_mode), node_spec, budget_index
+        )
+        emit(
+            event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            event_type="memory_context_built",
+            payload={
+                "mode": memory_context.mode.value,
+                "compressed_chars": memory_context.compressed_chars,
+                "repeated_bad_count": memory_context.repeated_bad_stats.repeated_bad_count,
+            },
         )
         status = ManagerStatus(
             campaign_id=campaign_id,
@@ -240,6 +328,13 @@ def run_real_campaign(
             manager.propose_next_trial(status, memory_context, node_spec),
             memory_context=memory_context,
         )
+        emit(
+            event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            event_type="proposal_created",
+            payload={"summary": proposal.proposal_summary, "manager_mode": proposal.manager_mode},
+        )
 
         guard = _acquire_pending(
             records_path,
@@ -247,7 +342,23 @@ def run_real_campaign(
             trial_id=trial_id,
             budget_index=budget_index,
         )
+        emit(
+            event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            event_type="pending_guard_acquired",
+            payload={"guard_path": str(guard)},
+        )
         ts_start = _iso_now()
+        worker_started = time.perf_counter()
+        emit(
+            event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            event_type="worker_started",
+            payload={"worker_mode": getattr(worker, "mode", "unknown_worker")},
+        )
+        editable_snapshot = _snapshot_editable_state(worker, node_spec)
         try:
             worker_result = worker.run_trial(proposal, node_spec, budget_index)
         except Exception as exc:
@@ -262,9 +373,17 @@ def run_real_campaign(
                 git_commit_after="",
                 failure_message=str(exc),
             )
-        finally:
-            ts_end = _iso_now()
-            _release_pending(guard)
+        ts_end = _iso_now()
+        emit(
+            event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            event_type="worker_finished",
+            payload={
+                "success": worker_result.success,
+                "elapsed_seconds": max(time.perf_counter() - worker_started, 0.0),
+            },
+        )
 
         record = _record_from_worker_result(
             campaign_id=campaign_id,
@@ -280,13 +399,78 @@ def run_real_campaign(
             timestamp_start=ts_start,
             timestamp_end=ts_end,
         )
+        scope_payload = dict(record.extra.get("scope_validation", {}))
+        emit(
+            event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            event_type="scope_validated",
+            payload={
+                "valid": bool(scope_payload.get("valid")),
+                "changed_files": list(scope_payload.get("changed_paths") or worker_result.changed_files),
+            },
+        )
+        emit(
+            event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            event_type="metric_parsed",
+            payload={
+                "metric_name": node_spec.metric_name,
+                "value": record.parsed_metrics.get(node_spec.metric_name),
+            },
+        )
+        emit(
+            event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            event_type="decision_made",
+            payload={
+                "decision": record.decision.value,
+                "delta_vs_best": record.delta_vs_best,
+                "failure_category": (
+                    record.failure_category.value if record.failure_category else None
+                ),
+            },
+        )
+        # Compute cumulative repeated-bad count for this trial (including itself)
+        # and stamp it onto the immutable record before persisting.
+        rbs = compute_repeated_bad_stats(existing_records + records + [record])
+        record = replace(record, repeated_bad_count=rbs.repeated_bad_count)
         records.append(record)
         store.append_many([record])
+        if record.decision != TrialDecision.KEPT:
+            _restore_editable_state(editable_snapshot)
+        emit(
+            event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            event_type="trial_record_appended",
+            payload={"trial_id": trial_id, "repeated_bad_count": rbs.repeated_bad_count},
+        )
+        _release_pending(guard)
+        emit(
+            event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            event_type="pending_guard_released",
+            payload={},
+        )
 
         if record.decision == TrialDecision.KEPT and node_spec.metric_name in record.parsed_metrics:
             current_best = record.parsed_metrics[node_spec.metric_name]
         budget_state = budget_state.consume_one()
 
+    emit(
+        event_store,
+        campaign_id=campaign_id,
+        trial_id=None,
+        event_type="campaign_completed",
+        payload={
+            "records_written": len(records),
+            "elapsed_seconds": max(time.perf_counter() - campaign_started, 0.0),
+        },
+    )
     return CampaignRunResult(
         campaign_id=campaign_id,
         records_path=str(records_path),
@@ -304,18 +488,53 @@ def run_dry_campaign(
     memory_mode: str,
     records_path: str | Path,
     manager_llm: object | None = None,
+    dry_run_profile: str = "monotonic",
+    proposal_backend: object | None = None,
+    event_store: object | None = None,
 ) -> CampaignRunResult:
-    manager = _manager(manager_mode, llm=manager_llm)
-    worker = DryRunWorker()
+    manager = proposal_backend or _manager(manager_mode, llm=manager_llm)
+    worker = DryRunWorker(profile=dry_run_profile)
     store = TrialAppendStore(records_path)
     existing_records = store.read_all()
-    budget_state = BudgetState(total_trials=budget)
+    budget_state = BudgetState(total_trials=budget, consumed_trials=len(existing_records))
     current_best = _current_best(existing_records, node_spec.metric_name)
 
     records: list[TrialRecord] = []
+    campaign_started = time.perf_counter()
+    emit(
+        event_store,
+        campaign_id=campaign_id,
+        trial_id=None,
+        event_type="campaign_started",
+        payload={
+            "budget": budget,
+            "manager_mode": manager_mode,
+            "memory_mode": memory_mode,
+            "node_id": node_spec.name,
+        },
+    )
     while not budget_state.exhausted:
         budget_index = budget_state.next_budget_index
+        trial_id = f"{campaign_id}-trial-{budget_index:03d}"
+        emit(
+            event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            event_type="trial_started",
+            payload={"trial_id": trial_id, "budget_index": budget_index},
+        )
         memory_context = build_memory_context(existing_records + records, MemoryMode(memory_mode), node_spec, budget_index)
+        emit(
+            event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            event_type="memory_context_built",
+            payload={
+                "mode": memory_context.mode.value,
+                "compressed_chars": memory_context.compressed_chars,
+                "repeated_bad_count": memory_context.repeated_bad_stats.repeated_bad_count,
+            },
+        )
         status = ManagerStatus(
             campaign_id=campaign_id,
             budget_index=budget_index,
@@ -327,7 +546,39 @@ def run_dry_campaign(
             manager.propose_next_trial(status, memory_context, node_spec),
             memory_context=memory_context,
         )
+        emit(
+            event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            event_type="proposal_created",
+            payload={"summary": proposal.proposal_summary, "manager_mode": proposal.manager_mode},
+        )
+        emit(
+            event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            event_type="pending_guard_acquired",
+            payload={"guard_path": None, "synthetic": True},
+        )
+        worker_started = time.perf_counter()
+        emit(
+            event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            event_type="worker_started",
+            payload={"worker_mode": worker.mode},
+        )
         worker_result = worker.run_trial(proposal, node_spec, budget_index)
+        emit(
+            event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            event_type="worker_finished",
+            payload={
+                "success": worker_result.success,
+                "elapsed_seconds": max(time.perf_counter() - worker_started, 0.0),
+            },
+        )
         record = _record_from_worker_result(
             campaign_id=campaign_id,
             budget_index=budget_index,
@@ -340,13 +591,90 @@ def run_dry_campaign(
             worker_result=worker_result,
             current_best=current_best,
         )
+        scope_payload = dict(record.extra.get("scope_validation", {}))
+        emit(
+            event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            event_type="scope_validated",
+            payload={
+                "valid": bool(scope_payload.get("valid")),
+                "changed_files": list(scope_payload.get("changed_paths") or worker_result.changed_files),
+            },
+        )
+        emit(
+            event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            event_type="metric_parsed",
+            payload={
+                "metric_name": node_spec.metric_name,
+                "value": record.parsed_metrics.get(node_spec.metric_name),
+            },
+        )
+        emit(
+            event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            event_type="decision_made",
+            payload={
+                "decision": record.decision.value,
+                "delta_vs_best": record.delta_vs_best,
+                "failure_category": (
+                    record.failure_category.value if record.failure_category else None
+                ),
+            },
+        )
+        # Compute cumulative repeated-bad count for this trial (including itself).
+        rbs = compute_repeated_bad_stats(existing_records + records + [record])
+        record = replace(record, repeated_bad_count=rbs.repeated_bad_count)
         records.append(record)
+        store.append_many([record])
+        emit(
+            event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            event_type="trial_record_appended",
+            payload={"trial_id": trial_id, "repeated_bad_count": rbs.repeated_bad_count},
+        )
+        emit(
+            event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            event_type="pending_guard_released",
+            payload={},
+        )
         if record.decision == TrialDecision.KEPT and node_spec.metric_name in record.parsed_metrics:
             current_best = record.parsed_metrics[node_spec.metric_name]
         budget_state = budget_state.consume_one()
 
-    store.append_many(records)
+    emit(
+        event_store,
+        campaign_id=campaign_id,
+        trial_id=None,
+        event_type="campaign_completed",
+        payload={
+            "records_written": len(records),
+            "elapsed_seconds": max(time.perf_counter() - campaign_started, 0.0),
+        },
+    )
     return CampaignRunResult(campaign_id=campaign_id, records_path=str(records_path), records_written=len(records), dry_run=True)
+
+
+def _elapsed_seconds(start: str | None, end: str | None) -> float:
+    """Return wall-clock seconds between two ISO-8601 UTC timestamps.
+
+    Falls back to 0.0 if either timestamp is missing or unparseable (e.g.
+    dry-run paths that do not supply real timestamps).
+    """
+    if not start or not end:
+        return 0.0
+    try:
+        t0 = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        t1 = datetime.fromisoformat(end.replace("Z", "+00:00"))
+        return max((t1 - t0).total_seconds(), 0.0)
+    except (ValueError, TypeError):
+        return 0.0
 
 
 def _record_from_worker_result(
@@ -366,11 +694,15 @@ def _record_from_worker_result(
 ) -> TrialRecord:
     scope = validate_edit_scope(worker_result.changed_files, node_spec)
     metric = worker_result.parsed_metrics.get(node_spec.metric_name)
+    worker_failure_category = str(worker_result.extra.get("failure_category", "")).strip()
 
     # Detect no-op patches: worker succeeded but produced no real diff.
     # This must be checked before the validity decision so it is recorded as
     # failed_invalid / no_op_patch rather than silently treated as a valid trial.
-    no_op = worker_result.success and _patch_is_empty(worker_result.patch_ref)
+    no_op = (
+        worker_failure_category == FailureCategory.NO_OP_PATCH.value
+        or (worker_result.success and _patch_is_empty(worker_result.patch_ref))
+    )
 
     validity = (
         ValidityStatus.VALID
@@ -421,7 +753,7 @@ def _record_from_worker_result(
         delta_vs_best=decision.delta_vs_best,
         decision=decision.decision,
         decision_rationale=decision.rationale,
-        wall_clock_seconds=1.0,
+        wall_clock_seconds=_elapsed_seconds(timestamp_start, timestamp_end),
         cumulative_budget_consumed=budget_index,
         provenance=build_trial_provenance(trial_id),
         extra={

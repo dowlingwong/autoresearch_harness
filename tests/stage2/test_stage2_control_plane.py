@@ -49,6 +49,30 @@ class RaisingWorker:
         raise RuntimeError("worker crashed")
 
 
+class MutatingWorker:
+    mode = "mutating_worker"
+
+    def __init__(self, node_root: Path, mutations: list[tuple[str, float]]) -> None:
+        self.node_root = Path(node_root)
+        self._mutations = list(mutations)
+
+    def run_trial(self, proposal, node_spec, budget_index):
+        if not self._mutations:
+            raise AssertionError("mutating worker has no queued result")
+        content, metric = self._mutations.pop(0)
+        (self.node_root / "train.py").write_text(content, encoding="utf-8")
+        return WorkerResult(
+            worker_mode=self.mode,
+            changed_files=("train.py",),
+            success=True,
+            parsed_metrics={node_spec.metric_name: metric},
+            raw_log_ref="fake.log",
+            patch_ref=f"fake-{budget_index}.diff",
+            git_commit_before="before",
+            git_commit_after="after",
+        )
+
+
 def node_spec():
     return load_registered_node("resnet_trigger", repo_root=ROOT)
 
@@ -120,6 +144,8 @@ class TestManagers(unittest.TestCase):
         proposal = PromptManager().propose_next_trial(status, ctx, spec)
         self.assertEqual(proposal.manager_mode, "prompt_manager")
         self.assertIn("compressed prior-trial memory", proposal.objective)
+        self.assertIn("Execute this edit", proposal.objective)
+        self.assertNotIn("Propose exactly one bounded change", proposal.objective)
 
 
 @unittest.skipIf(
@@ -166,6 +192,26 @@ class TestCampaigns(unittest.TestCase):
             records = TrialAppendStore(records_path).read_all()
             self.assertEqual(len(records), 2)
             self.assertTrue(all(record.decision == TrialDecision.KEPT for record in records))
+
+    def test_mixed_lifecycle_dry_run_exercises_non_kept_decisions(self):
+        spec = node_spec()
+        with tempfile.TemporaryDirectory() as tmp:
+            records_path = Path(tmp) / "mixed_trials.jsonl"
+            run_dry_campaign(
+                node_spec=spec,
+                campaign_id="mixed",
+                budget=5,
+                manager_mode="baseline_manager",
+                memory_mode="none",
+                records_path=records_path,
+                dry_run_profile="mixed_lifecycle",
+            )
+            records = TrialAppendStore(records_path).read_all()
+            decisions = {record.decision for record in records}
+            self.assertIn(TrialDecision.KEPT, decisions)
+            self.assertIn(TrialDecision.DISCARDED, decisions)
+            self.assertIn(TrialDecision.FAILED_INVALID, decisions)
+            self.assertEqual(records[3].failure_category, FailureCategory.NO_OP_PATCH)
 
     def test_scope_violation_becomes_failed_invalid(self):
         spec = node_spec()
@@ -261,6 +307,56 @@ class TestCampaigns(unittest.TestCase):
             )
         self.assertEqual(worker.proposals[0].extra["worker_memory_context_text"], "best_strategy=none")
         self.assertIn("decision=kept", worker.proposals[1].extra["worker_memory_context_text"])
+
+    def test_real_campaign_resumes_existing_budget_without_duplicate_trial_ids(self):
+        spec = node_spec()
+        with tempfile.TemporaryDirectory() as tmp:
+            records_path = Path(tmp) / "resume_trials.jsonl"
+            first = run_real_campaign(
+                node_spec=spec,
+                campaign_id="resume",
+                budget=1,
+                manager_mode="baseline_manager",
+                memory_mode="append_only_summary",
+                records_path=records_path,
+                worker=FakeWorker([worker_result()]),
+            )
+            second = run_real_campaign(
+                node_spec=spec,
+                campaign_id="resume",
+                budget=2,
+                manager_mode="baseline_manager",
+                memory_mode="append_only_summary",
+                records_path=records_path,
+                worker=FakeWorker([worker_result(metrics={spec.metric_name: 0.82})]),
+            )
+            records = TrialAppendStore(records_path).read_all()
+
+        self.assertEqual(first.records_written, 1)
+        self.assertEqual(second.records_written, 1)
+        self.assertEqual([record.trial_id for record in records], ["resume-trial-001", "resume-trial-002"])
+
+    def test_real_campaign_restores_discarded_editable_state(self):
+        spec = node_spec()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "train.py").write_text("baseline\n", encoding="utf-8")
+            records_path = root / "restore_trials.jsonl"
+            worker = MutatingWorker(root, [("kept\n", 0.9), ("discarded\n", 0.8)])
+
+            run_real_campaign(
+                node_spec=spec,
+                campaign_id="restore",
+                budget=2,
+                manager_mode="baseline_manager",
+                memory_mode="none",
+                records_path=records_path,
+                worker=worker,
+            )
+
+            records = TrialAppendStore(records_path).read_all()
+            self.assertEqual([record.decision for record in records], [TrialDecision.KEPT, TrialDecision.DISCARDED])
+            self.assertEqual((root / "train.py").read_text(encoding="utf-8"), "kept\n")
 
 
 class TestPendingRecovery(unittest.TestCase):
