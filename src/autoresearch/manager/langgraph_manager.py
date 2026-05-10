@@ -21,6 +21,7 @@ from typing import Any, TypedDict
 from autoresearch.manager.base import ManagerProposal, ManagerStatus
 from autoresearch.memory.summarizer import MemoryContext
 from autoresearch.nodes.spec import NodeSpec
+from autoresearch.llm.providers import resolve_llm_config
 
 
 class _PlanState(TypedDict):
@@ -145,7 +146,7 @@ class LangGraphManager:
     def __init__(
         self,
         llm: Any = None,
-        model: str = "qwen2.5-coder:7b",
+        model: str = "ollama/qwen2.5-coder:7b",
         host: str = "http://localhost:11434",
         temperature: float = 0.2,
     ) -> None:
@@ -225,11 +226,22 @@ class LangGraphManager:
     def _resolve_llm(self) -> Any:
         if self._injected_llm is not None:
             return self._injected_llm
+        config = resolve_llm_config(self._model)
+        model_name = config.model_name
+        base_url = config.base_url
+        if config.provider == "legacy":
+            model_name = self._model
+            base_url = self._host
+        if config.provider not in {"legacy", "ollama"}:
+            raise ValueError(
+                "LangGraphManager currently supports Ollama-compatible local models; "
+                f"got provider {config.provider!r}"
+            )
         try:
             from langchain_ollama import ChatOllama
             return ChatOllama(
-                model=self._model,
-                base_url=self._host,
+                model=model_name,
+                base_url=base_url,
                 temperature=self._temperature,
             )
         except ImportError as exc:

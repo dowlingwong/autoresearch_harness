@@ -1,0 +1,75 @@
+========================================================================
+KDD AAE 2026 — Artifact Completeness Report
+========================================================================
+
+Overall: 76/76 checks passed (100.0%)
+
+------------------------------------------------------------------------
+Campaign: kdd_main_5trial
+  Ledger : /Users/wongdowling/Documents/autoresearch_harness/experiments/ledgers/kdd_main_5trial_trials.jsonl
+  Trials : 5 (0 real, 5 dry-run/synthetic)
+  Checks : 20/20 passed (100.0%)  PASS ✓
+
+  [✓] T01 kdd_main_5trial-trial-001 [dry-run]  decision=kept  validity=valid
+  [✓] T02 kdd_main_5trial-trial-002 [dry-run]  decision=kept  validity=valid
+  [✓] T03 kdd_main_5trial-trial-003 [dry-run]  decision=discarded  validity=valid
+  [✓] T04 kdd_main_5trial-trial-004 [dry-run]  decision=failed_invalid  validity=invalid
+  [✓] T05 kdd_main_5trial-trial-005 [dry-run]  decision=kept  validity=valid
+
+------------------------------------------------------------------------
+Campaign: ablation_none
+  Ledger : /Users/wongdowling/Documents/autoresearch_harness/experiments/ledgers/ablation_none_trials.jsonl
+  Trials : 5 (5 real, 0 dry-run/synthetic)
+  Checks : 20/20 passed (100.0%)  PASS ✓
+
+  [✓] T01 ablation_none-trial-001  decision=failed_invalid  validity=invalid
+  [✓] T02 ablation_none-trial-002  decision=failed_invalid  validity=invalid
+  [✓] T03 ablation_none-trial-003  decision=failed_invalid  validity=invalid
+  [✓] T04 ablation_none-trial-004  decision=failed_invalid  validity=invalid
+  [✓] T05 ablation_none-trial-005  decision=failed_invalid  validity=invalid
+
+------------------------------------------------------------------------
+Campaign: ablation_append_only_summary
+  Ledger : /Users/wongdowling/Documents/autoresearch_harness/experiments/ledgers/ablation_append_only_summary_trials.jsonl
+  Trials : 2 (2 real, 0 dry-run/synthetic)
+  Checks : 8/8 passed (100.0%)  PASS ✓
+
+  [✓] T01 ablation_append_only_summary-trial-001  decision=failed_invalid  validity=invalid
+  [✓] T02 ablation_append_only_summary-trial-002  decision=failed_invalid  validity=invalid
+
+------------------------------------------------------------------------
+Campaign: ablation_append_only_summary_with_rationale
+  Ledger : /Users/wongdowling/Documents/autoresearch_harness/experiments/ledgers/ablation_append_only_summary_with_rationale_trials.jsonl
+  Trials : 5 (0 real, 5 dry-run/synthetic)
+  Checks : 20/20 passed (100.0%)  PASS ✓
+
+  [✓] T01 ablation_append_only_summary_with_rationale-trial-001 [dry-run]  decision=kept  validity=valid
+  [✓] T02 ablation_append_only_summary_with_rationale-trial-002 [dry-run]  decision=discarded  validity=valid
+  [✓] T03 ablation_append_only_summary_with_rationale-trial-003 [dry-run]  decision=kept  validity=valid
+  [✓] T04 ablation_append_only_summary_with_rationale-trial-004 [dry-run]  decision=kept  validity=valid
+  [✓] T05 ablation_append_only_summary_with_rationale-trial-005 [dry-run]  decision=kept  validity=valid
+
+------------------------------------------------------------------------
+Campaign: kdd_stress_scope
+  Ledger : /Users/wongdowling/Documents/autoresearch_harness/experiments/ledgers/kdd_stress_scope_trials.jsonl
+  Trials : 1 (1 real, 0 dry-run/synthetic)
+  Checks : 4/4 passed (100.0%)  PASS ✓
+
+  [✓] T01 kdd_stress_scope-trial-001  decision=failed_invalid  validity=invalid
+
+------------------------------------------------------------------------
+Campaign: kdd_stress_noop
+  Ledger : /Users/wongdowling/Documents/autoresearch_harness/experiments/ledgers/kdd_stress_noop_trials.jsonl
+  Trials : 1 (1 real, 0 dry-run/synthetic)
+  Checks : 4/4 passed (100.0%)  PASS ✓
+
+  [✓] T01 kdd_stress_noop-trial-001  decision=failed_invalid  validity=invalid
+
+========================================================================
+Notes
+------------------------------------------------------------------------
+  dry-run/synthetic: DryRunWorker produces placeholder artifact paths that
+    do not exist on disk. These are counted as PASS because they are
+    intentional — dry-run campaigns are for governance/smoke testing only.
+  Any real-run gaps should be investigated and documented in Limitations.
+========================================================================

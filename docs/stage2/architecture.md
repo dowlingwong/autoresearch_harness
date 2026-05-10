@@ -14,14 +14,16 @@ Core layers:
 The canonical real campaign path is:
 
 ```text
-ManagerProposal
+campaign_started event
+  -> ManagerProposal
   -> Stage 2 run_real_campaign
-  -> pending-trial guard
+  -> pending-trial guard + event
   -> ClawWorker
   -> harness/claw-code autoresearch loop
-  -> WorkerResult
-  -> Stage 2 scope/metric/decision logic
+  -> WorkerResult + event
+  -> Stage 2 scope/metric/decision logic + events
   -> append-only TrialRecord
+  -> append-only CampaignEvent stream
 ```
 
 `harness/claw-code` is the current worker backend behind the Stage 2 control
@@ -42,3 +44,24 @@ For real campaigns, Stage 2 captures:
 
 The core contribution is the control plane, audit model, and evaluation surface,
 not the specific worker backend.
+
+## Guides and Sensors
+
+The current architecture follows the harness-engineering guide/sensor split.
+
+| | Guide (feedforward -- steers before act) | Sensor (feedback -- corrects after act) |
+|---|---|---|
+| Computational | Node spec, editable-path whitelist, scope constraints, budget cap | Metric parser, lifecycle state machine, pending-trial guard, event stream |
+| Inferential | Manager prompt, LangGraph or LangChain proposal backend, memory injection | Repeated-bad detector and rationale-linked memory summaries |
+
+Computational controls own authority. Inferential controls can propose,
+summarize, or warn, but they cannot commit trial state.
+
+## Event Stream
+
+The ledger records final trial outcomes. The event stream records how each
+outcome was produced. Campaign scripts persist
+`experiments/events/<campaign_id>_events.jsonl` with typed lifecycle events such
+as `campaign_started`, `proposal_created`, `worker_finished`,
+`scope_validated`, `metric_parsed`, `decision_made`, and
+`trial_record_appended`.

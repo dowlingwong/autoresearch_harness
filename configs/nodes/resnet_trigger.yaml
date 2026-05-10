@@ -38,6 +38,7 @@
     "runtime_error",
     "metric_missing",
     "invalid_edit_scope",
-    "degraded_metric"
+    "degraded_metric",
+    "no_op_patch"
   ]
 }

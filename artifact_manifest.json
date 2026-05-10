@@ -1,0 +1,766 @@
+{
+  "paper": "KDD AAE 2026 \u2014 Governed Autonomous Experimentation",
+  "generated": "2026-05-10T00:02:18Z",
+  "manifest_version": "1.0",
+  "campaigns": {
+    "kdd": [
+      {
+        "id": "kdd_main_5trial",
+        "description": "Main KDD campaign \u2014 5 dry-run trials, baseline_manager, append_only_summary_with_rationale",
+        "ledger": "experiments/ledgers/kdd_main_5trial_trials.jsonl",
+        "trials": 5,
+        "worker": "dry_run",
+        "manager": "baseline_manager",
+        "memory_mode": "append_only_summary_with_rationale"
+      },
+      {
+        "id": "kdd_stress_scope",
+        "description": "Stress trial \u2014 scope-violation worker, forces invalid_edit_scope failure",
+        "ledger": "experiments/ledgers/kdd_stress_scope_trials.jsonl",
+        "trials": 1,
+        "worker": "claw_worker (scope-violation mode)",
+        "manager": "baseline_manager",
+        "memory_mode": "append_only_summary_with_rationale"
+      },
+      {
+        "id": "kdd_stress_noop",
+        "description": "Stress trial \u2014 no-op patch worker, forces no_op_patch failure",
+        "ledger": "experiments/ledgers/kdd_stress_noop_trials.jsonl",
+        "trials": 1,
+        "worker": "stress_no_op_patch_worker",
+        "manager": "baseline_manager",
+        "memory_mode": "append_only_summary_with_rationale"
+      }
+    ],
+    "memory_ablation": [
+      {
+        "id": "ablation_none",
+        "description": "Memory ablation arm \u2014 no memory context",
+        "ledger": "experiments/ledgers/ablation_none_trials.jsonl",
+        "trials": 5,
+        "worker": "dry_run",
+        "manager": "baseline_manager",
+        "memory_mode": "none"
+      },
+      {
+        "id": "ablation_append_only_summary",
+        "description": "Memory ablation arm \u2014 append-only summary (no rationale)",
+        "ledger": "experiments/ledgers/ablation_append_only_summary_trials.jsonl",
+        "trials": 5,
+        "worker": "dry_run",
+        "manager": "baseline_manager",
+        "memory_mode": "append_only_summary"
+      },
+      {
+        "id": "ablation_append_only_summary_with_rationale",
+        "description": "Memory ablation arm \u2014 append-only summary with rationale",
+        "ledger": "experiments/ledgers/ablation_append_only_summary_with_rationale_trials.jsonl",
+        "trials": 5,
+        "worker": "dry_run",
+        "manager": "baseline_manager",
+        "memory_mode": "append_only_summary_with_rationale"
+      }
+    ],
+    "manager_comparison": [
+      {
+        "id": "manager_comparison_baseline_manager",
+        "description": "Manager comparison \u2014 baseline_manager, 5 dry-run trials",
+        "ledger": "experiments/ledgers/manager_comparison_baseline_manager_trials.jsonl",
+        "trials": 5,
+        "worker": "dry_run",
+        "manager": "baseline_manager",
+        "memory_mode": "append_only_summary_with_rationale"
+      },
+      {
+        "id": "manager_comparison_prompt_manager",
+        "description": "Manager comparison \u2014 prompt_manager, 5 dry-run trials",
+        "ledger": "experiments/ledgers/manager_comparison_prompt_manager_trials.jsonl",
+        "trials": 5,
+        "worker": "dry_run",
+        "manager": "prompt_manager",
+        "memory_mode": "append_only_summary_with_rationale"
+      }
+    ]
+  },
+  "artifacts": {
+    "kdd_main_5trial": [
+      {
+        "trial_id": "kdd_main_5trial-trial-001",
+        "budget_index": 1,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_001/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_001/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-29b90a214db3b66f"
+      },
+      {
+        "trial_id": "kdd_main_5trial-trial-002",
+        "budget_index": 2,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_002/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_002/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-20bbdda789148f4c"
+      },
+      {
+        "trial_id": "kdd_main_5trial-trial-003",
+        "budget_index": 3,
+        "decision": "discarded",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_003/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_003/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-594cce219e9eaecb"
+      },
+      {
+        "trial_id": "kdd_main_5trial-trial-004",
+        "budget_index": 4,
+        "decision": "failed_invalid",
+        "validity_status": "invalid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_004/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": false,
+        "decision_id": "decision-05eb4b0843c80873"
+      },
+      {
+        "trial_id": "kdd_main_5trial-trial-005",
+        "budget_index": 5,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_005/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_005/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-da821412b13a09a1"
+      }
+    ],
+    "kdd_stress_scope": [
+      {
+        "trial_id": "kdd_stress_scope-trial-001",
+        "budget_index": 1,
+        "decision": "failed_invalid",
+        "validity_status": "invalid",
+        "worker_mode": "stress_scope_violation_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/kdd_stress_scope/trial-001/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/kdd_stress_scope/trial-001/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-f1dd570fe90ea0fe"
+      }
+    ],
+    "kdd_stress_noop": [
+      {
+        "trial_id": "kdd_stress_noop-trial-001",
+        "budget_index": 1,
+        "decision": "failed_invalid",
+        "validity_status": "invalid",
+        "worker_mode": "stress_no_op_patch_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/kdd_stress_noop/trial-001/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/kdd_stress_noop/trial-001/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": false,
+        "decision_id": "decision-e1e34ddf7caef5e4"
+      }
+    ],
+    "ablation_none": [
+      {
+        "trial_id": "ablation_none-trial-001",
+        "budget_index": 1,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_001/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_001/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-d0f09531d12ae31c"
+      },
+      {
+        "trial_id": "ablation_none-trial-002",
+        "budget_index": 2,
+        "decision": "discarded",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_002/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_002/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-e7895c4bd6e2da2d"
+      },
+      {
+        "trial_id": "ablation_none-trial-003",
+        "budget_index": 3,
+        "decision": "failed_invalid",
+        "validity_status": "invalid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_003/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": false,
+        "decision_id": "decision-a04cafc81999b47e"
+      },
+      {
+        "trial_id": "ablation_none-trial-004",
+        "budget_index": 4,
+        "decision": "failed_invalid",
+        "validity_status": "invalid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_004/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": false,
+        "decision_id": "decision-f25c302a3d715856"
+      },
+      {
+        "trial_id": "ablation_none-trial-005",
+        "budget_index": 5,
+        "decision": "discarded",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_005/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_005/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-042a5a18636ecca8"
+      }
+    ],
+    "ablation_append_only_summary": [
+      {
+        "trial_id": "ablation_append_only_summary-trial-001",
+        "budget_index": 1,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_001/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_001/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-34ae1531a65ba300"
+      },
+      {
+        "trial_id": "ablation_append_only_summary-trial-002",
+        "budget_index": 2,
+        "decision": "discarded",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_002/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_002/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-48fecb2d5a4ccf7b"
+      },
+      {
+        "trial_id": "ablation_append_only_summary-trial-003",
+        "budget_index": 3,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_003/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_003/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-a5911c4db01143b0"
+      },
+      {
+        "trial_id": "ablation_append_only_summary-trial-004",
+        "budget_index": 4,
+        "decision": "discarded",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_004/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_004/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-a12033170719bdb7"
+      },
+      {
+        "trial_id": "ablation_append_only_summary-trial-005",
+        "budget_index": 5,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_005/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_005/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-8ba2fa661c6d6504"
+      }
+    ],
+    "ablation_append_only_summary_with_rationale": [
+      {
+        "trial_id": "ablation_append_only_summary_with_rationale-trial-001",
+        "budget_index": 1,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_001/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_001/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-f0cec85f34529d25"
+      },
+      {
+        "trial_id": "ablation_append_only_summary_with_rationale-trial-002",
+        "budget_index": 2,
+        "decision": "discarded",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_002/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_002/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-6eade7f0033ae751"
+      },
+      {
+        "trial_id": "ablation_append_only_summary_with_rationale-trial-003",
+        "budget_index": 3,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_003/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_003/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-9e160fbce39e9c43"
+      },
+      {
+        "trial_id": "ablation_append_only_summary_with_rationale-trial-004",
+        "budget_index": 4,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_004/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_004/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-d9fff2abaa20dfe0"
+      },
+      {
+        "trial_id": "ablation_append_only_summary_with_rationale-trial-005",
+        "budget_index": 5,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_005/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_005/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-1de9ce1c961e643c"
+      }
+    ],
+    "manager_comparison_baseline_manager": [
+      {
+        "trial_id": "manager_comparison_baseline_manager-trial-001",
+        "budget_index": 1,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_001/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_001/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-aa88de7ab93757ea"
+      },
+      {
+        "trial_id": "manager_comparison_baseline_manager-trial-002",
+        "budget_index": 2,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_002/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_002/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-4481a65e88bd9303"
+      },
+      {
+        "trial_id": "manager_comparison_baseline_manager-trial-003",
+        "budget_index": 3,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_003/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_003/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-d0dbc8c5e31784f8"
+      },
+      {
+        "trial_id": "manager_comparison_baseline_manager-trial-004",
+        "budget_index": 4,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_004/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_004/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-9059ce0a5ff33837"
+      },
+      {
+        "trial_id": "manager_comparison_baseline_manager-trial-005",
+        "budget_index": 5,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_005/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_005/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-83df5c01a5f2d30a"
+      }
+    ],
+    "manager_comparison_prompt_manager": [
+      {
+        "trial_id": "manager_comparison_prompt_manager-trial-001",
+        "budget_index": 1,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_001/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_001/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-1848172f71f1271d"
+      },
+      {
+        "trial_id": "manager_comparison_prompt_manager-trial-002",
+        "budget_index": 2,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_002/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_002/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-6425eed88cf67019"
+      },
+      {
+        "trial_id": "manager_comparison_prompt_manager-trial-003",
+        "budget_index": 3,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_003/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_003/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-d003115d70611284"
+      },
+      {
+        "trial_id": "manager_comparison_prompt_manager-trial-004",
+        "budget_index": 4,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_004/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_004/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-9714fdc82e441b88"
+      },
+      {
+        "trial_id": "manager_comparison_prompt_manager-trial-005",
+        "budget_index": 5,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "dry_run_worker",
+        "patch_ref": {
+          "path": "experiments/artifacts/dry_run_trial_005/patch.diff",
+          "exists": false,
+          "synthetic": true
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/dry_run_trial_005/run.log",
+          "exists": false,
+          "synthetic": true
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-5ae5d5031c298fcf"
+      }
+    ]
+  },
+  "tables": [
+    "paper/tables/accepted_discarded_invalid_counts.csv",
+    "paper/tables/artifact_completeness_report.txt",
+    "paper/tables/campaign_trajectory.csv",
+    "paper/tables/failure_taxonomy.csv",
+    "paper/tables/governance_metrics.csv",
+    "paper/tables/main_campaign_summary.csv",
+    "paper/tables/manager_comparison_summary.csv",
+    "paper/tables/memory_ablation_run_report.txt",
+    "paper/tables/memory_ablation_summary.csv",
+    "paper/tables/provenance_chain.csv"
+  ],
+  "figures": {
+    "kdd_paper": [
+      "paper/figures/fig1_architecture.svg",
+      "paper/figures/fig2_repeated_bad_rate.svg",
+      "paper/figures/fig3_decision_breakdown.svg",
+      "paper/figures/fig4_trajectory.svg"
+    ],
+    "supplementary": [
+      "paper/figures/resnet_real_baseline_fallback_decisions.svg",
+      "paper/figures/resnet_real_baseline_fallback_trajectory.svg",
+      "paper/figures/resnet_real_clean_round2_data_decisions.svg",
+      "paper/figures/resnet_real_clean_round2_data_epoch_val_auc.svg",
+      "paper/figures/resnet_real_clean_round2_data_trajectory.svg",
+      "paper/figures/resnet_real_incremental_decisions.svg",
+      "paper/figures/resnet_real_incremental_epoch_val_auc.svg",
+      "paper/figures/resnet_real_incremental_trajectory.svg",
+      "paper/figures/stage2_full_round_decisions.svg",
+      "paper/figures/stage2_full_round_trajectory.svg"
+    ]
+  },
+  "environment": {
+    "python": "3.13.4",
+    "git_commit": "9e6dbaa",
+    "git_branch": "main",
+    "platform": "darwin",
+    "default_model": "qwen2.5-coder:7b",
+    "default_ollama_host": "http://localhost:11434",
+    "node": "resnet_trigger",
+    "metric": "val_auc (higher is better; derived from val_bpb = 1 - val_bpb)"
+  },
+  "run_commands": [
+    "python3 scripts/run_kdd_main_campaign.py --node resnet_trigger --campaign-id kdd_main_5trial --budget 5 --dry-run",
+    "python3 scripts/run_kdd_stress_trial.py --node resnet_trigger --campaign-id kdd_stress_scope",
+    "python3 scripts/run_kdd_noop_trial.py --node resnet_trigger --campaign-id kdd_stress_noop",
+    "python3 scripts/run_kdd_memory_ablation.py --node resnet_trigger --budget 5 --memory-mode none --campaign-id ablation_none --dry-run",
+    "python3 scripts/run_kdd_memory_ablation.py --node resnet_trigger --budget 5 --memory-mode append_only_summary --campaign-id ablation_append_only_summary --dry-run",
+    "python3 scripts/run_kdd_memory_ablation.py --node resnet_trigger --budget 5 --memory-mode append_only_summary_with_rationale --campaign-id ablation_append_only_summary_with_rationale --dry-run",
+    "python3 scripts/run_manager_comparison.py --node resnet_trigger --budget 5 --memory-mode append_only_summary_with_rationale --managers baseline_manager prompt_manager --dry-run",
+    "python3 scripts/export_kdd_tables.py --main-campaign kdd_main_5trial --ablation-campaigns ablation_none ablation_append_only_summary ablation_append_only_summary_with_rationale --stress-campaign kdd_stress_scope kdd_stress_noop --output-dir paper/tables/",
+    "python3 scripts/export_kdd_figures.py --figure architecture --output paper/figures/fig1_architecture.svg",
+    "python3 scripts/check_kdd_artifact_completeness.py --campaigns kdd_main_5trial ablation_none ablation_append_only_summary ablation_append_only_summary_with_rationale kdd_stress_scope kdd_stress_noop"
+  ],
+  "notes": "Campaigns tagged worker=dry_run use DryRunWorker which generates synthetic metrics without executing actual training. Artifact paths for dry-run trials (experiments/artifacts/dry_run_trial_*/...) are placeholder references; the real governed mechanism (append-only ledger, pending-trial guard, scope validation) is exercised in full."
+}

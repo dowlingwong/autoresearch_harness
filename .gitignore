@@ -74,6 +74,18 @@ instance/
 # Sphinx documentation
 docs/_build/
 
+# Generated campaign run state
+experiments/**
+!experiments/
+!experiments/artifacts/
+!experiments/ledgers/
+!experiments/runs/
+!experiments/summaries/
+!experiments/artifacts/.gitkeep
+!experiments/ledgers/.gitkeep
+!experiments/runs/.gitkeep
+!experiments/summaries/.gitkeep
+
 # PyBuilder
 .pybuilder/
 target/

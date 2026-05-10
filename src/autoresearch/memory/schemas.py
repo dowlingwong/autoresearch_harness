@@ -87,6 +87,12 @@ class TrialRecord:
     fast_config_hash: str | None = None
     node_state_hash: str | None = None
     patch_hash: str | None = None
+    # Cumulative count of repeated-bad proposals in this campaign up to and including
+    # this trial. A proposal is "repeated bad" if it is semantically similar to a prior
+    # failed/discarded proposal (Jaccard similarity ≥ 0.6 on proposal_summary tokens or
+    # identical parameter-direction extraction). Populated by the control plane after
+    # each trial; 0 for the first trial and for campaigns that use no memory context.
+    repeated_bad_count: int = 0
 
     def __post_init__(self) -> None:
         errors: list[str] = []
@@ -122,6 +128,7 @@ class TrialRecord:
         payload["fast_config_hash"] = self.fast_config_hash
         payload["node_state_hash"] = self.node_state_hash
         payload["patch_hash"] = self.patch_hash
+        payload["repeated_bad_count"] = self.repeated_bad_count
         return payload
 
     @classmethod
@@ -171,5 +178,6 @@ class TrialRecord:
             fast_config_hash=payload.get("fast_config_hash") or None,
             node_state_hash=payload.get("node_state_hash") or None,
             patch_hash=payload.get("patch_hash") or None,
+            repeated_bad_count=int(payload.get("repeated_bad_count") or 0),
         )
 

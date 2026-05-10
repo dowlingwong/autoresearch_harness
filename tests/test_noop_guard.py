@@ -97,6 +97,15 @@ class TestPatchIsEmpty(unittest.TestCase):
         finally:
             path.unlink(missing_ok=True)
 
+    def test_patch_headers_without_hunks_are_empty(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".diff", delete=False, mode="w") as f:
+            f.write("diff --git a/train.py b/train.py\nindex abc..abc 100644\n")
+            path = Path(f.name)
+        try:
+            self.assertTrue(_patch_is_empty(str(path)))
+        finally:
+            path.unlink(missing_ok=True)
+
 
 # ---------------------------------------------------------------------------
 # Control-plane integration: no-op produces failed_invalid / no_op_patch
@@ -172,6 +181,35 @@ class TestNoOpGuardInControlPlane(unittest.TestCase):
         )
         # success=False means no_op check short-circuits; worker failure takes precedence
         self.assertEqual(record.failure_category, FailureCategory.RUNTIME_ERROR)
+
+    def test_worker_can_explicitly_report_noop_without_training(self) -> None:
+        node_spec = _make_node_spec()
+        worker_result = WorkerResult(
+            worker_mode="test_worker",
+            changed_files=("train.py",),
+            success=True,
+            parsed_metrics={},
+            raw_log_ref="",
+            patch_ref="",
+            git_commit_before="abc",
+            git_commit_after="abc",
+            failure_message="no_op_patch",
+            extra={"failure_category": "no_op_patch", "training_skipped": True},
+        )
+        record = _record_from_worker_result(
+            campaign_id="test_campaign",
+            budget_index=1,
+            node_spec=node_spec,
+            manager_mode="baseline_manager",
+            memory_mode="none",
+            proposal_summary="no-op",
+            proposal_rationale="test",
+            worker_result=worker_result,
+            current_best=None,
+        )
+        self.assertEqual(record.failure_category, FailureCategory.NO_OP_PATCH)
+        self.assertEqual(record.decision, TrialDecision.FAILED_INVALID)
+        self.assertTrue(record.extra["worker"]["training_skipped"])
 
 
 if __name__ == "__main__":

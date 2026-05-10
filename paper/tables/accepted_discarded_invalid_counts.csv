@@ -1,0 +1,7 @@
+campaign_id,total_trials,kept,discarded,failed_invalid,acceptance_rate,invalid_rate
+kdd_main_5trial,5,3,1,1,0.6,0.2
+ablation_none,5,1,2,2,0.2,0.4
+ablation_append_only_summary,5,3,2,0,0.6,0.0
+ablation_append_only_summary_with_rationale,5,4,1,0,0.8,0.0
+kdd_stress_scope,1,0,0,1,0.0,1.0
+kdd_stress_noop,1,0,0,1,0.0,1.0

@@ -1,0 +1,3 @@
+manager_mode,campaign_id,memory_mode,budget,total_trials,kept_count,discarded_count,failed_invalid_count,acceptance_rate,invalid_rate,initial_metric,best_metric,net_gain,gain_per_trial,complete_provenance_rate,artifact_capture_completeness,total_wall_clock_seconds
+baseline_manager,manager_comparison_baseline_manager,append_only_summary_with_rationale,5,5,5,0,0,1.0,0.0,0.781,0.785,0.0040000000000000036,0.0008000000000000007,1.0,1.0,0.0
+prompt_manager,manager_comparison_prompt_manager,append_only_summary_with_rationale,5,5,5,0,0,1.0,0.0,0.781,0.785,0.0040000000000000036,0.0008000000000000007,1.0,1.0,0.0

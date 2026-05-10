@@ -1,0 +1,9 @@
+campaign_id,failure_category,count,rate,total_trials
+kdd_main_5trial,degraded_metric,1,0.2,5
+kdd_main_5trial,no_op_patch,1,0.2,5
+ablation_none,degraded_metric,2,0.4,5
+ablation_none,no_op_patch,2,0.4,5
+ablation_append_only_summary,degraded_metric,2,0.4,5
+ablation_append_only_summary_with_rationale,degraded_metric,1,0.2,5
+kdd_stress_scope,invalid_edit_scope,1,1.0,1
+kdd_stress_noop,no_op_patch,1,1.0,1

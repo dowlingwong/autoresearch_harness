@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="500" viewBox="0 0 820 500" role="img">
+<style>text{font-family:Arial,sans-serif;fill:#1b1b1b}.title{font-size:20px;font-weight:700}.label{font-size:12px}.small{font-size:10px}.axis{stroke:#333;stroke-width:1}.grid{stroke:#ddd;stroke-width:1}</style>
+<text x="100" y="34" class="title">Figure 4. Campaign metric trajectory</text>
+<line x1="100" y1="370.0" x2="740" y2="370.0" class="grid"/>
+<text x="92" y="374.0" text-anchor="end" class="small">0.7805</text>
+<line x1="100" y1="310.0" x2="740" y2="310.0" class="grid"/>
+<text x="92" y="314.0" text-anchor="end" class="small">0.7811</text>
+<line x1="100" y1="250.0" x2="740" y2="250.0" class="grid"/>
+<text x="92" y="254.0" text-anchor="end" class="small">0.7817</text>
+<line x1="100" y1="190.0" x2="740" y2="190.0" class="grid"/>
+<text x="92" y="194.0" text-anchor="end" class="small">0.7823</text>
+<line x1="100" y1="130.0" x2="740" y2="130.0" class="grid"/>
+<text x="92" y="134.0" text-anchor="end" class="small">0.7829</text>
+<line x1="100" y1="70.0" x2="740" y2="70.0" class="grid"/>
+<text x="92" y="74.0" text-anchor="end" class="small">0.7835</text>
+<line x1="100" y1="370" x2="740" y2="370" class="axis"/>
+<line x1="100" y1="70" x2="100" y2="370" class="axis"/>  
+<line x1="100.0" y1="370" x2="100.0" y2="375" stroke="#333" stroke-width="1"/>
+<text x="100.0" y="388" text-anchor="middle" class="small">T1</text>
+<line x1="260.0" y1="370" x2="260.0" y2="375" stroke="#333" stroke-width="1"/>
+<text x="260.0" y="388" text-anchor="middle" class="small">T2</text>
+<line x1="420.0" y1="370" x2="420.0" y2="375" stroke="#333" stroke-width="1"/>
+<text x="420.0" y="388" text-anchor="middle" class="small">T3</text>
+<line x1="580.0" y1="370" x2="580.0" y2="375" stroke="#333" stroke-width="1"/>
+<text x="580.0" y="388" text-anchor="middle" class="small">T4</text>
+<line x1="580.0" y1="70" x2="580.0" y2="370" stroke="#b85450" stroke-width="1" stroke-dasharray="4 3" opacity="0.5"/>
+<line x1="573.0" y1="213.0" x2="587.0" y2="227.0" stroke="#b85450" stroke-width="2"/>
+<line x1="573.0" y1="227.0" x2="587.0" y2="213.0" stroke="#b85450" stroke-width="2"/>
+<line x1="740.0" y1="370" x2="740.0" y2="375" stroke="#333" stroke-width="1"/>
+<text x="740.0" y="388" text-anchor="middle" class="small">T5</text>
+<text x="420.0" y="410" text-anchor="middle" class="label">Trial</text>
+<text x="18" y="220.0" text-anchor="middle" class="label" transform="rotate(-90,18,220.0)">val_AUC</text>
+<path d="M100.0,320.0 L260.0,220.0 L420.0,270.0 L740.0,120.0" fill="none" stroke="#2f6f8f" stroke-width="2" stroke-dasharray="5 3"/>
+<circle cx="100.0" cy="320.0" r="6" fill="#4b9b6f" stroke="#fff" stroke-width="1.5"/>
+<text x="100.0" y="309.0" text-anchor="middle" class="small">0.7810</text>
+<circle cx="260.0" cy="220.0" r="6" fill="#4b9b6f" stroke="#fff" stroke-width="1.5"/>
+<text x="260.0" y="209.0" text-anchor="middle" class="small">0.7820</text>
+<circle cx="420.0" cy="270.0" r="6" fill="#d8a13f" stroke="#fff" stroke-width="1.5"/>
+<text x="420.0" y="259.0" text-anchor="middle" class="small">0.7815</text>
+<circle cx="740.0" cy="120.0" r="6" fill="#4b9b6f" stroke="#fff" stroke-width="1.5"/>
+<text x="740.0" y="109.0" text-anchor="middle" class="small">0.7830</text>
+<circle cx="107" cy="430" r="6" fill="#4b9b6f"/>
+<text x="120" y="434" class="small">kept</text>
+<circle cx="297" cy="430" r="6" fill="#d8a13f"/>
+<text x="310" y="434" class="small">discarded</text>
+<circle cx="487" cy="430" r="6" fill="#b85450"/>
+<text x="500" y="434" class="small">failed_invalid</text>
+</svg>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from autoresearch.manager.base import ManagerProposal, ManagerStatus
+from autoresearch.manager.baseline_manager import select_bounded_objective
 from autoresearch.memory.summarizer import MemoryContext, MemoryMode
 from autoresearch.nodes.spec import NodeSpec
 
@@ -14,6 +15,7 @@ class PromptManager:
         memory_context: MemoryContext,
         node_spec: NodeSpec,
     ) -> ManagerProposal:
+        summary, concrete_objective, base_rationale = select_bounded_objective(status, memory_context)
         repeated_warning = ""
         if memory_context.repeated_bad_stats.repeated_bad_count:
             repeated_warning = (
@@ -27,19 +29,19 @@ class PromptManager:
             else "Use the compressed prior-trial memory to avoid repeats."
         )
         objective = (
-            f"Propose exactly one bounded change to {', '.join(node_spec.editable_paths)} "
-            f"to improve {status.metric_name}. {context_note}{repeated_warning} "
+            f"In {', '.join(node_spec.editable_paths)}, {concrete_objective} "
+            f"This is the manager-selected bounded edit to improve {status.metric_name}. "
+            f"{context_note}{repeated_warning} "
+            "Execute this edit; do not propose a different change. "
             "Do not edit frozen paths or dependencies."
         )
         return ManagerProposal(
             manager_mode=self.mode,
-            proposal_summary=f"memory-guided-proposal-{status.budget_index}",
+            proposal_summary=summary,
             proposal_rationale=(
-                f"Current best={status.current_best_metric}; "
-                f"memory_mode={memory_context.mode.value}; "
-                f"context_chars={memory_context.compressed_chars}."
+                f"{base_rationale} Current best={status.current_best_metric}; "
+                f"memory_mode={memory_context.mode.value}; context_chars={memory_context.compressed_chars}."
             ),
             target_files=node_spec.editable_paths,
             objective=objective,
         )
-

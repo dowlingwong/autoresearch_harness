@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="440" viewBox="0 0 760 440" role="img">
+<style>text{font-family:Arial,sans-serif;fill:#1b1b1b}.title{font-size:20px;font-weight:700}.label{font-size:12px}.small{font-size:10px}.axis{stroke:#333;stroke-width:1}.grid{stroke:#ddd;stroke-width:1}</style>
+<text x="80" y="34" class="title">Figure 2. Repeated-bad rate by memory mode</text>
+<line x1="80" y1="350" x2="700" y2="350" class="axis"/>
+<line x1="80" y1="70" x2="80" y2="350" class="axis"/>
+<line x1="80" y1="350.0" x2="700" y2="350.0" class="grid"/>
+<text x="42" y="354.0" class="small">0.00</text>
+<line x1="80" y1="280.0" x2="700" y2="280.0" class="grid"/>
+<text x="42" y="284.0" class="small">0.15</text>
+<line x1="80" y1="210.0" x2="700" y2="210.0" class="grid"/>
+<text x="42" y="214.0" class="small">0.30</text>
+<line x1="80" y1="140.0" x2="700" y2="140.0" class="grid"/>
+<text x="42" y="144.0" class="small">0.45</text>
+<line x1="80" y1="70.0" x2="700" y2="70.0" class="grid"/>
+<text x="42" y="74.0" class="small">0.60</text>
+<rect x="126.5" y="70.0" width="113.7" height="280.0" fill="#2f6f8f"/>
+<text x="183.3" y="372" text-anchor="middle" class="small">none</text>
+<text x="183.3" y="82.0" text-anchor="middle" class="label">0.60</text>
+<rect x="333.2" y="256.7" width="113.7" height="93.3" fill="#4b9b6f"/>
+<text x="390.0" y="372" text-anchor="middle" class="small">summary</text>
+<text x="390.0" y="248.7" text-anchor="middle" class="label">0.20</text>
+<rect x="539.8" y="350.0" width="113.7" height="0.0" fill="#c77d35"/>
+<text x="596.7" y="372" text-anchor="middle" class="small">summary+rationale</text>
+<text x="596.7" y="342.0" text-anchor="middle" class="label">0.00</text>
+</svg>

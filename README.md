@@ -80,6 +80,7 @@ autoresearch_harness/
 ├── src/autoresearch/               # Stage 2 governed framework
 │   ├── control_plane/
 │   │   ├── campaign.py             # run_dry_campaign / run_real_campaign
+│   │   ├── events.py               # typed campaign lifecycle events
 │   │   ├── decision.py             # keep / discard / failed_invalid logic
 │   │   ├── budget.py               # fixed-trial budget enforcement
 │   │   ├── lifecycle.py            # trial state machine + legacy adapter
@@ -102,9 +103,13 @@ autoresearch_harness/
 │   ├── memory/
 │   │   ├── schemas.py              # TrialRecord dataclass
 │   │   ├── append_store.py         # append-only JSONL ledger
+│   │   ├── event_store.py          # append-only campaign event stream
 │   │   ├── summarizer.py           # memory modes + context builder
 │   │   ├── similarity.py           # repeated-bad-idea detection
 │   │   └── provenance.py           # stable ID generation
+│   ├── llm/
+│   │   ├── providers.py            # provider/model resolver
+│   │   └── langchain_client.py     # optional LangChainProposalBackend
 │   ├── evaluation/
 │   │   ├── metrics.py              # all paper metrics from trial records
 │   │   ├── campaign_summary.py     # load + summarize a ledger
@@ -129,6 +134,7 @@ autoresearch_harness/
 │
 ├── experiments/
 │   ├── ledgers/                    # append-only trial JSONL files
+│   ├── events/                     # append-only lifecycle event JSONL files
 │   ├── artifacts/                  # generated packets + run logs
 │   └── summaries/
 │
@@ -185,6 +191,25 @@ python3 scripts/run_campaign.py \
     --dry-run --llm-stub
 ```
 
+### Model provider syntax
+
+Campaign scripts accept either the legacy pair:
+
+```bash
+--model qwen2.5-coder:7b --host http://localhost:11434
+```
+
+or the provider-normalized form:
+
+```bash
+--model ollama/qwen2.5-coder:7b
+```
+
+Supported prefixes are `ollama/`, `vllm/`, `lm_studio/`, `llamacpp/`,
+`openai/`, and `anthropic/`. Local providers resolve base URLs from
+`OLLAMA_BASE_URL`, `VLLM_BASE_URL`, `LMSTUDIO_BASE_URL`, or
+`LLAMACPP_BASE_URL`, with localhost defaults.
+
 ### Summarize a ledger
 
 ```bash
@@ -202,15 +227,18 @@ python3 scripts/run_memory_ablation.py \
     --execute-dry-campaigns
 ```
 
-### Real campaign quickstart
+## Real Campaign Quickstart
 
-This is the canonical real execution path. Stage 2 owns the campaign lifecycle,
-pending guard, validity checks, decision, artifact capture, and append-only
-ledger. `harness/claw-code` is called only as the current worker backend.
+This is the canonical KDD AAE real execution path. Stage 2 owns the campaign
+lifecycle, pending guard, validity checks, decision, artifact capture,
+append-only ledger, and event stream. `harness/claw-code` is called only as the
+current worker backend.
 
 Requires Ollama running at `http://localhost:11434` with the configured model.
 
 ```bash
+python3 scripts/reset_node_state.py --node resnet_trigger --campaign-id kdd_main_5trial
+
 RESNET_TRIGGER_FAST_SEARCH=1 \
 RESNET_TRIGGER_FAST_N_SIGNAL=1000 \
 RESNET_TRIGGER_FAST_N_NOISE=1000 \
@@ -221,40 +249,48 @@ RESNET_TRIGGER_FAST_SKIP_TEST=1 \
 RESNET_TRIGGER_EARLY_STOP_PATIENCE=2 \
 RESNET_TRIGGER_EARLY_STOP_MIN_DELTA=0.002 \
 RESNET_TRIGGER_DEVICE=cpu \
-python3 scripts/run_campaign.py \
+python3 scripts/run_kdd_main_campaign.py \
     --node resnet_trigger \
-    --campaign-id real_smoke \
-    --budget 1 \
+    --campaign-id kdd_main_5trial \
+    --budget 5 \
     --manager prompt_manager \
     --memory-mode append_only_summary_with_rationale \
     --node-root nodes/ResNet_trigger \
-    --packet-defaults tests/stage_1_sprint_deliverable/loop_packet.json \
-    --model qwen2.5-coder:7b \
-    --host http://localhost:11434 \
-    --allow-any-branch
+    --model ollama/qwen2.5-coder:7b
 ```
 
-Expected Stage 2 outputs:
+Expected outputs:
 
-- `experiments/ledgers/real_smoke_trials.jsonl`
-- `experiments/artifacts/trial-001/generated_packet.json`
-- `experiments/artifacts/trial-001/legacy_loop_result.json`
-- `experiments/artifacts/trial-001/parsed_metrics.json`
-- `experiments/artifacts/trial-001/run.log`, if the worker produced a log
-- `experiments/artifacts/trial-001/patch.diff`, if a diff can be captured
+- `experiments/ledgers/kdd_main_5trial_trials.jsonl`
+- `experiments/events/kdd_main_5trial_events.jsonl`
+- `experiments/artifacts/kdd_main_5trial/trial-*/`
+- `paper/tables/main_campaign_summary.csv`
+- `paper/tables/governance_metrics.csv`
 
 Recover a stale pending guard after an interrupted real run:
 
 ```bash
 python3 scripts/recover_pending.py list
-python3 scripts/recover_pending.py inspect experiments/ledgers/real_smoke_trials_pending.json
-python3 scripts/recover_pending.py fail experiments/ledgers/real_smoke_trials_pending.json \
+python3 scripts/recover_pending.py inspect experiments/ledgers/kdd_main_5trial_pending.json
+python3 scripts/recover_pending.py fail experiments/ledgers/kdd_main_5trial_pending.json \
     --node resnet_trigger \
     --manager-mode prompt_manager \
     --worker-mode claw_style_worker \
     --memory-mode append_only_summary_with_rationale \
     --message "worker interrupted during smoke run"
 ```
+
+### Optional LangChain proposal backend
+
+The native managers remain the default. To route proposal generation through
+LangChain while preserving the same control-plane ledger schema, add:
+
+```bash
+--llm-backend langchain --model ollama/qwen2.5-coder:7b
+```
+
+LangChain only proposes `ManagerProposal` objects. It cannot commit trial state,
+write ledgers, or make keep/discard decisions.
 
 ### Real memory ablation (requires Ollama)
 
@@ -266,6 +302,45 @@ python3 scripts/run_memory_ablation.py \
     --node-root nodes/ResNet_trigger \
     --packet-defaults tests/stage_1_sprint_deliverable/loop_packet.json
 ```
+
+## Reproduce KDD AAE Results
+
+1. Install the project with `uv venv && uv pip install -e ".[dev]"`.
+2. Start the local model backend, for example Ollama at `http://localhost:11434`.
+3. Reset the node before each campaign with `scripts/reset_node_state.py`.
+4. Run the main campaign with `scripts/run_kdd_main_campaign.py`.
+5. Run each memory ablation arm with `scripts/run_kdd_memory_ablation.py`.
+6. Run the stress trial with `scripts/run_kdd_stress_trial.py`.
+7. Export paper tables and figures:
+
+```bash
+python3 scripts/export_kdd_tables.py \
+    --main-campaign kdd_main_5trial \
+    --ablation-campaigns ablation_none ablation_append_only_summary \
+    ablation_append_only_summary_with_rationale \
+    --stress-campaign kdd_stress_scope \
+    --output-dir paper/tables/
+
+python3 scripts/export_kdd_figures.py --figure all
+```
+
+8. Check artifact completeness:
+
+```bash
+python3 scripts/check_kdd_artifact_completeness.py \
+    --campaigns kdd_main_5trial ablation_none ablation_append_only_summary \
+    ablation_append_only_summary_with_rationale kdd_stress_scope \
+    --output paper/tables/artifact_completeness_report.txt
+```
+
+9. Regenerate the machine-readable manifest:
+
+```bash
+python3 scripts/generate_artifact_manifest.py --output artifact_manifest.json
+```
+
+The root [`artifact_manifest.json`](artifact_manifest.json) indexes campaign
+ledgers, per-trial artifacts, paper tables, figures, and canonical run commands.
 
 ---
 
@@ -404,6 +479,27 @@ Outputs written to `paper/tables/` and `paper/figures/`:
 ## Worker backend
 
 `harness/claw-code/` is the current real worker backend. The Stage 2 `ClawWorker` calls it as a subprocess via `ClawCodeAutoresearchAdapter`, then converts the result into `WorkerResult`. The legacy loop's keep/discard recommendation is ignored as an authority; the Stage 2 control plane makes the authoritative decision from the parsed metric, edit scope, node contract, and current campaign state.
+
+---
+
+## Event stream schema
+
+Campaign scripts write append-only lifecycle events to
+`experiments/events/<campaign_id>_events.jsonl`. Each line contains:
+
+```json
+{
+  "event_id": "...",
+  "campaign_id": "kdd_main_5trial",
+  "trial_id": "kdd_main_5trial-trial-001",
+  "event_type": "decision_made",
+  "timestamp": "2026-05-09T12:00:00Z",
+  "payload": {"decision": "kept", "delta_vs_best": 0.001}
+}
+```
+
+The event stream is observability, not authority. The trial ledger remains the
+final record; the events explain how each ledger entry was produced.
 
 ---
 

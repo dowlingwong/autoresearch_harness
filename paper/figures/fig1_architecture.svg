@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="420" viewBox="0 0 880 420" role="img">
+<style>text{font-family:Arial,sans-serif;fill:#1b1b1b}.title{font-size:20px;font-weight:700}.label{font-size:12px}.small{font-size:10px}.axis{stroke:#333;stroke-width:1}.grid{stroke:#ddd;stroke-width:1}</style>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#333"/></marker></defs>
+<text x="50" y="34" class="title">Figure 1. Governed autonomous experimentation architecture</text>
+<rect x="50" y="70" width="150" height="58" rx="6" fill="#f6f7f8" stroke="#333"/>
+<text x="125" y="105" text-anchor="middle" class="label">Manager</text>
+<rect x="250" y="70" width="150" height="58" rx="6" fill="#f6f7f8" stroke="#333"/>
+<text x="325" y="105" text-anchor="middle" class="label">Control Plane</text>
+<rect x="250" y="230" width="150" height="58" rx="6" fill="#f6f7f8" stroke="#333"/>
+<text x="325" y="265" text-anchor="middle" class="label">Memory / Ledger</text>
+<rect x="480" y="70" width="150" height="58" rx="6" fill="#f6f7f8" stroke="#333"/>
+<text x="555" y="105" text-anchor="middle" class="label">Worker</text>
+<rect x="650" y="70" width="150" height="58" rx="6" fill="#f6f7f8" stroke="#333"/>
+<text x="725" y="105" text-anchor="middle" class="label">Training</text>
+<rect x="650" y="220" width="150" height="58" rx="6" fill="#f6f7f8" stroke="#333"/>
+<text x="725" y="255" text-anchor="middle" class="label">Metric Parser</text>
+<rect x="480" y="220" width="150" height="58" rx="6" fill="#f6f7f8" stroke="#333"/>
+<text x="555" y="255" text-anchor="middle" class="label">Decision</text>
+<line x1="200" y1="99" x2="250" y2="99" stroke="#333" stroke-width="2" marker-end="url(#arrow)"/>
+<line x1="400" y1="99" x2="480" y2="99" stroke="#333" stroke-width="2" marker-end="url(#arrow)"/>
+<line x1="630" y1="99" x2="650" y2="99" stroke="#333" stroke-width="2" marker-end="url(#arrow)"/>
+<line x1="725" y1="128" x2="725" y2="220" stroke="#333" stroke-width="2" marker-end="url(#arrow)"/>
+<line x1="650" y1="249" x2="630" y2="249" stroke="#333" stroke-width="2" marker-end="url(#arrow)"/>
+<line x1="480" y1="249" x2="400" y2="249" stroke="#333" stroke-width="2" marker-end="url(#arrow)"/>
+<line x1="325" y1="128" x2="325" y2="230" stroke="#333" stroke-width="2" marker-end="url(#arrow)"/>
+<line x1="250" y1="259" x2="200" y2="259" stroke="#333" stroke-width="2" marker-end="url(#arrow)"/>
+</svg>

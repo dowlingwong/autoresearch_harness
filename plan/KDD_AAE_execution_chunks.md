@@ -637,30 +637,54 @@ Expected output: completeness % per trial per campaign.
 
 ---
 
-### Chunk 5.1 — Implement LangChain Proposal Backend (Phase 1 of integration)
+### Chunk 5.1 — Provider-Normalized Model Config and LangChain Backend
 
-**Goal:** Add `LangChainProposalBackend` so the paper can claim backend-agnosticism with evidence.
+**Goal:** (Part A) Centralize LLM provider resolution so all campaign scripts accept a single `provider/model` string. (Part B) Add `LangChainProposalBackend` so the paper can claim backend-agnosticism with evidence.
 
-**Why:** Without this, the backend-agnosticism claim is a design claim only. With it, you can run one real campaign and verify the JSONL schema is identical.
+**Why:** Campaign scripts and `LangGraphManager` are currently tied to separate `--model` and `--host` arguments. A provider resolver removes that duplication, enables reproducible run commands, and is the prerequisite for a clean LangChain integration. Without the LangChain backend, the backend-agnosticism claim is a design claim only.
 
-**Steps:**
-1. Create `src/autoresearch/llm/langchain_client.py`.
-2. Implement `LangChainProposalBackend` with interface:
+**Part A — Provider resolver**
+
+1. Create `src/autoresearch/llm/` package (`__init__.py` + `providers.py`).
+2. Implement `resolve_llm_config(model_id: str) -> LLMConfig` in `providers.py`:
+   ```python
+   @dataclass(frozen=True)
+   class LLMConfig:
+       model_name: str   # provider-stripped name passed to the LLM client
+       base_url: str     # resolved from env var or sensible default
+       api_key: str      # resolved from env var or empty string for local
+
+   # Supported prefixes and their env-var defaults:
+   # ollama/     → OLLAMA_BASE_URL     (default: http://localhost:11434)
+   # vllm/       → VLLM_BASE_URL       (default: http://localhost:8000)
+   # lm_studio/  → LMSTUDIO_BASE_URL   (default: http://localhost:1234/v1)
+   # llamacpp/   → LLAMACPP_BASE_URL   (default: http://localhost:8080)
+   # openai/     → OPENAI_API_KEY
+   # anthropic/  → ANTHROPIC_API_KEY
+   # No prefix   → pass through unchanged (backward compat)
+   ```
+3. Update `src/autoresearch/manager/langgraph_manager.py` to call `resolve_llm_config()` instead of accepting raw `model`/`host` kwargs.
+4. Update `run_kdd_main_campaign.py` and `run_kdd_memory_ablation.py` to accept `--model ollama/qwen2.5-coder:7b` (new format) while keeping bare `--model qwen2.5-coder:7b` + `--host` working as a fallback.
+5. Add unit tests in `tests/test_provider_resolver.py` covering each prefix and the no-prefix fallback.
+
+**Part B — LangChain backend**
+
+6. Create `src/autoresearch/llm/langchain_client.py`.
+7. Implement `LangChainProposalBackend`:
    ```python
    class LangChainProposalBackend:
-       def __init__(self, model: str, host: str): ...
+       def __init__(self, model_id: str): ...  # uses resolve_llm_config()
        def propose(self, campaign_state: CampaignState) -> Proposal: ...
    ```
-3. Use `ChatOllama` from `langchain-ollama` for local endpoint.
-4. Use structured output (Pydantic `ExperimentProposal` model) for the proposal.
-5. Save raw prompt/response as artifact refs.
-6. Add `--llm-backend langchain` flag to campaign runner.
-7. Run one real 1-trial campaign with LangChain backend.
-8. Verify JSONL ledger schema is identical to native backend.
+8. Use `ChatOllama` from `langchain-ollama` for local endpoints; use `ChatAnthropic` or `ChatOpenAI` for cloud providers. Select by resolved prefix.
+9. Use structured output (Pydantic `ExperimentProposal` model) for the proposal.
+10. Save raw prompt/response as artifact refs in `extra`.
+11. Add `--llm-backend langchain` flag to campaign runner.
+12. Run one real 1-trial campaign with LangChain backend; verify JSONL ledger schema is identical to the native backend.
 
-**Acceptance criterion:** One ledger entry generated with `--llm-backend langchain`; schema diff against native backend is empty.
+**Acceptance criterion:** (A) `resolve_llm_config("ollama/qwen2.5-coder:7b")` returns correct `base_url`; unit tests pass for all prefixes; existing campaign scripts work unchanged. (B) One ledger entry generated with `--llm-backend langchain`; schema diff against native backend is empty.
 
-**Effort:** 4–6 hours.
+**Effort:** 6–8 hours total (Part A: 3h, Part B: 3–5h).
 
 **Dependencies:** Chunk 1.1 (deps installed).
 
@@ -715,6 +739,81 @@ touch paper/kdd_aae_2026/sections/{introduction,related_work,system,experiments,
 
 ---
 
+### Chunk 5.4 — Persisted Campaign Event Stream
+
+**Goal:** Emit a typed lifecycle event at every state transition in the campaign loop and persist them as an append-only JSONL file alongside the trial ledger.
+
+**Why** (from ml-intern analysis): Böckeler (2026) treats observability as a first-class harness primitive. The JSONL trial ledger is the authoritative final record, but it does not expose the lifecycle path that produced it — the sequence of memory build, proposal, worker call, scope check, metric parse, and decision. An event stream provides that path. It also fixes the current silent campaign loop: right now there is no structured way to monitor a running campaign, write tests against the execution sequence, or export a timeline for the paper.
+
+**Steps:**
+
+1. Create `src/autoresearch/control_plane/events.py`:
+   ```python
+   @dataclass(frozen=True)
+   class CampaignEvent:
+       event_id: str          # uuid4 short hex
+       campaign_id: str
+       trial_id: str | None   # None for campaign-level events
+       event_type: str
+       timestamp: str         # ISO-8601 UTC
+       payload: dict[str, Any]
+
+       def to_dict(self) -> dict[str, Any]: ...
+   ```
+
+2. Create `src/autoresearch/memory/event_store.py` — mirrors `TrialAppendStore` but for events:
+   ```python
+   class CampaignEventStore:
+       def __init__(self, path: Path): ...
+       def append(self, event: CampaignEvent) -> None: ...  # always append, never overwrite
+       def read_all(self) -> list[CampaignEvent]: ...
+   ```
+   Output path: `experiments/events/{campaign_id}_events.jsonl`
+
+3. Add an `emit()` helper to `events.py` that accepts an optional store; if no store is passed it is a no-op (keeps dry-run and test paths clean without needing to wire up a real store).
+
+4. Wire `emit()` calls into `run_real_campaign()` in `campaign.py` at these points:
+
+   | Event type | When |
+   |---|---|
+   | `campaign_started` | Before the budget loop; payload: `{budget, manager_mode, memory_mode, node_id}` |
+   | `trial_started` | Top of each loop iteration; payload: `{trial_id, budget_index}` |
+   | `memory_context_built` | After `build_memory_context()`; payload: `{mode, compressed_chars, repeated_bad_count}` |
+   | `proposal_created` | After `propose_next_trial()`; payload: `{summary, manager_mode}` |
+   | `pending_guard_acquired` | After `_acquire_pending()`; payload: `{guard_path}` |
+   | `worker_started` | Before `worker.run_trial()`; payload: `{worker_mode}` |
+   | `worker_finished` | After worker returns; payload: `{success, elapsed_seconds}` |
+   | `scope_validated` | After `validate_edit_scope()`; payload: `{valid, changed_files}` |
+   | `metric_parsed` | After metric extraction; payload: `{metric_name, value}` (null if missing) |
+   | `decision_made` | After `decide_trial()`; payload: `{decision, delta_vs_best, failure_category}` |
+   | `trial_record_appended` | After `store.append_many()`; payload: `{trial_id, repeated_bad_count}` |
+   | `pending_guard_released` | After `_release_pending()`; payload: `{}` |
+   | `campaign_completed` | After loop exits; payload: `{records_written, elapsed_seconds}` |
+
+5. Pass the event store into `run_real_campaign()` as an optional argument (`event_store: CampaignEventStore | None = None`) so callers can opt in without breaking existing call sites.
+
+6. Update campaign scripts (`run_kdd_main_campaign.py`, `run_kdd_stress_trial.py`, `run_kdd_memory_ablation.py`) to instantiate and pass a `CampaignEventStore`.
+
+7. Add `tests/test_event_stream.py`:
+   - One test drives a 2-trial dry-run with an in-memory event collector (no file I/O) and asserts the event sequence is deterministic: `campaign_started → trial_started → … → trial_record_appended → pending_guard_released → trial_started → … → campaign_completed`.
+   - One test verifies the stress trial (`kdd_stress`) produces a `decision_made` event with `decision=failed_invalid` and `failure_category=invalid_edit_scope`.
+   - Verify `CampaignEventStore` is append-only: reading after two appends returns both events in order.
+
+**Note:** The `wall_clock_seconds=1.0` hardcoded bug in `_record_from_worker_result()` was fixed separately (measured elapsed time now computed from `timestamp_start`/`timestamp_end`). The `worker_finished` event should likewise report real elapsed seconds, computed the same way.
+
+**Acceptance criterion:**
+- Running `run_kdd_main_campaign.py` produces `experiments/events/kdd_main_5trial_events.jsonl` with one line per event, valid JSON throughout.
+- Every event has `campaign_id`, `trial_id` (or null), `event_type`, and `timestamp`.
+- The event sequence for a valid kept trial contains all 12 event types above in order.
+- A `failed_invalid` trial's `decision_made` payload includes `failure_category`.
+- Existing tests still pass (event store is opt-in; no existing call sites break).
+
+**Effort:** 4–5 hours.
+
+**Dependencies:** Chunk 1.1. Recommended after 2.2 (real campaign) so you can validate the event output against a known-good ledger.
+
+---
+
 ## Appendix: Chunk Dependency Graph
 
 ```
@@ -745,9 +844,10 @@ Phase 4 (Writing):
   4.5 → 4.6 (abstract + intro)
 
 Phase 5 (Hygiene):
-  1.1 → 5.1 (langchain backend)
+  1.1 → 5.1 (provider resolver + langchain backend)
   2.2 → 5.2 (docs)
   3.1 + 3.2 → 5.3 (latex structure)
+  1.1 + 2.2 → 5.4 (persisted event stream)
 ```
 
 ---
@@ -762,25 +862,26 @@ Update this table as chunks complete:
 | 1.2 | reset_node_state.py | ✅ done |
 | 1.3 | No-op patch guard | ✅ done |
 | 1.4 | Seed logging | ✅ done |
-| 1.5 | Pending-trial recovery | ⬜ pending |
-| 2.1 | Ablation smoke test | ⬜ pending |
-| 2.2 | 5-trial main campaign | ⬜ pending |
-| 2.3 | Stress trial | ⬜ pending |
-| 2.4 | Full memory ablation | ⬜ pending |
+| 1.5 | Pending-trial recovery | ✅ done |
+| 2.1 | Ablation smoke test | ✅ done |
+| 2.2 | 5-trial main campaign | ✅ done (dry-run; real run needs Ollama) |
+| 2.3 | Stress trial | ✅ done |
+| 2.4 | Full memory ablation | ✅ done (dry-run ledgers; real run needs Ollama) |
 | 2.5 | Manager comparison | ⬜ optional |
-| 3.1 | Export tables | ⬜ pending |
-| 3.2 | Generate figures | ⬜ pending |
-| 3.3 | Artifact completeness check | ⬜ pending |
-| 3.4 | Artifact manifest | ⬜ pending |
-| 4.1 | Write Related Work | ⬜ pending |
-| 4.2 | Write System Design | ⬜ pending |
-| 4.3 | Write Experiments | ⬜ pending |
-| 4.4 | Write Results | ⬜ pending |
-| 4.5 | Write Discussion + Limitations | ⬜ pending |
+| 3.1 | Export tables | ✅ done |
+| 3.2 | Generate figures | ✅ done |
+| 3.3 | Artifact completeness check | ✅ done |
+| 3.4 | Artifact manifest | ✅ done |
+| 4.1 | Write Related Work | ✅ done |
+| 4.2 | Write System Design | ✅ done |
+| 4.3 | Write Experiments | ✅ done |
+| 4.4 | Write Results | ✅ done |
+| 4.5 | Write Discussion + Limitations | ✅ done |
 | 4.6 | Rewrite Abstract + Intro | ⬜ pending |
-| 5.1 | LangChain backend | ⬜ pending |
-| 5.2 | Update README + docs | ⬜ pending |
+| 5.1 | Provider resolver + LangChain backend | ✅ done |
+| 5.2 | Update README + docs | ✅ done |
 | 5.3 | LaTeX structure | ⬜ pending |
+| 5.4 | Persisted campaign event stream | ✅ done |
 
 **Minimum for Level 2 (acceptable workshop paper):** Chunks 1.1–1.3, 2.1–2.4, 3.1–3.2, 4.1–4.6.
-**Target for Level 3 (strong workshop paper):** All of the above + 2.5, 3.3–3.4, 5.1–5.3.
+**Target for Level 3 (strong workshop paper):** All of the above + 2.5, 3.3–3.4, 5.1–5.4.

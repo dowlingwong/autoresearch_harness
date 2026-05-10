@@ -13,6 +13,9 @@ if str(SRC) not in sys.path:
 
 from autoresearch.control_plane.campaign import run_dry_campaign, run_real_campaign
 from autoresearch.evaluation.campaign_summary import load_campaign_summary
+from autoresearch.llm.langchain_client import LangChainProposalBackend
+from autoresearch.llm.providers import resolve_worker_model_args
+from autoresearch.memory.event_store import CampaignEventStore
 from autoresearch.nodes.registry import load_registered_node
 from autoresearch.reporting.export_tables import export_campaign_tables
 
@@ -56,6 +59,14 @@ Optionally supply a packet-defaults file to override timeout/log_path/syntax_che
     parser.add_argument("--model", default="qwen2.5-coder:7b")
     parser.add_argument("--host", default="http://localhost:11434")
     parser.add_argument(
+        "--llm-backend",
+        default="native",
+        choices=("native", "langchain"),
+        help="Proposal backend. native uses --manager; langchain uses LangChainProposalBackend.",
+    )
+    parser.add_argument("--events", help="Path to campaign event-stream JSONL")
+    parser.add_argument("--no-events", action="store_true", help="Disable campaign event stream")
+    parser.add_argument(
         "--allow-any-branch",
         action="store_true",
         help="Allow the legacy worker backend to run outside an autoresearch/<tag> branch. Use only for local smoke tests.",
@@ -74,12 +85,15 @@ Optionally supply a packet-defaults file to override timeout/log_path/syntax_che
         else ROOT / "experiments" / "ledgers" / f"{args.campaign_id}_trials.jsonl"
     )
     records_path.parent.mkdir(parents=True, exist_ok=True)
+    event_store = None if args.no_events else CampaignEventStore(
+        Path(args.events) if args.events else _default_events_path(records_path, args.campaign_id)
+    )
 
-    # Resolve the optional stub LLM for langgraph_manager smoke tests
+    # Resolve the optional stub LLM for LangGraph/LangChain smoke tests.
     manager_llm = None
     if args.llm_stub:
-        if args.manager != "langgraph_manager":
-            parser.error("--llm-stub is only applicable when --manager langgraph_manager")
+        if args.manager != "langgraph_manager" and args.llm_backend != "langchain":
+            parser.error("--llm-stub requires --manager langgraph_manager or --llm-backend langchain")
         from langchain_core.language_models import FakeListChatModel
         import json as _json
         _stub_response = _json.dumps({
@@ -92,6 +106,14 @@ Optionally supply a packet-defaults file to override timeout/log_path/syntax_che
         })
         manager_llm = FakeListChatModel(responses=[_stub_response] * max(args.budget, 1))
 
+    proposal_backend = None
+    if args.llm_backend == "langchain":
+        proposal_backend = LangChainProposalBackend(
+            args.model,
+            artifacts_dir=Path(args.artifacts_dir) / args.campaign_id,
+            llm=manager_llm,
+        )
+
     if args.dry_run:
         result = run_dry_campaign(
             node_spec=node_spec,
@@ -101,12 +123,15 @@ Optionally supply a packet-defaults file to override timeout/log_path/syntax_che
             memory_mode=args.memory_mode,
             records_path=records_path,
             manager_llm=manager_llm,
+            proposal_backend=proposal_backend,
+            event_store=event_store,
         )
     else:
         if not args.node_root:
             parser.error("--node-root is required for real (non-dry-run) campaigns")
 
         from autoresearch.worker.claw_worker import ClawWorker
+        worker_model, worker_host = resolve_worker_model_args(args.model, args.host)
 
         if args.packet_defaults:
             worker = ClawWorker.from_packet_defaults_file(
@@ -114,8 +139,8 @@ Optionally supply a packet-defaults file to override timeout/log_path/syntax_che
                 node_root=args.node_root,
                 packet_defaults_path=args.packet_defaults,
                 artifacts_dir=args.artifacts_dir,
-                model=args.model,
-                host=args.host,
+                model=worker_model,
+                host=worker_host,
                 allow_any_branch=args.allow_any_branch,
             )
         else:
@@ -123,8 +148,8 @@ Optionally supply a packet-defaults file to override timeout/log_path/syntax_che
                 repo_root=ROOT,
                 node_root=args.node_root,
                 artifacts_dir=args.artifacts_dir,
-                model=args.model,
-                host=args.host,
+                model=worker_model,
+                host=worker_host,
                 allow_any_branch=args.allow_any_branch,
             )
 
@@ -137,6 +162,8 @@ Optionally supply a packet-defaults file to override timeout/log_path/syntax_che
             records_path=records_path,
             worker=worker,
             manager_llm=manager_llm,
+            proposal_backend=proposal_backend,
+            event_store=event_store,
         )
 
     summary = load_campaign_summary(records_path)
@@ -147,12 +174,18 @@ Optionally supply a packet-defaults file to override timeout/log_path/syntax_che
                 "campaign": result.to_dict(),
                 "metrics": summary.metrics.to_dict(),
                 "tables": {key: str(path) for key, path in table_outputs.items()},
+                "events": None if event_store is None else str(event_store.path),
             },
             indent=2,
             sort_keys=True,
         )
     )
     return 0
+
+
+def _default_events_path(records_path: Path, campaign_id: str) -> Path:
+    root = records_path.parent.parent if records_path.parent.name == "ledgers" else records_path.parent
+    return root / "events" / f"{campaign_id}_events.jsonl"
 
 
 if __name__ == "__main__":

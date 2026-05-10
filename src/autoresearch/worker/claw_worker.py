@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import re
 import shutil
 import subprocess
 from importlib import import_module
@@ -142,9 +144,12 @@ class ClawWorker:
         artifact_dir = self.artifacts_dir / trial_id
         artifact_dir.mkdir(parents=True, exist_ok=True)
         pre_trial_diff = _git_diff_text(self.node_root)
+        node_state_hash = _hash_editable_state(self.node_root, node_spec.editable_paths)
+        training_seed = _extract_training_seed(self.node_root / "train.py")
 
         # Generate packet driven by the Stage 2 manager proposal
         packet = _packet_from_proposal(proposal, node_spec, budget_index, self.packet_defaults)
+        fast_config_hash = _hash_training_config(packet)
         generated_packet_path = artifact_dir / "generated_packet.json"
         generated_packet_path.write_text(json.dumps(packet, indent=2))
 
@@ -167,6 +172,11 @@ class ClawWorker:
             fallback_command=str(packet["train_command"]),
             fallback_log_path=str(packet["log_path"]),
             pre_trial_diff=pre_trial_diff,
+            reproducibility={
+                "node_state_hash": node_state_hash,
+                "fast_config_hash": fast_config_hash,
+                "training_seed": training_seed,
+            },
         )
 
     def run_trial_with_packet_path(
@@ -210,6 +220,7 @@ def _extract_worker_result(
     fallback_command: str | None = None,
     fallback_log_path: str | None = None,
     pre_trial_diff: str = "",
+    reproducibility: dict[str, str | None] | None = None,
 ) -> WorkerResult:
     """Parse a raw loop_autoresearch() return dict into a typed WorkerResult."""
     artifact_path = Path(artifact_dir).resolve() if artifact_dir is not None else None
@@ -228,6 +239,7 @@ def _extract_worker_result(
     experiment = run_payload.get("experiment", {}) if isinstance(run_payload, dict) else {}
     if not isinstance(experiment, dict):
         experiment = {}
+    no_op_patch = bool(run_payload.get("no_op_patch") or run_payload.get("error") == "no_op_patch")
 
     val_bpb = experiment.get("val_bpb")
     metrics: dict[str, float] = {}
@@ -270,16 +282,21 @@ def _extract_worker_result(
         "legacy_worker_stop_reason": str(last_result.get("stop_reason", "")) if isinstance(last_result, dict) else "",
         "stage2_fallback_run": fallback_run,
     }
+    if no_op_patch:
+        extra["failure_category"] = "no_op_patch"
+        extra["training_skipped"] = True
+    extra.update({k: v for k, v in (reproducibility or {}).items() if v is not None})
 
     return WorkerResult(
         worker_mode=ClawWorker.mode,
         changed_files=changed_files,
-        success=bool(experiment.get("success", False)),
+        success=True if no_op_patch else bool(experiment.get("success", False)),
         parsed_metrics=metrics,
         raw_log_ref=raw_log_artifact or raw_log_ref,
-        patch_ref=patch_diff_ref or packet_ref,
+        patch_ref=patch_diff_ref if no_op_patch else (patch_diff_ref or packet_ref),
         git_commit_before=str(run_payload.get("base_commit", "")) if isinstance(run_payload, dict) else "",
         git_commit_after=str(run_payload.get("commit", "")) if isinstance(run_payload, dict) else "",
+        failure_message=str(run_payload.get("error", "")) if no_op_patch else None,
         extra=extra,
     )
 
@@ -370,6 +387,38 @@ def _git_diff_text(node_root: str | Path | None) -> str:
         check=False,
     )
     return run.stdout if run.returncode == 0 else ""
+
+
+def _hash_editable_state(node_root: str | Path, editable_paths: tuple[str, ...]) -> str:
+    root = Path(node_root)
+    digest = hashlib.sha256()
+    for rel_path in sorted(editable_paths):
+        path = root / rel_path
+        digest.update(rel_path.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes() if path.exists() else b"")
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _hash_training_config(packet: dict[str, Any]) -> str:
+    relevant = {
+        "train_command": packet.get("train_command", ""),
+        "timeout_seconds": packet.get("timeout_seconds", ""),
+        "log_path": packet.get("log_path", ""),
+        "results_tsv": packet.get("results_tsv", ""),
+        "syntax_check_command": packet.get("syntax_check_command", ""),
+    }
+    payload = json.dumps(relevant, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _extract_training_seed(train_path: Path) -> str | None:
+    if not train_path.exists():
+        return None
+    text = train_path.read_text(encoding="utf-8", errors="replace")
+    match = re.search(r"(?m)^\s*SEED\s*=\s*([0-9]+)\s*$", text)
+    return match.group(1) if match else None
 
 
 def _normalize_changed_file(path: str, node_root: str | Path | None) -> str:

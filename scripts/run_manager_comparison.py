@@ -132,6 +132,21 @@ def main() -> int:
         print(f"{'='*60}")
 
         try:
+            manager_llm = None
+            if args.llm_stub and manager_mode == "langgraph_manager":
+                from langchain_core.language_models import FakeListChatModel  # noqa: PLC0415
+                import json as _json  # noqa: PLC0415
+
+                _stub_response = _json.dumps({
+                    "summary": "stub-proposal",
+                    "rationale": "LLM stub for smoke testing",
+                    "objective": (
+                        f"In train.py, make one small bounded change to improve {args.node}. "
+                        "Edit only train.py. Do not run the experiment."
+                    ),
+                })
+                manager_llm = FakeListChatModel(responses=[_stub_response] * max(args.budget, 1))
+
             if args.dry_run:
                 result = run_dry_campaign(
                     node_spec=node_spec,
@@ -140,7 +155,7 @@ def main() -> int:
                     manager_mode=manager_mode,
                     memory_mode=args.memory_mode,
                     records_path=records_path,
-                    llm_stub=args.llm_stub,
+                    manager_llm=manager_llm,
                 )
                 print(f"  [dry-run] {result.records_written} records written")
             else:
@@ -153,8 +168,9 @@ def main() -> int:
                     packet_defaults = json.loads(Path(args.packet_defaults).read_text())
 
                 worker = ClawWorker(
+                    repo_root=ROOT,
                     node_root=Path(args.node_root),
-                    artifact_dir=Path(args.artifacts_dir),
+                    artifacts_dir=Path(args.artifacts_dir) / campaign_id,
                     model=args.model,
                     host=args.host,
                     allow_any_branch=args.allow_any_branch,
@@ -168,7 +184,7 @@ def main() -> int:
                     memory_mode=args.memory_mode,
                     records_path=records_path,
                     worker=worker,
-                    llm_stub=args.llm_stub,
+                    manager_llm=manager_llm,
                 )
                 print(f"  [real] campaign complete → {records_path}")
 
@@ -196,6 +212,7 @@ def main() -> int:
                     "net_gain": m.net_gain,
                     "gain_per_trial": m.gain_per_trial,
                     "complete_provenance_rate": m.complete_provenance_rate,
+                    "artifact_capture_completeness": m.artifact_capture_completeness,
                     "total_wall_clock_seconds": m.total_wall_clock_seconds,
                 })
                 print(

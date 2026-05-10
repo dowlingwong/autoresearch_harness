@@ -7,7 +7,9 @@ This document describes the current Stage 2 framework structure, the technology 
 Stage 2 adds a paper-facing governed framework around the existing worker
 backend in `harness/claw-code`.
 
-The current system has two supported campaign paths:
+The current system has two supported campaign paths. The Stage 2 real campaign
+path is canonical for new work; the dry-run path is for deterministic contract
+testing and paper artifact smoke tests.
 
 1. **Stage 2 dry-run full loop**
    - deterministic
@@ -24,6 +26,7 @@ The current system has two supported campaign paths:
    - can create experiment commits and run the ResNet training command
    - returns a structured `WorkerResult`
    - lets the Stage 2 control plane own final validity and keep/discard decisions
+   - persists typed lifecycle events in `experiments/events/`
 
 The legacy harness is no longer described as a separate real execution control
 plane. It is the current real worker backend behind the Stage 2 control plane.
@@ -51,6 +54,7 @@ Stage 2 framework:
 - LangGraph / LangChain Core for the optional `langgraph_manager`
 - LangChain Ollama for real local LLM manager calls
 - append-only JSONL trial ledgers
+- append-only JSONL campaign event streams
 - CSV exports for paper tables and figure data
 - JSON-compatible node/campaign/manager/worker configs
 
@@ -77,6 +81,7 @@ autoresearch_harness/
     trial_schema.md
   experiments/
     artifacts/
+    events/
     ledgers/
     runs/
     summaries/
@@ -123,7 +128,7 @@ The structure separates the research system into explicit layers:
 - `src/autoresearch/memory/`: append-only records and memory summaries
 - `src/autoresearch/evaluation/`: deterministic metrics and ablation summaries
 - `src/autoresearch/reporting/`: paper table and figure CSV export
-- `experiments/`: generated campaign ledgers and artifacts
+- `experiments/`: generated campaign ledgers, event streams, and artifacts
 - `paper/`: generated paper-ready tables, figures, and notes
 
 This is good for the KDD AAE framing because the core contribution is visible: the governed control plane and audit/evaluation layer, not a coding-agent wrapper.
@@ -160,11 +165,22 @@ Stage 2 adds:
 - campaign/governance table exports
 - paper figure CSV exports
 - documentation and paper-note scaffolding
+- provider-normalized model ids such as `ollama/qwen2.5-coder:7b`
+- optional LangChain proposal backend
+- append-only campaign event streams
 
-The remaining Stage 3 gap is empirical, not structural: real campaigns should be
-run through the Stage 2 path at enough budget to produce paper evidence. The
-real worker still uses `harness/claw-code` internally, but Stage 2 now owns the
-campaign lifecycle and record.
+## Historical Stage 1 Path
+
+Stage 1 proved that the ResNet-trigger worker loop could produce an improving
+bounded edit. It is retained as historical evidence and a source of worker
+backend code, but it is no longer the documented campaign controller. New
+experiments should use the Stage 2 scripts, ledgers, event streams, and KDD
+export commands.
+
+The remaining gap is empirical scale, not campaign plumbing: real campaigns
+should be run through the Stage 2 path at enough budget to produce paper
+evidence. The real worker still uses `harness/claw-code` internally, but Stage 2
+now owns the campaign lifecycle, record, and event stream.
 
 ## Full-Loop Tests
 
