@@ -129,9 +129,24 @@ def reset_node(
     for rel_path in spec.editable_paths:
         _git_checkout(rel_path, node_root, dry_run, baseline_ref)
 
-    # 2. (Optional) wipe campaign ledger + artifacts so the ablation starts fresh.
+    # 2. Always wipe legacy node-local state so every campaign starts from a
+    #    clean baseline.  These files are recreated automatically on first use
+    #    by the legacy autoresearch_worker loop:
+    #      .autoresearch_state.json  — stores best_bpb / best_commit / pending
+    #      results.tsv               — per-trial results table
+    #      experiment_memory.jsonl   — legacy memory event log
+    #
+    #    If these are NOT cleared, the legacy ensure_autoresearch_baseline()
+    #    sees an existing best_bpb and skips baseline re-establishment, causing
+    #    every ablation arm to inherit the previous arm's best state and produce
+    #    identical results.
+    print("\nStep 2 — clear legacy node-local state:")
+    for legacy_file in (".autoresearch_state.json", "results.tsv", "experiment_memory.jsonl"):
+        _remove_file(node_root / legacy_file, f"legacy {legacy_file}", dry_run)
+
+    # 3. (Optional) wipe campaign ledger + artifacts so the ablation starts fresh.
     if campaign_id:
-        print("\nStep 2 — remove campaign data:")
+        print("\nStep 3 — remove campaign data:")
         ledger = LEDGERS_DIR / f"{campaign_id}_trials.jsonl"
         _remove_file(ledger, "ledger", dry_run)
 

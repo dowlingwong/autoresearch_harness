@@ -240,6 +240,10 @@ def _extract_worker_result(
     if not isinstance(experiment, dict):
         experiment = {}
     no_op_patch = bool(run_payload.get("no_op_patch") or run_payload.get("error") == "no_op_patch")
+    # Pre-captured diff: written by the legacy loop BEFORE discard restores train.py.
+    candidate_patch_diff = (
+        str(item.get("candidate_patch_diff", "")).strip() if isinstance(item, dict) else ""
+    )
 
     val_bpb = experiment.get("val_bpb")
     metrics: dict[str, float] = {}
@@ -271,7 +275,15 @@ def _extract_worker_result(
     raw_log_ref = str(experiment.get("log_path", "") or fallback_log_path or "") if isinstance(experiment, dict) else ""
     raw_log_artifact = _capture_raw_log(raw_log_ref, artifact_path, node_root)
     parsed_metrics_ref = _write_parsed_metrics(metrics, artifact_path)
-    patch_diff_ref = _write_patch_diff(run_payload, artifact_path, node_root, changed_files)
+    patch_diff_ref = _write_patch_diff(
+        run_payload, artifact_path, node_root, changed_files, candidate_patch_diff
+    )
+    # A real captured diff overrides a legacy no_op_patch claim.  The legacy
+    # side marks no_op when train_hash_before == train_hash_after, but the
+    # timing of that check can be wrong when AUTORESEARCH_NO_LEGACY_COMMITS=1;
+    # the patch file is ground truth.
+    if patch_diff_ref and no_op_patch:
+        no_op_patch = False
     extra = {
         "generated_packet_ref": packet_ref,
         "patch_diff_ref": patch_diff_ref,
@@ -293,7 +305,10 @@ def _extract_worker_result(
         success=True if no_op_patch else bool(experiment.get("success", False)),
         parsed_metrics=metrics,
         raw_log_ref=raw_log_artifact or raw_log_ref,
-        patch_ref=patch_diff_ref if no_op_patch else (patch_diff_ref or packet_ref),
+        # Use the diff file path (or empty string) — never fall back to the
+        # generated_packet.json path, which is not a diff and would fool
+        # _patch_is_empty() into classifying every undiffable trial as no_op_patch.
+        patch_ref=patch_diff_ref,
         git_commit_before=str(run_payload.get("base_commit", "")) if isinstance(run_payload, dict) else "",
         git_commit_after=str(run_payload.get("commit", "")) if isinstance(run_payload, dict) else "",
         failure_message=str(run_payload.get("error", "")) if no_op_patch else None,
@@ -327,7 +342,16 @@ def _write_patch_diff(
     artifact_dir: Path | None,
     node_root: str | Path | None,
     changed_files: tuple[str, ...] = (),
+    candidate_patch_diff: str = "",
 ) -> str:
+    """Compute and write patch.diff, trying git commands then the pre-captured fallback.
+
+    ``candidate_patch_diff`` is the raw diff text captured by the legacy loop
+    BEFORE ``discard_autoresearch_candidate`` restores train.py.  It is the
+    most reliable source when AUTORESEARCH_NO_LEGACY_COMMITS=1 (Stage 2
+    default), because the working-tree changes are reverted before this function
+    runs.  Git-range commands are attempted first for the real-commit path.
+    """
     if artifact_dir is None or node_root is None:
         return ""
     before = str(run_payload.get("base_commit", "")).strip()
@@ -352,6 +376,15 @@ def _write_patch_diff(
             target = artifact_dir / "patch.diff"
             target.write_text(run.stdout, encoding="utf-8")
             return str(target)
+
+    # Final fallback: pre-captured diff from the legacy loop (written before
+    # discard_autoresearch_candidate restored train.py).  This is the primary
+    # path for Stage 2 campaigns using AUTORESEARCH_NO_LEGACY_COMMITS=1.
+    if candidate_patch_diff.strip():
+        target = artifact_dir / "patch.diff"
+        target.write_text(candidate_patch_diff, encoding="utf-8")
+        return str(target)
+
     return ""
 
 
