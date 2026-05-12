@@ -79,12 +79,41 @@ experiments/**
 !experiments/
 !experiments/artifacts/
 !experiments/ledgers/
+!experiments/events/
 !experiments/runs/
 !experiments/summaries/
 !experiments/artifacts/.gitkeep
 !experiments/ledgers/.gitkeep
+!experiments/events/.gitkeep
 !experiments/runs/.gitkeep
 !experiments/summaries/.gitkeep
+
+# Node-local runtime state and generated training artifacts
+nodes/**/.autoresearch_state.json
+nodes/**/experiment_memory.jsonl
+nodes/**/results.tsv
+nodes/**/run.log
+nodes/**/artifacts/
+nodes/**/*.pt
+nodes/**/*.pth
+nodes/**/*.ckpt
+
+# Large local datasets should be fetched/generated, not committed.
+nodes/**/*.h5
+nodes/**/*.hdf5
+
+# Paper build byproducts; final source and intentional tables/figures stay tracked.
+paper/**/*.aux
+paper/**/*.bbl
+paper/**/*.bcf
+paper/**/*.blg
+paper/**/*.fdb_latexmk
+paper/**/*.fls
+paper/**/*.log
+paper/**/*.out
+paper/**/*.run.xml
+paper/**/*.synctex.gz
+paper/**/*.toc
 
 # PyBuilder
 .pybuilder/
