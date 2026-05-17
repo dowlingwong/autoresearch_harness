@@ -62,7 +62,7 @@ EPS = 1e-6
 BATCH_SIZE = 32
 EPOCHS = 5
 LEARNING_RATE = 5e-4
-WEIGHT_DECAY = 5e-5
+WEIGHT_DECAY = 7e-5
 
 STAGE_LAYERS = [1, 1, 1]
 KERNEL_SIZE = 5
@@ -70,7 +70,7 @@ DROPOUT = 0.02
 
 
 DEVICE = resolve_device()
-GRAD_CLIP_NORM = 0.5
+GRAD_CLIP_NORM = 0.25
 MPS_MAX_LEARNING_RATE = 5e-4
 MPS_ADAM_EPS = 1e-4
 LOGIT_CLAMP = 30.0
@@ -218,7 +218,9 @@ def eval_loader(
             losses.append(float(loss.item()))
             ys.append(yb.detach().cpu().numpy().ravel())
             probs.append(torch.sigmoid(logits_for_loss).detach().cpu().numpy().ravel())
-    y_true = np.concatenate(ys)
+    # Cast to int so sklearn >=1.7 type_of_target classifies this as "binary"
+    # rather than "continuous" (float32 {0.0,1.0} arrays trigger the latter).
+    y_true = np.concatenate(ys).astype(np.int32)
     y_prob = np.concatenate(probs)
     return float(np.mean(losses)), y_true, y_prob
 
