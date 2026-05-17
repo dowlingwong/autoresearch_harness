@@ -21,6 +21,21 @@ AIDE (Jiang et al. 2025) is the closest related academic system. Both AIDE and `
 
 AIDE optimises the ML metric; we govern the experimentation process. These are complementary goals. An AIDE-style tree-search manager could be plugged into this harness, but it still should not directly commit trial state.
 
+## Reproducibility and Auditing Pipelines
+
+SHARP (Siegel et al. 2025) is the most relevant system on human-agent collaboration for scientific reproducibility. SHARP uses an agent to reproduce prior ML experiments by re-executing documented procedures, compare outputs against original claims, and surface discrepancies. It is stronger on external validation and full pipeline reproducibility for published work.
+
+This work is complementary but differently positioned. SHARP reproduces existing experiments; `autoresearch_harness` governs autonomous generation of new ones. SHARP's contribution is a reproducibility-checking pipeline; this paper's contribution is a governance and evaluation protocol for the agent loop that runs while experiments are being created. SHARP does not define trial lifecycle states, append-only audit ledgers, scope enforcement, failure taxonomies, or memory ablation protocols. The main gap relative to SHARP is not concept design but clean empirical evidence under a governed protocol.
+
+| Dimension | SHARP | `autoresearch_harness` |
+|---|---|---|
+| Primary goal | Reproduce and verify prior published experiments | Govern and audit autonomous generation of new experiments |
+| Control plane | Agent executes a documented procedure | Governed state machine owns trial lifecycle |
+| Decision authority | Human reviewer inspects agent output | Control plane decides keep/discard/failed-invalid deterministically |
+| Audit trail | Execution log of reproduction attempt | Append-only JSONL ledger with provenance IDs per trial |
+| Failure handling | Discrepancy reported to human | First-class `failed_invalid` records with failure categories |
+| Scope enforcement | Procedure document bounds the agent | NodeSpec editable-path whitelist enforced before patch is applied |
+
 Other open-source agent systems also inform the design. `ml-intern` motivates event traces, local-model support, headless operation, and optional interactive handoff. `multiautoresearch` and deep-research-style systems motivate multi-track project organisation and accumulated learnings. Hermes-style systems motivate durable routines and trajectory compression. These systems are useful implementation references, but they do not define an evaluation protocol for governed autonomous experimentation.
 
 Mind2Web (Deng et al. 2023) represents a different evaluation philosophy: broad benchmark-driven evaluation across many web domains. Unlike benchmark-driven evaluation across many domains, we prioritise a single real task node with complete provenance. This trades breadth for inspectability: every proposal, patch, run log, parsed metric, and keep/discard decision can be audited.

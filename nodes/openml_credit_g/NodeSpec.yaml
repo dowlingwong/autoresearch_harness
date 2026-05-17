@@ -1,0 +1,14 @@
+name: openml_credit_g
+dataset:
+  source: openml
+  dataset_id: 31
+  dataset_name: credit-g
+  target: class
+editable_scope:
+  allowed_files:
+    - config.yaml
+  frozen_files:
+    - train.py
+    - benchmark.py
+    - README.md
+metric: val_auc

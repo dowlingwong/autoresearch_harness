@@ -57,9 +57,16 @@ from autoresearch.control_plane.events import emit
 from autoresearch.control_plane.permissions import validate_edit_scope
 from autoresearch.manager.base import ManagerProposal, ManagerStatus
 from autoresearch.manager.baseline_manager import BaselineManager
+from autoresearch.manager.hyperparam_edits import (
+    build_effective_config,
+    constants_after_edit,
+    parse_train_constants,
+    values_equal,
+)
 from autoresearch.manager.prompt_manager import PromptManager
 from autoresearch.memory.append_store import TrialAppendStore
 from autoresearch.memory.provenance import build_trial_provenance
+from autoresearch.memory.research_context import load_node_research_context_ref
 from autoresearch.memory.schemas import ExecutionStatus, FailureCategory, TrialDecision, TrialRecord, ValidityStatus
 from autoresearch.memory.similarity import compute_repeated_bad_stats
 from autoresearch.memory.summarizer import MemoryMode, build_memory_context
@@ -97,11 +104,20 @@ def _pending_guard_path(records_path: Path) -> Path:
 def _acquire_pending(records_path: Path, *, campaign_id: str, trial_id: str, budget_index: int) -> Path:
     guard = _pending_guard_path(records_path)
     if guard.exists():
-        existing = json.loads(guard.read_text())
-        raise PendingTrialError(
-            f"Campaign already has a pending trial: {existing.get('trial_id')}. "
-            "Use scripts/recover_pending.py to inspect, fail, or clear it: " + str(guard)
-        )
+        raw = guard.read_text(encoding="utf-8").strip()
+        if not raw:
+            # Empty guard left by a previous release that could only truncate
+            # (e.g. read-only filesystem mount). Treat as absent.
+            pass
+        else:
+            try:
+                existing = json.loads(raw)
+            except json.JSONDecodeError:
+                existing = {"trial_id": "unknown (corrupt guard)"}
+            raise PendingTrialError(
+                f"Campaign already has a pending trial: {existing.get('trial_id')}. "
+                "Use scripts/recover_pending.py to inspect, fail, or clear it: " + str(guard)
+            )
     guard.write_text(
         json.dumps(
             {
@@ -121,12 +137,25 @@ def _acquire_pending(records_path: Path, *, campaign_id: str, trial_id: str, bud
 
 
 def _release_pending(guard: Path) -> None:
-    if guard.exists():
+    if not guard.exists():
+        return
+    try:
         guard.unlink()
+    except (PermissionError, OSError):
+        # Fallback for read-only or restricted filesystem mounts: truncate to
+        # empty so _acquire_pending treats it as absent on the next campaign.
+        try:
+            guard.write_text("", encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass  # best-effort; stale guards can be resolved with recover_pending.py
 
 
 def _iso_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[3]
 
 
 def _worker_node_root(worker: Worker) -> Path | None:
@@ -135,6 +164,36 @@ def _worker_node_root(worker: Worker) -> Path | None:
         if value:
             return Path(value).resolve()
     return None
+
+
+def _manager_status(
+    *,
+    campaign_id: str,
+    budget_index: int,
+    current_best: float | None,
+    node_spec: NodeSpec,
+    worker: Worker | None = None,
+) -> ManagerStatus:
+    constants: dict[str, str] = {}
+    effective_config: dict[str, str] = {}
+    root = _worker_node_root(worker) if worker is not None else None
+    if root is not None:
+        for rel_path in node_spec.editable_paths:
+            constants.update(parse_train_constants(_editable_path(root, rel_path)))
+        editable_symbols = tuple(getattr(node_spec, "editable_symbols", ()) or ())
+        if editable_symbols:
+            allowed = set(editable_symbols)
+            constants = {key: value for key, value in constants.items() if key in allowed}
+        effective_config = build_effective_config(constants)
+    return ManagerStatus(
+        campaign_id=campaign_id,
+        budget_index=budget_index,
+        current_best_metric=current_best,
+        metric_name=node_spec.metric_name,
+        metric_direction=node_spec.metric_direction,
+        current_constants=constants,
+        effective_config=effective_config,
+    )
 
 
 def _editable_path(root: Path, path_str: str) -> Path:
@@ -164,6 +223,124 @@ def _restore_editable_state(snapshot: _EditableStateSnapshot | None) -> None:
             continue
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
+
+
+def _precondition_failure_result(
+    proposal: ManagerProposal,
+    node_spec: NodeSpec,
+    worker: Worker,
+) -> WorkerResult | None:
+    """Reject structured no-op/impossible edits before calling the worker."""
+    edit = proposal.extra.get("structured_edit")
+    if not isinstance(edit, dict):
+        if proposal.extra.get("proposal_precondition_failed"):
+            return _structured_failure_result(
+                worker,
+                category=FailureCategory.PROPOSAL_PRECONDITION_FAILED,
+                message="proposal selector could not find a non-no-op structured edit",
+                proposal=proposal,
+            )
+        return None
+    if edit.get("type") not in {"python_constant", "config_value"}:
+        return None
+    path = str(edit.get("path") or "")
+    symbol = str(edit.get("symbol") or "")
+    old_value = str(edit.get("old") or "")
+    new_value = str(edit.get("new") or "")
+    if path not in node_spec.editable_paths:
+        return _structured_failure_result(
+            worker,
+            category=FailureCategory.PROPOSAL_PRECONDITION_FAILED,
+            message=f"structured edit path is not editable: {path}",
+            proposal=proposal,
+        )
+    if not symbol or not old_value or not new_value:
+        return _structured_failure_result(
+            worker,
+            category=FailureCategory.PROPOSAL_PRECONDITION_FAILED,
+            message="structured edit is missing symbol, old, or new value",
+            proposal=proposal,
+        )
+    if values_equal(old_value, new_value):
+        return _structured_failure_result(
+            worker,
+            category=FailureCategory.PROPOSAL_PRECONDITION_FAILED,
+            message=f"structured edit is a no-op: {symbol} already equals {new_value}",
+            proposal=proposal,
+        )
+    editable_symbols = tuple(getattr(node_spec, "editable_symbols", ()) or ())
+    if editable_symbols and symbol not in set(editable_symbols):
+        return _structured_failure_result(
+            worker,
+            category=FailureCategory.PROPOSAL_PRECONDITION_FAILED,
+            message=f"structured edit symbol is not editable: {symbol}",
+            proposal=proposal,
+        )
+    root = _worker_node_root(worker)
+    if root is None:
+        return None
+    edit_path = root / path
+    constants = parse_train_constants(edit_path)
+    current = constants.get(symbol)
+    if current is None:
+        return _structured_failure_result(
+            worker,
+            category=FailureCategory.PROPOSAL_PRECONDITION_FAILED,
+            message=f"symbol is not present in {path}: {symbol}",
+            proposal=proposal,
+        )
+    if not values_equal(current, old_value):
+        return _structured_failure_result(
+            worker,
+            category=FailureCategory.PROPOSAL_PRECONDITION_FAILED,
+            message=f"structured edit precondition failed for {symbol}: expected {old_value}, found {current}",
+            proposal=proposal,
+            extra={"actual_value": current},
+        )
+    effective_key = str(edit.get("effective_key") or "")
+    if effective_key:
+        before = build_effective_config(constants).get(effective_key, "")
+        after = build_effective_config(
+            constants_after_edit(constants, symbol=symbol, new_value=new_value)
+        ).get(effective_key, "")
+        if values_equal(before, after):
+            return _structured_failure_result(
+                worker,
+                category=FailureCategory.EFFECTIVE_CONFIG_UNCHANGED,
+                message=f"structured edit does not change effective training config: {effective_key}={before}",
+                proposal=proposal,
+                extra={"effective_key": effective_key, "effective_before": before, "effective_after": after},
+            )
+    return None
+
+
+def _structured_failure_result(
+    worker: Worker,
+    *,
+    category: FailureCategory,
+    message: str,
+    proposal: ManagerProposal,
+    extra: dict[str, object] | None = None,
+) -> WorkerResult:
+    payload = {
+        "failure_category": category.value,
+        "structured_edit": proposal.extra.get("structured_edit", {}),
+        "worker_skipped": True,
+    }
+    if extra:
+        payload.update(extra)
+    return WorkerResult(
+        worker_mode=f"{getattr(worker, 'mode', 'unknown_worker')}_precheck",
+        changed_files=(),
+        success=False,
+        parsed_metrics={},
+        raw_log_ref="",
+        patch_ref="",
+        git_commit_before="",
+        git_commit_after="",
+        failure_message=message,
+        extra=payload,
+    )
 
 
 def list_pending_guards(search_root: str | Path) -> list[Path]:
@@ -257,8 +434,10 @@ def run_real_campaign(
     records_path: str | Path,
     worker: Worker,
     manager_llm: object | None = None,
+    manager_temperature: float | None = None,
     proposal_backend: object | None = None,
     event_store: object | None = None,
+    rationale_max_tokens: int | None = None,
 ) -> CampaignRunResult:
     """Run a fixed-budget campaign with a real worker.
 
@@ -272,7 +451,7 @@ def run_real_campaign(
     records_path = Path(records_path)
     records_path.parent.mkdir(parents=True, exist_ok=True)
 
-    manager = proposal_backend or _manager(manager_mode, llm=manager_llm)
+    manager = proposal_backend or _manager(manager_mode, llm=manager_llm, temperature=manager_temperature)
     store = TrialAppendStore(records_path)
     existing_records = store.read_all()
     budget_state = BudgetState(total_trials=budget, consumed_trials=len(existing_records))
@@ -304,7 +483,8 @@ def run_real_campaign(
         )
 
         memory_context = build_memory_context(
-            existing_records + records, MemoryMode(memory_mode), node_spec, budget_index
+            existing_records + records, MemoryMode(memory_mode), node_spec, budget_index,
+            rationale_max_tokens=rationale_max_tokens,
         )
         emit(
             event_store,
@@ -317,16 +497,19 @@ def run_real_campaign(
                 "repeated_bad_count": memory_context.repeated_bad_stats.repeated_bad_count,
             },
         )
-        status = ManagerStatus(
+        status = _manager_status(
             campaign_id=campaign_id,
             budget_index=budget_index,
-            current_best_metric=current_best,
-            metric_name=node_spec.metric_name,
-            metric_direction=node_spec.metric_direction,
+            current_best=current_best,
+            node_spec=node_spec,
+            worker=worker,
         )
-        proposal = _proposal_with_worker_memory(
-            manager.propose_next_trial(status, memory_context, node_spec),
-            memory_context=memory_context,
+        proposal = _proposal_with_campaign_metadata(
+            _proposal_with_worker_memory(
+                manager.propose_next_trial(status, memory_context, node_spec),
+                memory_context=memory_context,
+            ),
+            node_spec=node_spec,
         )
         emit(
             event_store,
@@ -359,20 +542,25 @@ def run_real_campaign(
             payload={"worker_mode": getattr(worker, "mode", "unknown_worker")},
         )
         editable_snapshot = _snapshot_editable_state(worker, node_spec)
-        try:
-            worker_result = worker.run_trial(proposal, node_spec, budget_index)
-        except Exception as exc:
-            worker_result = WorkerResult(
-                worker_mode=getattr(worker, "mode", "unknown_worker"),
-                changed_files=(),
-                success=False,
-                parsed_metrics={},
-                raw_log_ref="",
-                patch_ref="",
-                git_commit_before="",
-                git_commit_after="",
-                failure_message=str(exc),
-            )
+        precondition_result = _precondition_failure_result(proposal, node_spec, worker)
+        if precondition_result is not None:
+            worker_result = precondition_result
+        else:
+            try:
+                worker_result = worker.run_trial(proposal, node_spec, budget_index)
+            except Exception as exc:
+                worker_result = WorkerResult(
+                    worker_mode=getattr(worker, "mode", "unknown_worker"),
+                    changed_files=(),
+                    success=False,
+                    parsed_metrics={},
+                    raw_log_ref="",
+                    patch_ref="",
+                    git_commit_before="",
+                    git_commit_after="",
+                    failure_message=str(exc),
+                    extra={"failure_category": FailureCategory.EDIT_FAILED.value},
+                )
         ts_end = _iso_now()
         emit(
             event_store,
@@ -488,11 +676,12 @@ def run_dry_campaign(
     memory_mode: str,
     records_path: str | Path,
     manager_llm: object | None = None,
+    manager_temperature: float | None = None,
     dry_run_profile: str = "monotonic",
     proposal_backend: object | None = None,
     event_store: object | None = None,
 ) -> CampaignRunResult:
-    manager = proposal_backend or _manager(manager_mode, llm=manager_llm)
+    manager = proposal_backend or _manager(manager_mode, llm=manager_llm, temperature=manager_temperature)
     worker = DryRunWorker(profile=dry_run_profile)
     store = TrialAppendStore(records_path)
     existing_records = store.read_all()
@@ -535,16 +724,19 @@ def run_dry_campaign(
                 "repeated_bad_count": memory_context.repeated_bad_stats.repeated_bad_count,
             },
         )
-        status = ManagerStatus(
+        status = _manager_status(
             campaign_id=campaign_id,
             budget_index=budget_index,
-            current_best_metric=current_best,
-            metric_name=node_spec.metric_name,
-            metric_direction=node_spec.metric_direction,
+            current_best=current_best,
+            node_spec=node_spec,
+            worker=None,
         )
-        proposal = _proposal_with_worker_memory(
-            manager.propose_next_trial(status, memory_context, node_spec),
-            memory_context=memory_context,
+        proposal = _proposal_with_campaign_metadata(
+            _proposal_with_worker_memory(
+                manager.propose_next_trial(status, memory_context, node_spec),
+                memory_context=memory_context,
+            ),
+            node_spec=node_spec,
         )
         emit(
             event_store,
@@ -695,24 +887,45 @@ def _record_from_worker_result(
     scope = validate_edit_scope(worker_result.changed_files, node_spec)
     metric = worker_result.parsed_metrics.get(node_spec.metric_name)
     worker_failure_category = str(worker_result.extra.get("failure_category", "")).strip()
+    worker_failure = None
+    if worker_failure_category:
+        try:
+            worker_failure = FailureCategory(worker_failure_category)
+        except ValueError:
+            worker_failure = None
 
     # Detect no-op patches: worker succeeded but produced no real diff.
     # This must be checked before the validity decision so it is recorded as
     # failed_invalid / no_op_patch rather than silently treated as a valid trial.
     no_op = (
-        worker_failure_category == FailureCategory.NO_OP_PATCH.value
+        worker_failure == FailureCategory.NO_OP_PATCH
         or (worker_result.success and _patch_is_empty(worker_result.patch_ref))
+    )
+    effective_config_unchanged = (
+        worker_failure == FailureCategory.EFFECTIVE_CONFIG_UNCHANGED
+        or worker_result.extra.get("effective_config_changed") is False
     )
 
     validity = (
         ValidityStatus.VALID
-        if worker_result.success and scope.valid and metric is not None and not no_op
+        if (
+            worker_result.success
+            and scope.valid
+            and metric is not None
+            and not no_op
+            and not effective_config_unchanged
+            and worker_failure is None
+        )
         else ValidityStatus.INVALID
     )
     if no_op:
         failure = FailureCategory.NO_OP_PATCH
+    elif effective_config_unchanged:
+        failure = FailureCategory.EFFECTIVE_CONFIG_UNCHANGED
     elif not scope.valid:
         failure = FailureCategory.INVALID_EDIT_SCOPE
+    elif worker_failure is not None:
+        failure = worker_failure
     elif not worker_result.success:
         failure = FailureCategory.RUNTIME_ERROR
     elif metric is None:
@@ -772,14 +985,17 @@ def _record_from_worker_result(
     )
 
 
-def _manager(manager_mode: str, llm: object | None = None):
+def _manager(manager_mode: str, llm: object | None = None, temperature: float | None = None):
     if manager_mode == "baseline_manager":
         return BaselineManager()
     if manager_mode == "prompt_manager":
         return PromptManager()
     if manager_mode == "langgraph_manager":
         from autoresearch.manager.langgraph_manager import LangGraphManager
-        return LangGraphManager(llm=llm)
+        kwargs: dict = {"llm": llm}
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        return LangGraphManager(**kwargs)
     raise ValueError(f"unknown manager mode: {manager_mode}")
 
 
@@ -789,6 +1005,15 @@ def _proposal_with_worker_memory(proposal: ManagerProposal, *, memory_context) -
     extra.setdefault("worker_memory_mode", memory_context.mode.value)
     extra.setdefault("worker_memory_context_text", memory_context.context_text)
     extra.setdefault("worker_repeated_bad_stats", memory_context.repeated_bad_stats.to_dict())
+    return replace(proposal, extra=extra)
+
+
+def _proposal_with_campaign_metadata(proposal: ManagerProposal, *, node_spec: NodeSpec) -> ManagerProposal:
+    """Attach optional reproducibility metadata that is independent of the worker."""
+    extra = dict(proposal.extra)
+    ref = load_node_research_context_ref(node_spec=node_spec, repo_root=_repo_root())
+    if ref is not None:
+        extra.setdefault("research_context", ref.to_dict())
     return replace(proposal, extra=extra)
 
 

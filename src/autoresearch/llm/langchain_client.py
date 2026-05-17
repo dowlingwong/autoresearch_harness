@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from hashlib import sha256
@@ -149,13 +150,13 @@ def _build_chat_model(config: LLMConfig, temperature: float) -> Any:
             temperature=temperature,
         )
 
-    if config.provider in {"vllm", "lm_studio", "llamacpp", "openai"}:
+    if config.provider in {"vllm", "lm_studio", "llamacpp", "openai", "deepseek"}:
         try:
             from langchain_openai import ChatOpenAI
         except ImportError as exc:
             raise ImportError(
                 "langchain-openai is required for OpenAI-compatible providers "
-                "(vllm, lm_studio, llamacpp, openai)"
+                "(vllm, lm_studio, llamacpp, openai, deepseek)"
             ) from exc
         kwargs: dict[str, Any] = {
             "model": config.model_name,
@@ -164,6 +165,17 @@ def _build_chat_model(config: LLMConfig, temperature: float) -> Any:
         }
         if config.api_key:
             kwargs["api_key"] = config.api_key
+        if config.provider == "deepseek":
+            thinking = os.environ.get("DEEPSEEK_THINKING", "").strip().lower()
+            if thinking:
+                if thinking not in {"enabled", "disabled"}:
+                    raise ValueError("DEEPSEEK_THINKING must be 'enabled' or 'disabled'")
+                kwargs["extra_body"] = {"thinking": {"type": thinking}}
+            reasoning_effort = os.environ.get("DEEPSEEK_REASONING_EFFORT", "").strip().lower()
+            if reasoning_effort:
+                if reasoning_effort not in {"high", "max"}:
+                    raise ValueError("DEEPSEEK_REASONING_EFFORT must be 'high' or 'max'")
+                kwargs["reasoning_effort"] = reasoning_effort
         return ChatOpenAI(**kwargs)
 
     if config.provider == "anthropic":

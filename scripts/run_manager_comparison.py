@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import subprocess
 import sys
 from pathlib import Path
 
@@ -92,9 +93,27 @@ def main() -> int:
         help="Directory for trial artefacts",
     )
     parser.add_argument("--packet-defaults", help="Optional JSON packet-defaults file")
-    parser.add_argument("--model", default="qwen2.5-coder:7b")
+    parser.add_argument(
+        "--model",
+        default="qwen2.5-coder:7b",
+        help="Default local worker model and fallback manager model.",
+    )
     parser.add_argument("--host", default="http://localhost:11434")
+    parser.add_argument(
+        "--manager-model",
+        default=None,
+        help="Optional model for langgraph_manager, e.g. deepseek/deepseek-v4-flash.",
+    )
+    parser.add_argument("--manager-host", default=None, help="Optional host/base URL for langgraph_manager.")
+    parser.add_argument("--temperature", type=float, default=0.7)
+    parser.add_argument("--worker-model", default=None, help="Optional ClawWorker model override.")
+    parser.add_argument("--worker-host", default=None, help="Optional ClawWorker host override.")
     parser.add_argument("--allow-any-branch", action="store_true")
+    parser.add_argument(
+        "--no-reset",
+        action="store_true",
+        help="Do not reset node/campaign state before each real manager arm.",
+    )
     parser.add_argument("--llm-stub", action="store_true", help="Inject a stub LLM for LangGraph manager")
     parser.add_argument(
         "--records-dir",
@@ -162,6 +181,9 @@ def main() -> int:
                 # Build the real ClawWorker.
                 from autoresearch.worker.claw_worker import ClawWorker  # noqa: PLC0415
 
+                if not args.no_reset:
+                    _reset_arm(args.node, args.node_root, campaign_id)
+
                 packet_defaults = None
                 if args.packet_defaults:
                     import json  # noqa: PLC0415
@@ -171,11 +193,21 @@ def main() -> int:
                     repo_root=ROOT,
                     node_root=Path(args.node_root),
                     artifacts_dir=Path(args.artifacts_dir) / campaign_id,
-                    model=args.model,
-                    host=args.host,
+                    model=args.worker_model or args.model,
+                    host=args.worker_host or args.host,
                     allow_any_branch=args.allow_any_branch,
                     packet_defaults=packet_defaults or {},
                 )
+                proposal_backend = None
+                if manager_mode == "langgraph_manager":
+                    from autoresearch.manager.langgraph_manager import LangGraphManager  # noqa: PLC0415
+
+                    proposal_backend = LangGraphManager(
+                        llm=manager_llm,
+                        model=args.manager_model or args.model,
+                        host=args.manager_host or args.host,
+                        temperature=args.temperature,
+                    )
                 run_real_campaign(
                     node_spec=node_spec,
                     campaign_id=campaign_id,
@@ -185,6 +217,8 @@ def main() -> int:
                     records_path=records_path,
                     worker=worker,
                     manager_llm=manager_llm,
+                    proposal_backend=proposal_backend,
+                    manager_temperature=args.temperature,
                 )
                 print(f"  [real] campaign complete → {records_path}")
 
@@ -233,12 +267,26 @@ def main() -> int:
                 if k not in all_keys:
                     all_keys.append(k)
         with out_path.open("w", newline="", encoding="utf-8") as fh:
-            writer = csv.DictWriter(fh, fieldnames=all_keys, extrasaction="ignore")
+            writer = csv.DictWriter(fh, fieldnames=all_keys, extrasaction="ignore", lineterminator="\n")
             writer.writeheader()
             writer.writerows(results)
         print(f"\nComparison summary written to: {out_path}")
 
     return 0
+
+
+def _reset_arm(node: str, node_root: str | None, campaign_id: str) -> None:
+    command = [
+        sys.executable,
+        str(ROOT / "scripts" / "reset_node_state.py"),
+        "--node",
+        node,
+        "--campaign-id",
+        campaign_id,
+    ]
+    if node_root:
+        command.extend(["--node-root", node_root])
+    subprocess.run(command, cwd=ROOT, check=True)
 
 
 if __name__ == "__main__":

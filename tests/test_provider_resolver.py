@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 
 from autoresearch.llm.langchain_client import LangChainProposalBackend
+from autoresearch.llm.langchain_client import _build_chat_model
+from autoresearch.llm.providers import LLMConfig
 from autoresearch.llm.providers import resolve_llm_config, resolve_worker_model_args
 from autoresearch.manager.base import ManagerStatus
 from autoresearch.memory.summarizer import MemoryMode, build_memory_context
@@ -33,8 +35,38 @@ def test_resolve_local_provider_defaults(monkeypatch) -> None:
 def test_resolve_cloud_provider_keys(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
     assert resolve_llm_config("openai/gpt-4.1").api_key == "openai-key"
     assert resolve_llm_config("anthropic/claude-sonnet").api_key == "anthropic-key"
+    deepseek = resolve_llm_config("deepseek/deepseek-v4-flash")
+    assert deepseek.provider == "deepseek"
+    assert deepseek.model_name == "deepseek-v4-flash"
+    assert deepseek.base_url == "https://api.deepseek.com"
+    assert deepseek.api_key == "deepseek-key"
+
+
+def test_resolve_deepseek_base_url_override(monkeypatch) -> None:
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://deepseek.example/v1")
+    cfg = resolve_llm_config("deepseek/deepseek-v4-pro")
+    assert cfg.provider == "deepseek"
+    assert cfg.base_url == "https://deepseek.example/v1"
+
+
+def test_build_deepseek_rejects_invalid_thinking_env(monkeypatch) -> None:
+    monkeypatch.setenv("DEEPSEEK_THINKING", "maybe")
+    cfg = LLMConfig(
+        provider="deepseek",
+        model_name="deepseek-v4-flash",
+        base_url="https://api.deepseek.com",
+        api_key="test-key",
+        model_id="deepseek/deepseek-v4-flash",
+    )
+    try:
+        _build_chat_model(cfg, temperature=0.2)
+    except ValueError as exc:
+        assert "DEEPSEEK_THINKING" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected invalid DEEPSEEK_THINKING to raise")
 
 
 def test_no_prefix_preserves_legacy_model_and_host() -> None:

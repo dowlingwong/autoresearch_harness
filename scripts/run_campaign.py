@@ -58,6 +58,16 @@ Optionally supply a packet-defaults file to override timeout/log_path/syntax_che
                              "override node-spec defaults. objective and description are always from the proposal.")
     parser.add_argument("--model", default="qwen2.5-coder:7b")
     parser.add_argument("--host", default="http://localhost:11434")
+    parser.add_argument("--temperature", type=float, default=0.7)
+    parser.add_argument(
+        "--worker-model",
+        default=None,
+        help=(
+            "Worker model id for ClawWorker. Defaults to --model for local providers, "
+            "or qwen2.5-coder:7b when --model is a cloud manager provider."
+        ),
+    )
+    parser.add_argument("--worker-host", default=None, help="Worker Ollama-compatible host URL.")
     parser.add_argument(
         "--llm-backend",
         default="native",
@@ -97,12 +107,15 @@ Optionally supply a packet-defaults file to override timeout/log_path/syntax_che
         from langchain_core.language_models import FakeListChatModel
         import json as _json
         _stub_response = _json.dumps({
-            "summary": "stub-proposal",
-            "rationale": "LLM stub for smoke testing",
+            "summary": "reduce-dropout-stub",
+            "rationale": "LLM stub for smoke testing — exercises deterministic patch bridge",
             "objective": (
-                f"In train.py, make one small bounded change to improve {args.node}. "
-                "Edit only train.py. Do not run the experiment."
+                "In train.py, change DROPOUT from 0.02 to 0.01. "
+                "Edit only train.py. Make no other changes."
             ),
+            "param": "DROPOUT",
+            "old_value": "0.02",
+            "new_value": "0.01",
         })
         manager_llm = FakeListChatModel(responses=[_stub_response] * max(args.budget, 1))
 
@@ -112,6 +125,15 @@ Optionally supply a packet-defaults file to override timeout/log_path/syntax_che
             args.model,
             artifacts_dir=Path(args.artifacts_dir) / args.campaign_id,
             llm=manager_llm,
+        )
+    elif args.manager == "langgraph_manager":
+        from autoresearch.manager.langgraph_manager import LangGraphManager
+
+        proposal_backend = LangGraphManager(
+            llm=manager_llm,
+            model=args.model,
+            host=args.host,
+            temperature=args.temperature,
         )
 
     if args.dry_run:
@@ -131,7 +153,9 @@ Optionally supply a packet-defaults file to override timeout/log_path/syntax_che
             parser.error("--node-root is required for real (non-dry-run) campaigns")
 
         from autoresearch.worker.claw_worker import ClawWorker
-        worker_model, worker_host = resolve_worker_model_args(args.model, args.host)
+        worker_model_id = args.worker_model or _default_worker_model(args.model)
+        worker_host_arg = args.worker_host or args.host
+        worker_model, worker_host = resolve_worker_model_args(worker_model_id, worker_host_arg)
 
         if args.packet_defaults:
             worker = ClawWorker.from_packet_defaults_file(
@@ -164,9 +188,14 @@ Optionally supply a packet-defaults file to override timeout/log_path/syntax_che
             manager_llm=manager_llm,
             proposal_backend=proposal_backend,
             event_store=event_store,
+            manager_temperature=args.temperature,
         )
 
-    summary = load_campaign_summary(records_path)
+    summary = load_campaign_summary(
+        records_path,
+        metric_name=node_spec.metric_name,
+        metric_direction=node_spec.metric_direction,
+    )
     table_outputs = export_campaign_tables(summary, args.tables_dir)
     print(
         json.dumps(
@@ -186,6 +215,12 @@ Optionally supply a packet-defaults file to override timeout/log_path/syntax_che
 def _default_events_path(records_path: Path, campaign_id: str) -> Path:
     root = records_path.parent.parent if records_path.parent.name == "ledgers" else records_path.parent
     return root / "events" / f"{campaign_id}_events.jsonl"
+
+
+def _default_worker_model(manager_model: str) -> str:
+    if manager_model.startswith(("openai/", "anthropic/", "deepseek/")):
+        return "qwen2.5-coder:7b"
+    return manager_model
 
 
 if __name__ == "__main__":

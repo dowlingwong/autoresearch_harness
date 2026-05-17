@@ -136,19 +136,30 @@ class LocalWorker:
             _log.info("%s: no Change directive found; running without edit", trial_label)
         else:
             param, old_val, new_val = parsed_change
-            target_file = self._locate_target_file(param, proposal, node_spec)
-            if target_file is None:
-                edit_error = f"parameter '{param}' not found in any target file"
+            editable_symbols = tuple(getattr(node_spec, "editable_symbols", ()) or ())
+            if editable_symbols:
+                symbol_lookup = {symbol.lower(): symbol for symbol in editable_symbols}
+                canonical_param = symbol_lookup.get(param.lower())
+            else:
+                canonical_param = param
+            if editable_symbols and canonical_param is None:
+                edit_error = f"parameter '{param}' is not in editable_symbols"
                 _log.warning("%s: %s", trial_label, edit_error)
             else:
-                edit_result = _apply_edit(target_file, param, old_val, new_val)
-                if isinstance(edit_result, str):
-                    edit_error = edit_result
-                    _log.warning("%s: edit failed: %s", trial_label, edit_error)
+                param = canonical_param or param
+                target_file = self._locate_target_file(param, proposal, node_spec)
+                if target_file is None:
+                    edit_error = f"parameter '{param}' not found in any target file"
+                    _log.warning("%s: %s", trial_label, edit_error)
                 else:
-                    edit = edit_result
-                    changed_files = (str(target_file.relative_to(self._node_root)),)
-                    git_after = f"local-after-{budget_index:03d}"
+                    edit_result = _apply_edit(target_file, param, old_val, new_val)
+                    if isinstance(edit_result, str):
+                        edit_error = edit_result
+                        _log.warning("%s: edit failed: %s", trial_label, edit_error)
+                    else:
+                        edit = edit_result
+                        changed_files = (str(target_file.relative_to(self._node_root)),)
+                        git_after = f"local-after-{budget_index:03d}"
 
         if edit_error:
             return WorkerResult(
@@ -173,7 +184,7 @@ class LocalWorker:
 
         # --- run experiment ---
         t0 = time.monotonic()
-        log_path, run_success, failure_msg, parsed_metrics = self._run_command(
+        log_path, run_success, failure_msg, parsed_metrics, failure_category = self._run_command(
             node_spec, artifact_dir, trial_label
         )
         elapsed = time.monotonic() - t0
@@ -199,7 +210,10 @@ class LocalWorker:
             git_commit_before=git_before,
             git_commit_after=git_after,
             failure_message=failure_msg if not run_success else None,
-            extra={"node_root": str(self._node_root)},
+            extra={
+                "node_root": str(self._node_root),
+                **({"failure_category": failure_category} if failure_category else {}),
+            },
         )
 
     # ------------------------------------------------------------------
@@ -227,7 +241,7 @@ class LocalWorker:
             if not abs_path.exists():
                 continue
             source = abs_path.read_text(encoding="utf-8", errors="replace")
-            if _assignment_pattern(param).search(source):
+            if _assignment_pattern(param).search(source) or _config_key_pattern(param).search(source):
                 return abs_path
         return None
 
@@ -236,7 +250,7 @@ class LocalWorker:
         node_spec: NodeSpec,
         artifact_dir: Path,
         trial_label: str,
-    ) -> tuple[Optional[Path], bool, Optional[str], dict[str, float]]:
+    ) -> tuple[Optional[Path], bool, Optional[str], dict[str, float], Optional[str]]:
         """Run the node's run_command and capture output.
 
         Returns:
@@ -259,15 +273,16 @@ class LocalWorker:
             success = result.returncode == 0
             failure_msg = f"exit code {result.returncode}" if not success else None
             metrics = _parse_metrics_from_log(combined)
-            return log_path, success, failure_msg, metrics
+            failure_category = _parse_failure_category_from_log(combined)
+            return log_path, success, failure_msg, metrics, failure_category
         except subprocess.TimeoutExpired as exc:
             msg = f"run_command timed out after {self._timeout}s"
             log_path.write_text(str(exc), encoding="utf-8")
-            return log_path, False, msg, {}
+            return log_path, False, msg, {}, None
         except Exception as exc:  # noqa: BLE001
             msg = f"run_command raised {type(exc).__name__}: {exc}"
             log_path.write_text(msg, encoding="utf-8")
-            return log_path, False, msg, {}
+            return log_path, False, msg, {}, None
 
 
 # ---------------------------------------------------------------------------
@@ -282,13 +297,25 @@ def _parse_change_directive(objective: str) -> Optional[tuple[str, str, str]]:
     match = _CHANGE_RE.search(objective)
     if match is None:
         return None
-    return match.group(1), match.group(2), match.group(3)
+    # Strip trailing sentence punctuation so "to 1e-4." → "1e-4" (mirrors
+    # the rstrip in langgraph_manager._extract_structured_edit line 152-153).
+    old_val = match.group(2).rstrip(".,;:")
+    new_val = match.group(3).rstrip(".,;:")
+    return match.group(1), old_val, new_val
 
 
 def _assignment_pattern(param: str) -> re.Pattern[str]:
     """Return a regex matching a bare top-level assignment for *param*."""
     return re.compile(
         r"^(" + re.escape(param) + r"\s*=\s*)(.+?)(\s*)$",
+        re.MULTILINE,
+    )
+
+
+def _config_key_pattern(param: str) -> re.Pattern[str]:
+    """Return a regex matching a top-level YAML ``key: value`` setting."""
+    return re.compile(
+        r"^(" + re.escape(param) + r"\s*:\s*)(.*?)(\s*)$",
         re.MULTILINE,
     )
 
@@ -305,10 +332,11 @@ def _apply_edit(
     failure.
     """
     source = file_path.read_text(encoding="utf-8")
-    pattern = _assignment_pattern(param)
+    pattern = _config_key_pattern(param) if file_path.suffix.lower() in {".yaml", ".yml"} else _assignment_pattern(param)
     match = pattern.search(source)
     if match is None:
-        return f"assignment '{param} = ...' not found in {file_path.name}"
+        assignment = f"{param}: ..." if file_path.suffix.lower() in {".yaml", ".yml"} else f"{param} = ..."
+        return f"assignment '{assignment}' not found in {file_path.name}"
 
     # Verify the existing value loosely (strip whitespace/quotes).
     current_raw = match.group(2).strip()
@@ -341,27 +369,36 @@ def _restore_file(edit: _AppliedEdit) -> None:
 def _values_loosely_equal(a: str, b: str) -> bool:
     """Compare two value strings loosely (strip surrounding quotes/spaces)."""
     def norm(s: str) -> str:
-        return s.strip().strip("\"'")
+        value = s.strip().strip("\"'")
+        if value.lower() in {"none", "null", "~"}:
+            return "null"
+        return value
     return norm(a) == norm(b)
 
 
 def _parse_metrics_from_log(text: str) -> dict[str, float]:
     """Extract key: value metric lines from combined run output.
 
-    Handles the ResNet-trigger log format (``val_bpb: 0.22``) and converts
-    ``val_bpb`` → ``val_auc = 1 - val_bpb`` automatically.
+    Handles both ``key: value`` and ``KEY=value`` lines, including the
+    OpenML node ``VAL_AUC=...`` format. It also converts ``val_bpb`` to
+    ``val_auc = 1 - val_bpb`` for the ResNet-trigger logs.
     """
     metrics: dict[str, float] = {}
     for match in re.finditer(
-        r"^([A-Za-z_][A-Za-z0-9_]*):\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)$",
+        r"^([A-Za-z_][A-Za-z0-9_]*)(?::\s+|=)([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)$",
         text,
         flags=re.MULTILINE,
     ):
         key, value = match.groups()
         try:
-            metrics[key] = float(value)
+            metrics[key.lower()] = float(value)
         except ValueError:
             continue
     if "val_bpb" in metrics and "val_auc" not in metrics:
         metrics["val_auc"] = 1.0 - metrics["val_bpb"]
     return metrics
+
+
+def _parse_failure_category_from_log(text: str) -> Optional[str]:
+    match = re.search(r"^FAILURE_CATEGORY=([A-Za-z_][A-Za-z0-9_]*)$", text, flags=re.MULTILINE)
+    return match.group(1).lower() if match else None

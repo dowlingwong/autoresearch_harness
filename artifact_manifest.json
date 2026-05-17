@@ -1,30 +1,30 @@
 {
   "paper": "KDD AAE 2026 \u2014 Governed Autonomous Experimentation",
-  "generated": "2026-05-10T00:02:18Z",
+  "generated": "2026-05-15T22:48:38Z",
   "manifest_version": "1.0",
   "campaigns": {
     "kdd": [
       {
         "id": "kdd_main_5trial",
-        "description": "Main KDD campaign \u2014 5 dry-run trials, baseline_manager, append_only_summary_with_rationale",
+        "description": "Main KDD campaign \u2014 5 real trials, prompt_manager, claw_style_worker, append_only_summary_with_rationale; 2 kept, 3 failed_invalid (runtime_error)",
         "ledger": "experiments/ledgers/kdd_main_5trial_trials.jsonl",
         "trials": 5,
-        "worker": "dry_run",
-        "manager": "baseline_manager",
+        "worker": "claw_style_worker",
+        "manager": "prompt_manager",
         "memory_mode": "append_only_summary_with_rationale"
       },
       {
         "id": "kdd_stress_scope",
-        "description": "Stress trial \u2014 scope-violation worker, forces invalid_edit_scope failure",
+        "description": "Stress trial \u2014 stress_scope_violation_worker, forces invalid_edit_scope failure; validates first-class audit object recording",
         "ledger": "experiments/ledgers/kdd_stress_scope_trials.jsonl",
         "trials": 1,
-        "worker": "claw_worker (scope-violation mode)",
+        "worker": "stress_scope_violation_worker",
         "manager": "baseline_manager",
         "memory_mode": "append_only_summary_with_rationale"
       },
       {
         "id": "kdd_stress_noop",
-        "description": "Stress trial \u2014 no-op patch worker, forces no_op_patch failure",
+        "description": "Stress trial \u2014 stress_no_op_patch_worker, forces no_op_patch failure; validates no-op guard and first-class audit object recording",
         "ledger": "experiments/ledgers/kdd_stress_noop_trials.jsonl",
         "trials": 1,
         "worker": "stress_no_op_patch_worker",
@@ -35,48 +35,77 @@
     "memory_ablation": [
       {
         "id": "ablation_none",
-        "description": "Memory ablation arm \u2014 no memory context",
+        "description": "Memory ablation arm \u2014 no memory context; 5 real trials, prompt_manager, claw_style_worker; 2 kept, 3 failed_invalid",
         "ledger": "experiments/ledgers/ablation_none_trials.jsonl",
         "trials": 5,
-        "worker": "dry_run",
-        "manager": "baseline_manager",
+        "worker": "claw_style_worker",
+        "manager": "prompt_manager",
         "memory_mode": "none"
       },
       {
         "id": "ablation_append_only_summary",
-        "description": "Memory ablation arm \u2014 append-only summary (no rationale)",
+        "description": "Memory ablation arm \u2014 append-only summary (no rationale); 5 real trials, prompt_manager, claw_style_worker; 2 kept, 3 failed_invalid",
         "ledger": "experiments/ledgers/ablation_append_only_summary_trials.jsonl",
         "trials": 5,
-        "worker": "dry_run",
-        "manager": "baseline_manager",
+        "worker": "claw_style_worker",
+        "manager": "prompt_manager",
         "memory_mode": "append_only_summary"
       },
       {
         "id": "ablation_append_only_summary_with_rationale",
-        "description": "Memory ablation arm \u2014 append-only summary with rationale",
+        "description": "Memory ablation arm \u2014 append-only summary with rationale; 5 real trials, prompt_manager, claw_style_worker; 2 kept, 3 failed_invalid",
         "ledger": "experiments/ledgers/ablation_append_only_summary_with_rationale_trials.jsonl",
         "trials": 5,
-        "worker": "dry_run",
-        "manager": "baseline_manager",
+        "worker": "claw_style_worker",
+        "manager": "prompt_manager",
         "memory_mode": "append_only_summary_with_rationale"
       }
     ],
     "manager_comparison": [
       {
         "id": "manager_comparison_baseline_manager",
-        "description": "Manager comparison \u2014 baseline_manager, 5 dry-run trials",
+        "description": "Manager comparison \u2014 baseline_manager, 5 real deterministic-patch trials; 2 kept, 3 discarded",
         "ledger": "experiments/ledgers/manager_comparison_baseline_manager_trials.jsonl",
         "trials": 5,
-        "worker": "dry_run",
+        "worker": "claw_style_worker_deterministic_patch",
         "manager": "baseline_manager",
         "memory_mode": "append_only_summary_with_rationale"
       },
       {
         "id": "manager_comparison_prompt_manager",
-        "description": "Manager comparison \u2014 prompt_manager, 5 dry-run trials",
+        "description": "Manager comparison \u2014 prompt_manager, 5 real deterministic-patch trials; 2 kept, 3 discarded",
         "ledger": "experiments/ledgers/manager_comparison_prompt_manager_trials.jsonl",
         "trials": 5,
-        "worker": "dry_run",
+        "worker": "claw_style_worker_deterministic_patch",
+        "manager": "prompt_manager",
+        "memory_mode": "append_only_summary_with_rationale"
+      }
+    ],
+    "optional_p8": [
+      {
+        "id": "p8_memory10_none",
+        "description": "Optional Priority 8 memory extension \u2014 no memory, 10 real deterministic-patch trials; 3 kept, 7 discarded",
+        "ledger": "experiments/ledgers/p8_memory10_none_trials.jsonl",
+        "trials": 10,
+        "worker": "claw_style_worker_deterministic_patch",
+        "manager": "prompt_manager",
+        "memory_mode": "none"
+      },
+      {
+        "id": "p8_memory10_append_only_summary",
+        "description": "Optional Priority 8 memory extension \u2014 append-only summary, 10 real deterministic-patch trials; 4 kept, 5 discarded, 1 precondition failure",
+        "ledger": "experiments/ledgers/p8_memory10_append_only_summary_trials.jsonl",
+        "trials": 10,
+        "worker": "claw_style_worker_deterministic_patch",
+        "manager": "prompt_manager",
+        "memory_mode": "append_only_summary"
+      },
+      {
+        "id": "p8_memory10_append_only_summary_with_rationale",
+        "description": "Optional Priority 8 memory extension \u2014 append-only summary with rationale, 10 real deterministic-patch trials; 4 kept, 5 discarded, 1 precondition failure",
+        "ledger": "experiments/ledgers/p8_memory10_append_only_summary_with_rationale_trials.jsonl",
+        "trials": 10,
+        "worker": "claw_style_worker_deterministic_patch",
         "manager": "prompt_manager",
         "memory_mode": "append_only_summary_with_rationale"
       }
@@ -87,20 +116,20 @@
       {
         "trial_id": "kdd_main_5trial-trial-001",
         "budget_index": 1,
-        "decision": "kept",
-        "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "decision": "failed_invalid",
+        "validity_status": "invalid",
+        "worker_mode": "claw_style_worker",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_001/patch.diff",
+          "path": "",
           "exists": false,
-          "synthetic": true
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_001/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/kdd_main_5trial/trial-001/run.log",
+          "exists": true,
+          "synthetic": false
         },
-        "parsed_metrics_present": true,
+        "parsed_metrics_present": false,
         "decision_id": "decision-29b90a214db3b66f"
       },
       {
@@ -108,16 +137,16 @@
         "budget_index": 2,
         "decision": "kept",
         "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "worker_mode": "claw_style_worker",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_002/patch.diff",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/kdd_main_5trial/trial-002/patch.diff",
+          "exists": true,
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_002/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/kdd_main_5trial/trial-002/run.log",
+          "exists": true,
+          "synthetic": false
         },
         "parsed_metrics_present": true,
         "decision_id": "decision-20bbdda789148f4c"
@@ -125,20 +154,20 @@
       {
         "trial_id": "kdd_main_5trial-trial-003",
         "budget_index": 3,
-        "decision": "discarded",
-        "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "decision": "failed_invalid",
+        "validity_status": "invalid",
+        "worker_mode": "claw_style_worker",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_003/patch.diff",
+          "path": "",
           "exists": false,
-          "synthetic": true
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_003/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/kdd_main_5trial/trial-003/run.log",
+          "exists": true,
+          "synthetic": false
         },
-        "parsed_metrics_present": true,
+        "parsed_metrics_present": false,
         "decision_id": "decision-594cce219e9eaecb"
       },
       {
@@ -146,16 +175,16 @@
         "budget_index": 4,
         "decision": "failed_invalid",
         "validity_status": "invalid",
-        "worker_mode": "dry_run_worker",
+        "worker_mode": "claw_style_worker",
         "patch_ref": {
           "path": "",
           "exists": false,
-          "synthetic": true
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_004/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/kdd_main_5trial/trial-004/run.log",
+          "exists": true,
+          "synthetic": false
         },
         "parsed_metrics_present": false,
         "decision_id": "decision-05eb4b0843c80873"
@@ -165,16 +194,16 @@
         "budget_index": 5,
         "decision": "kept",
         "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "worker_mode": "claw_style_worker",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_005/patch.diff",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/kdd_main_5trial/trial-005/patch.diff",
+          "exists": true,
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_005/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/kdd_main_5trial/trial-005/run.log",
+          "exists": true,
+          "synthetic": false
         },
         "parsed_metrics_present": true,
         "decision_id": "decision-da821412b13a09a1"
@@ -226,37 +255,37 @@
       {
         "trial_id": "ablation_none-trial-001",
         "budget_index": 1,
-        "decision": "kept",
-        "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "decision": "failed_invalid",
+        "validity_status": "invalid",
+        "worker_mode": "claw_style_worker",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_001/patch.diff",
+          "path": "",
           "exists": false,
-          "synthetic": true
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_001/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/ablation_none/trial-001/run.log",
+          "exists": true,
+          "synthetic": false
         },
-        "parsed_metrics_present": true,
+        "parsed_metrics_present": false,
         "decision_id": "decision-d0f09531d12ae31c"
       },
       {
         "trial_id": "ablation_none-trial-002",
         "budget_index": 2,
-        "decision": "discarded",
+        "decision": "kept",
         "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "worker_mode": "claw_style_worker",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_002/patch.diff",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/ablation_none/trial-002/patch.diff",
+          "exists": true,
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_002/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/ablation_none/trial-002/run.log",
+          "exists": true,
+          "synthetic": false
         },
         "parsed_metrics_present": true,
         "decision_id": "decision-e7895c4bd6e2da2d"
@@ -266,16 +295,16 @@
         "budget_index": 3,
         "decision": "failed_invalid",
         "validity_status": "invalid",
-        "worker_mode": "dry_run_worker",
+        "worker_mode": "claw_style_worker",
         "patch_ref": {
           "path": "",
           "exists": false,
-          "synthetic": true
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_003/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/ablation_none/trial-003/run.log",
+          "exists": true,
+          "synthetic": false
         },
         "parsed_metrics_present": false,
         "decision_id": "decision-a04cafc81999b47e"
@@ -285,16 +314,16 @@
         "budget_index": 4,
         "decision": "failed_invalid",
         "validity_status": "invalid",
-        "worker_mode": "dry_run_worker",
+        "worker_mode": "claw_style_worker",
         "patch_ref": {
           "path": "",
           "exists": false,
-          "synthetic": true
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_004/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/ablation_none/trial-004/run.log",
+          "exists": true,
+          "synthetic": false
         },
         "parsed_metrics_present": false,
         "decision_id": "decision-f25c302a3d715856"
@@ -302,18 +331,18 @@
       {
         "trial_id": "ablation_none-trial-005",
         "budget_index": 5,
-        "decision": "discarded",
+        "decision": "kept",
         "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "worker_mode": "claw_style_worker",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_005/patch.diff",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/ablation_none/trial-005/patch.diff",
+          "exists": true,
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_005/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/ablation_none/trial-005/run.log",
+          "exists": true,
+          "synthetic": false
         },
         "parsed_metrics_present": true,
         "decision_id": "decision-042a5a18636ecca8"
@@ -323,37 +352,37 @@
       {
         "trial_id": "ablation_append_only_summary-trial-001",
         "budget_index": 1,
-        "decision": "kept",
-        "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "decision": "failed_invalid",
+        "validity_status": "invalid",
+        "worker_mode": "claw_style_worker",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_001/patch.diff",
+          "path": "",
           "exists": false,
-          "synthetic": true
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_001/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/ablation_append_only_summary/trial-001/run.log",
+          "exists": true,
+          "synthetic": false
         },
-        "parsed_metrics_present": true,
+        "parsed_metrics_present": false,
         "decision_id": "decision-34ae1531a65ba300"
       },
       {
         "trial_id": "ablation_append_only_summary-trial-002",
         "budget_index": 2,
-        "decision": "discarded",
+        "decision": "kept",
         "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "worker_mode": "claw_style_worker",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_002/patch.diff",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/ablation_append_only_summary/trial-002/patch.diff",
+          "exists": true,
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_002/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/ablation_append_only_summary/trial-002/run.log",
+          "exists": true,
+          "synthetic": false
         },
         "parsed_metrics_present": true,
         "decision_id": "decision-48fecb2d5a4ccf7b"
@@ -361,39 +390,39 @@
       {
         "trial_id": "ablation_append_only_summary-trial-003",
         "budget_index": 3,
-        "decision": "kept",
-        "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "decision": "failed_invalid",
+        "validity_status": "invalid",
+        "worker_mode": "claw_style_worker",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_003/patch.diff",
+          "path": "",
           "exists": false,
-          "synthetic": true
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_003/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/ablation_append_only_summary/trial-003/run.log",
+          "exists": true,
+          "synthetic": false
         },
-        "parsed_metrics_present": true,
+        "parsed_metrics_present": false,
         "decision_id": "decision-a5911c4db01143b0"
       },
       {
         "trial_id": "ablation_append_only_summary-trial-004",
         "budget_index": 4,
-        "decision": "discarded",
-        "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "decision": "failed_invalid",
+        "validity_status": "invalid",
+        "worker_mode": "claw_style_worker",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_004/patch.diff",
+          "path": "",
           "exists": false,
-          "synthetic": true
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_004/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/ablation_append_only_summary/trial-004/run.log",
+          "exists": true,
+          "synthetic": false
         },
-        "parsed_metrics_present": true,
+        "parsed_metrics_present": false,
         "decision_id": "decision-a12033170719bdb7"
       },
       {
@@ -401,16 +430,16 @@
         "budget_index": 5,
         "decision": "kept",
         "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "worker_mode": "claw_style_worker",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_005/patch.diff",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/ablation_append_only_summary/trial-005/patch.diff",
+          "exists": true,
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_005/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/ablation_append_only_summary/trial-005/run.log",
+          "exists": true,
+          "synthetic": false
         },
         "parsed_metrics_present": true,
         "decision_id": "decision-8ba2fa661c6d6504"
@@ -420,37 +449,37 @@
       {
         "trial_id": "ablation_append_only_summary_with_rationale-trial-001",
         "budget_index": 1,
-        "decision": "kept",
-        "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "decision": "failed_invalid",
+        "validity_status": "invalid",
+        "worker_mode": "claw_style_worker",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_001/patch.diff",
+          "path": "",
           "exists": false,
-          "synthetic": true
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_001/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/ablation_append_only_summary_with_rationale/trial-001/run.log",
+          "exists": true,
+          "synthetic": false
         },
-        "parsed_metrics_present": true,
+        "parsed_metrics_present": false,
         "decision_id": "decision-f0cec85f34529d25"
       },
       {
         "trial_id": "ablation_append_only_summary_with_rationale-trial-002",
         "budget_index": 2,
-        "decision": "discarded",
+        "decision": "kept",
         "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "worker_mode": "claw_style_worker",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_002/patch.diff",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/ablation_append_only_summary_with_rationale/trial-002/patch.diff",
+          "exists": true,
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_002/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/ablation_append_only_summary_with_rationale/trial-002/run.log",
+          "exists": true,
+          "synthetic": false
         },
         "parsed_metrics_present": true,
         "decision_id": "decision-6eade7f0033ae751"
@@ -458,39 +487,39 @@
       {
         "trial_id": "ablation_append_only_summary_with_rationale-trial-003",
         "budget_index": 3,
-        "decision": "kept",
-        "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "decision": "failed_invalid",
+        "validity_status": "invalid",
+        "worker_mode": "claw_style_worker",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_003/patch.diff",
+          "path": "",
           "exists": false,
-          "synthetic": true
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_003/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/ablation_append_only_summary_with_rationale/trial-003/run.log",
+          "exists": true,
+          "synthetic": false
         },
-        "parsed_metrics_present": true,
+        "parsed_metrics_present": false,
         "decision_id": "decision-9e160fbce39e9c43"
       },
       {
         "trial_id": "ablation_append_only_summary_with_rationale-trial-004",
         "budget_index": 4,
-        "decision": "kept",
-        "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "decision": "failed_invalid",
+        "validity_status": "invalid",
+        "worker_mode": "claw_style_worker",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_004/patch.diff",
+          "path": "",
           "exists": false,
-          "synthetic": true
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_004/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/ablation_append_only_summary_with_rationale/trial-004/run.log",
+          "exists": true,
+          "synthetic": false
         },
-        "parsed_metrics_present": true,
+        "parsed_metrics_present": false,
         "decision_id": "decision-d9fff2abaa20dfe0"
       },
       {
@@ -498,16 +527,16 @@
         "budget_index": 5,
         "decision": "kept",
         "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "worker_mode": "claw_style_worker",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_005/patch.diff",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/ablation_append_only_summary_with_rationale/trial-005/patch.diff",
+          "exists": true,
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_005/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/ablation_append_only_summary_with_rationale/trial-005/run.log",
+          "exists": true,
+          "synthetic": false
         },
         "parsed_metrics_present": true,
         "decision_id": "decision-1de9ce1c961e643c"
@@ -519,16 +548,16 @@
         "budget_index": 1,
         "decision": "kept",
         "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "worker_mode": "claw_style_worker_deterministic_patch",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_001/patch.diff",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/manager_comparison_baseline_manager/trial-001/patch.diff",
+          "exists": true,
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_001/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/manager_comparison_baseline_manager/trial-001/run.log",
+          "exists": true,
+          "synthetic": false
         },
         "parsed_metrics_present": true,
         "decision_id": "decision-aa88de7ab93757ea"
@@ -536,18 +565,18 @@
       {
         "trial_id": "manager_comparison_baseline_manager-trial-002",
         "budget_index": 2,
-        "decision": "kept",
+        "decision": "discarded",
         "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "worker_mode": "claw_style_worker_deterministic_patch",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_002/patch.diff",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/manager_comparison_baseline_manager/trial-002/patch.diff",
+          "exists": true,
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_002/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/manager_comparison_baseline_manager/trial-002/run.log",
+          "exists": true,
+          "synthetic": false
         },
         "parsed_metrics_present": true,
         "decision_id": "decision-4481a65e88bd9303"
@@ -555,18 +584,18 @@
       {
         "trial_id": "manager_comparison_baseline_manager-trial-003",
         "budget_index": 3,
-        "decision": "kept",
+        "decision": "discarded",
         "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "worker_mode": "claw_style_worker_deterministic_patch",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_003/patch.diff",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/manager_comparison_baseline_manager/trial-003/patch.diff",
+          "exists": true,
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_003/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/manager_comparison_baseline_manager/trial-003/run.log",
+          "exists": true,
+          "synthetic": false
         },
         "parsed_metrics_present": true,
         "decision_id": "decision-d0dbc8c5e31784f8"
@@ -576,16 +605,16 @@
         "budget_index": 4,
         "decision": "kept",
         "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "worker_mode": "claw_style_worker_deterministic_patch",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_004/patch.diff",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/manager_comparison_baseline_manager/trial-004/patch.diff",
+          "exists": true,
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_004/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/manager_comparison_baseline_manager/trial-004/run.log",
+          "exists": true,
+          "synthetic": false
         },
         "parsed_metrics_present": true,
         "decision_id": "decision-9059ce0a5ff33837"
@@ -593,18 +622,18 @@
       {
         "trial_id": "manager_comparison_baseline_manager-trial-005",
         "budget_index": 5,
-        "decision": "kept",
+        "decision": "discarded",
         "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "worker_mode": "claw_style_worker_deterministic_patch",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_005/patch.diff",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/manager_comparison_baseline_manager/trial-005/patch.diff",
+          "exists": true,
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_005/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/manager_comparison_baseline_manager/trial-005/run.log",
+          "exists": true,
+          "synthetic": false
         },
         "parsed_metrics_present": true,
         "decision_id": "decision-83df5c01a5f2d30a"
@@ -616,16 +645,16 @@
         "budget_index": 1,
         "decision": "kept",
         "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "worker_mode": "claw_style_worker_deterministic_patch",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_001/patch.diff",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/manager_comparison_prompt_manager/trial-001/patch.diff",
+          "exists": true,
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_001/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/manager_comparison_prompt_manager/trial-001/run.log",
+          "exists": true,
+          "synthetic": false
         },
         "parsed_metrics_present": true,
         "decision_id": "decision-1848172f71f1271d"
@@ -633,18 +662,18 @@
       {
         "trial_id": "manager_comparison_prompt_manager-trial-002",
         "budget_index": 2,
-        "decision": "kept",
+        "decision": "discarded",
         "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "worker_mode": "claw_style_worker_deterministic_patch",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_002/patch.diff",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/manager_comparison_prompt_manager/trial-002/patch.diff",
+          "exists": true,
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_002/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/manager_comparison_prompt_manager/trial-002/run.log",
+          "exists": true,
+          "synthetic": false
         },
         "parsed_metrics_present": true,
         "decision_id": "decision-6425eed88cf67019"
@@ -652,18 +681,18 @@
       {
         "trial_id": "manager_comparison_prompt_manager-trial-003",
         "budget_index": 3,
-        "decision": "kept",
+        "decision": "discarded",
         "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "worker_mode": "claw_style_worker_deterministic_patch",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_003/patch.diff",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/manager_comparison_prompt_manager/trial-003/patch.diff",
+          "exists": true,
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_003/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/manager_comparison_prompt_manager/trial-003/run.log",
+          "exists": true,
+          "synthetic": false
         },
         "parsed_metrics_present": true,
         "decision_id": "decision-d003115d70611284"
@@ -673,16 +702,16 @@
         "budget_index": 4,
         "decision": "kept",
         "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "worker_mode": "claw_style_worker_deterministic_patch",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_004/patch.diff",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/manager_comparison_prompt_manager/trial-004/patch.diff",
+          "exists": true,
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_004/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/manager_comparison_prompt_manager/trial-004/run.log",
+          "exists": true,
+          "synthetic": false
         },
         "parsed_metrics_present": true,
         "decision_id": "decision-9714fdc82e441b88"
@@ -690,27 +719,605 @@
       {
         "trial_id": "manager_comparison_prompt_manager-trial-005",
         "budget_index": 5,
-        "decision": "kept",
+        "decision": "discarded",
         "validity_status": "valid",
-        "worker_mode": "dry_run_worker",
+        "worker_mode": "claw_style_worker_deterministic_patch",
         "patch_ref": {
-          "path": "experiments/artifacts/dry_run_trial_005/patch.diff",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/manager_comparison_prompt_manager/trial-005/patch.diff",
+          "exists": true,
+          "synthetic": false
         },
         "raw_log_ref": {
-          "path": "experiments/artifacts/dry_run_trial_005/run.log",
-          "exists": false,
-          "synthetic": true
+          "path": "experiments/artifacts/manager_comparison_prompt_manager/trial-005/run.log",
+          "exists": true,
+          "synthetic": false
         },
         "parsed_metrics_present": true,
         "decision_id": "decision-5ae5d5031c298fcf"
+      }
+    ],
+    "p8_memory10_none": [
+      {
+        "trial_id": "p8_memory10_none-trial-001",
+        "budget_index": 1,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_none/trial-001/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_none/trial-001/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-29c625e40397d8ee"
+      },
+      {
+        "trial_id": "p8_memory10_none-trial-002",
+        "budget_index": 2,
+        "decision": "discarded",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_none/trial-002/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_none/trial-002/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-7bff5813f2bc71e2"
+      },
+      {
+        "trial_id": "p8_memory10_none-trial-003",
+        "budget_index": 3,
+        "decision": "discarded",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_none/trial-003/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_none/trial-003/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-9ec58ea208bbb3ac"
+      },
+      {
+        "trial_id": "p8_memory10_none-trial-004",
+        "budget_index": 4,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_none/trial-004/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_none/trial-004/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-d8ea50a15f9d8ba8"
+      },
+      {
+        "trial_id": "p8_memory10_none-trial-005",
+        "budget_index": 5,
+        "decision": "discarded",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_none/trial-005/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_none/trial-005/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-7929c25fa6d400f2"
+      },
+      {
+        "trial_id": "p8_memory10_none-trial-006",
+        "budget_index": 6,
+        "decision": "discarded",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_none/trial-006/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_none/trial-006/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-8975cadbeb8cf465"
+      },
+      {
+        "trial_id": "p8_memory10_none-trial-007",
+        "budget_index": 7,
+        "decision": "discarded",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_none/trial-007/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_none/trial-007/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-a2348889b6633e5b"
+      },
+      {
+        "trial_id": "p8_memory10_none-trial-008",
+        "budget_index": 8,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_none/trial-008/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_none/trial-008/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-21bec385c3c02de0"
+      },
+      {
+        "trial_id": "p8_memory10_none-trial-009",
+        "budget_index": 9,
+        "decision": "discarded",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_none/trial-009/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_none/trial-009/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-d9e36f856c3cf985"
+      },
+      {
+        "trial_id": "p8_memory10_none-trial-010",
+        "budget_index": 10,
+        "decision": "discarded",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_none/trial-010/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_none/trial-010/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-9754b5f8d680c1eb"
+      }
+    ],
+    "p8_memory10_append_only_summary": [
+      {
+        "trial_id": "p8_memory10_append_only_summary-trial-001",
+        "budget_index": 1,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary/trial-001/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary/trial-001/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-a089a8fc171ae727"
+      },
+      {
+        "trial_id": "p8_memory10_append_only_summary-trial-002",
+        "budget_index": 2,
+        "decision": "discarded",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary/trial-002/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary/trial-002/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-c6dc46cdc8c7b062"
+      },
+      {
+        "trial_id": "p8_memory10_append_only_summary-trial-003",
+        "budget_index": 3,
+        "decision": "discarded",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary/trial-003/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary/trial-003/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-ffa2a7007ab0b34e"
+      },
+      {
+        "trial_id": "p8_memory10_append_only_summary-trial-004",
+        "budget_index": 4,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary/trial-004/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary/trial-004/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-a1b15503ae40e7de"
+      },
+      {
+        "trial_id": "p8_memory10_append_only_summary-trial-005",
+        "budget_index": 5,
+        "decision": "discarded",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary/trial-005/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary/trial-005/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-4157ce5ebec889bb"
+      },
+      {
+        "trial_id": "p8_memory10_append_only_summary-trial-006",
+        "budget_index": 6,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary/trial-006/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary/trial-006/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-52f23ae81c9218f4"
+      },
+      {
+        "trial_id": "p8_memory10_append_only_summary-trial-007",
+        "budget_index": 7,
+        "decision": "discarded",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary/trial-007/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary/trial-007/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-3fb8192253eb5fe1"
+      },
+      {
+        "trial_id": "p8_memory10_append_only_summary-trial-008",
+        "budget_index": 8,
+        "decision": "discarded",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary/trial-008/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary/trial-008/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-16f30388da8642e0"
+      },
+      {
+        "trial_id": "p8_memory10_append_only_summary-trial-009",
+        "budget_index": 9,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary/trial-009/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary/trial-009/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-a4ec5dff76918158"
+      },
+      {
+        "trial_id": "p8_memory10_append_only_summary-trial-010",
+        "budget_index": 10,
+        "decision": "failed_invalid",
+        "validity_status": "invalid",
+        "worker_mode": "claw_style_worker_precheck",
+        "patch_ref": {
+          "path": "",
+          "exists": false,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "",
+          "exists": false,
+          "synthetic": false
+        },
+        "parsed_metrics_present": false,
+        "decision_id": "decision-d1e4cf58ee07f65d"
+      }
+    ],
+    "p8_memory10_append_only_summary_with_rationale": [
+      {
+        "trial_id": "p8_memory10_append_only_summary_with_rationale-trial-001",
+        "budget_index": 1,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary_with_rationale/trial-001/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary_with_rationale/trial-001/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-4cc77af608c39e51"
+      },
+      {
+        "trial_id": "p8_memory10_append_only_summary_with_rationale-trial-002",
+        "budget_index": 2,
+        "decision": "discarded",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary_with_rationale/trial-002/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary_with_rationale/trial-002/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-e166fc79152d2989"
+      },
+      {
+        "trial_id": "p8_memory10_append_only_summary_with_rationale-trial-003",
+        "budget_index": 3,
+        "decision": "discarded",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary_with_rationale/trial-003/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary_with_rationale/trial-003/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-74276115cbe333b3"
+      },
+      {
+        "trial_id": "p8_memory10_append_only_summary_with_rationale-trial-004",
+        "budget_index": 4,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary_with_rationale/trial-004/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary_with_rationale/trial-004/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-71e74c4ad0462af4"
+      },
+      {
+        "trial_id": "p8_memory10_append_only_summary_with_rationale-trial-005",
+        "budget_index": 5,
+        "decision": "discarded",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary_with_rationale/trial-005/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary_with_rationale/trial-005/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-9177a2081990737c"
+      },
+      {
+        "trial_id": "p8_memory10_append_only_summary_with_rationale-trial-006",
+        "budget_index": 6,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary_with_rationale/trial-006/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary_with_rationale/trial-006/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-e83a5de6a1e20d59"
+      },
+      {
+        "trial_id": "p8_memory10_append_only_summary_with_rationale-trial-007",
+        "budget_index": 7,
+        "decision": "discarded",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary_with_rationale/trial-007/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary_with_rationale/trial-007/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-d6191b6c56bb6229"
+      },
+      {
+        "trial_id": "p8_memory10_append_only_summary_with_rationale-trial-008",
+        "budget_index": 8,
+        "decision": "discarded",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary_with_rationale/trial-008/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary_with_rationale/trial-008/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-4576d064523615f7"
+      },
+      {
+        "trial_id": "p8_memory10_append_only_summary_with_rationale-trial-009",
+        "budget_index": 9,
+        "decision": "kept",
+        "validity_status": "valid",
+        "worker_mode": "claw_style_worker_deterministic_patch",
+        "patch_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary_with_rationale/trial-009/patch.diff",
+          "exists": true,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "experiments/artifacts/p8_memory10_append_only_summary_with_rationale/trial-009/run.log",
+          "exists": true,
+          "synthetic": false
+        },
+        "parsed_metrics_present": true,
+        "decision_id": "decision-897e199f37c182c5"
+      },
+      {
+        "trial_id": "p8_memory10_append_only_summary_with_rationale-trial-010",
+        "budget_index": 10,
+        "decision": "failed_invalid",
+        "validity_status": "invalid",
+        "worker_mode": "claw_style_worker_precheck",
+        "patch_ref": {
+          "path": "",
+          "exists": false,
+          "synthetic": false
+        },
+        "raw_log_ref": {
+          "path": "",
+          "exists": false,
+          "synthetic": false
+        },
+        "parsed_metrics_present": false,
+        "decision_id": "decision-93b3ff5662082411"
       }
     ]
   },
   "tables": [
     "paper/tables/accepted_discarded_invalid_counts.csv",
     "paper/tables/artifact_completeness_report.txt",
+    "paper/tables/baseline_seed_bootstrap_ci.csv",
+    "paper/tables/baseline_seed_replicates.csv",
     "paper/tables/campaign_trajectory.csv",
     "paper/tables/failure_taxonomy.csv",
     "paper/tables/governance_metrics.csv",
@@ -718,7 +1325,11 @@
     "paper/tables/manager_comparison_summary.csv",
     "paper/tables/memory_ablation_run_report.txt",
     "paper/tables/memory_ablation_summary.csv",
-    "paper/tables/provenance_chain.csv"
+    "paper/tables/p8_memory10_run_report.txt",
+    "paper/tables/p8_memory10_similarity_detector_comparison.csv",
+    "paper/tables/p8_memory10_summary.csv",
+    "paper/tables/provenance_chain.csv",
+    "paper/tables/similarity_detector_comparison.csv"
   ],
   "figures": {
     "kdd_paper": [
@@ -741,26 +1352,29 @@
     ]
   },
   "environment": {
-    "python": "3.13.4",
-    "git_commit": "9e6dbaa",
+    "python": "3.10.12",
+    "git_commit": "93e1cbd",
     "git_branch": "main",
-    "platform": "darwin",
+    "platform": "linux",
     "default_model": "qwen2.5-coder:7b",
     "default_ollama_host": "http://localhost:11434",
     "node": "resnet_trigger",
     "metric": "val_auc (higher is better; derived from val_bpb = 1 - val_bpb)"
   },
   "run_commands": [
-    "python3 scripts/run_kdd_main_campaign.py --node resnet_trigger --campaign-id kdd_main_5trial --budget 5 --dry-run",
+    "RESNET_TRIGGER_FAST_SEARCH=1 RESNET_TRIGGER_FAST_N_SIGNAL=1000 RESNET_TRIGGER_FAST_N_NOISE=1000 RESNET_TRIGGER_FAST_TRACE_LEN=4096 RESNET_TRIGGER_FAST_BATCH_SIZE=64 RESNET_TRIGGER_FAST_EPOCHS=3 RESNET_TRIGGER_FAST_SKIP_TEST=1 RESNET_TRIGGER_EARLY_STOP_PATIENCE=2 RESNET_TRIGGER_EARLY_STOP_MIN_DELTA=0.002 RESNET_TRIGGER_DEVICE=cpu uv run --extra dev python scripts/run_kdd_main_campaign.py --node resnet_trigger --budget 5 --campaign-id kdd_main_5trial --manager prompt_manager --memory-mode append_only_summary_with_rationale --node-root nodes/ResNet_trigger --model ollama/qwen2.5-coder:7b --no-export",
     "python3 scripts/run_kdd_stress_trial.py --node resnet_trigger --campaign-id kdd_stress_scope",
-    "python3 scripts/run_kdd_noop_trial.py --node resnet_trigger --campaign-id kdd_stress_noop",
-    "python3 scripts/run_kdd_memory_ablation.py --node resnet_trigger --budget 5 --memory-mode none --campaign-id ablation_none --dry-run",
-    "python3 scripts/run_kdd_memory_ablation.py --node resnet_trigger --budget 5 --memory-mode append_only_summary --campaign-id ablation_append_only_summary --dry-run",
-    "python3 scripts/run_kdd_memory_ablation.py --node resnet_trigger --budget 5 --memory-mode append_only_summary_with_rationale --campaign-id ablation_append_only_summary_with_rationale --dry-run",
-    "python3 scripts/run_manager_comparison.py --node resnet_trigger --budget 5 --memory-mode append_only_summary_with_rationale --managers baseline_manager prompt_manager --dry-run",
+    "python3 scripts/run_kdd_noop_trial.py --node resnet_trigger --campaign-id kdd_stress_noop --node-root nodes/ResNet_trigger",
+    "RESNET_TRIGGER_FAST_SEARCH=1 RESNET_TRIGGER_FAST_N_SIGNAL=1000 RESNET_TRIGGER_FAST_N_NOISE=1000 RESNET_TRIGGER_FAST_TRACE_LEN=4096 RESNET_TRIGGER_FAST_BATCH_SIZE=64 RESNET_TRIGGER_FAST_EPOCHS=3 RESNET_TRIGGER_FAST_SKIP_TEST=1 RESNET_TRIGGER_EARLY_STOP_PATIENCE=2 RESNET_TRIGGER_EARLY_STOP_MIN_DELTA=0.002 RESNET_TRIGGER_DEVICE=cpu uv run --extra dev python scripts/run_kdd_memory_ablation.py --node resnet_trigger --budget 5 --memory-mode none --campaign-id ablation_none --node-root nodes/ResNet_trigger --model ollama/qwen2.5-coder:7b",
+    "RESNET_TRIGGER_FAST_SEARCH=1 RESNET_TRIGGER_FAST_N_SIGNAL=1000 RESNET_TRIGGER_FAST_N_NOISE=1000 RESNET_TRIGGER_FAST_TRACE_LEN=4096 RESNET_TRIGGER_FAST_BATCH_SIZE=64 RESNET_TRIGGER_FAST_EPOCHS=3 RESNET_TRIGGER_FAST_SKIP_TEST=1 RESNET_TRIGGER_EARLY_STOP_PATIENCE=2 RESNET_TRIGGER_EARLY_STOP_MIN_DELTA=0.002 RESNET_TRIGGER_DEVICE=cpu uv run --extra dev python scripts/run_kdd_memory_ablation.py --node resnet_trigger --budget 5 --memory-mode append_only_summary --campaign-id ablation_append_only_summary --node-root nodes/ResNet_trigger --model ollama/qwen2.5-coder:7b",
+    "RESNET_TRIGGER_FAST_SEARCH=1 RESNET_TRIGGER_FAST_N_SIGNAL=1000 RESNET_TRIGGER_FAST_N_NOISE=1000 RESNET_TRIGGER_FAST_TRACE_LEN=4096 RESNET_TRIGGER_FAST_BATCH_SIZE=64 RESNET_TRIGGER_FAST_EPOCHS=3 RESNET_TRIGGER_FAST_SKIP_TEST=1 RESNET_TRIGGER_EARLY_STOP_PATIENCE=2 RESNET_TRIGGER_EARLY_STOP_MIN_DELTA=0.002 RESNET_TRIGGER_DEVICE=cpu uv run --extra dev python scripts/run_kdd_memory_ablation.py --node resnet_trigger --budget 5 --memory-mode append_only_summary_with_rationale --campaign-id ablation_append_only_summary_with_rationale --node-root nodes/ResNet_trigger --model ollama/qwen2.5-coder:7b",
     "python3 scripts/export_kdd_tables.py --main-campaign kdd_main_5trial --ablation-campaigns ablation_none ablation_append_only_summary ablation_append_only_summary_with_rationale --stress-campaign kdd_stress_scope kdd_stress_noop --output-dir paper/tables/",
     "python3 scripts/export_kdd_figures.py --figure architecture --output paper/figures/fig1_architecture.svg",
-    "python3 scripts/check_kdd_artifact_completeness.py --campaigns kdd_main_5trial ablation_none ablation_append_only_summary ablation_append_only_summary_with_rationale kdd_stress_scope kdd_stress_noop"
+    "python3 scripts/export_kdd_figures.py --figure repeated_bad_rate --input paper/tables/memory_ablation_summary.csv --output paper/figures/fig2_repeated_bad_rate.svg",
+    "python3 scripts/export_kdd_figures.py --figure decision_breakdown --input paper/tables/accepted_discarded_invalid_counts.csv --output paper/figures/fig3_decision_breakdown.svg",
+    "python3 scripts/export_kdd_figures.py --figure trajectory --input paper/tables/campaign_trajectory.csv --output paper/figures/fig4_trajectory.svg",
+    "python3 scripts/check_kdd_artifact_completeness.py --campaigns kdd_main_5trial ablation_none ablation_append_only_summary ablation_append_only_summary_with_rationale kdd_stress_scope kdd_stress_noop",
+    "python3 scripts/generate_artifact_manifest.py --output artifact_manifest.json"
   ],
-  "notes": "Campaigns tagged worker=dry_run use DryRunWorker which generates synthetic metrics without executing actual training. Artifact paths for dry-run trials (experiments/artifacts/dry_run_trial_*/...) are placeholder references; the real governed mechanism (append-only ledger, pending-trial guard, scope validation) is exercised in full."
+  "notes": "All primary campaigns (kdd_main_5trial, ablation_none, ablation_append_only_summary, ablation_append_only_summary_with_rationale) use claw_style_worker with prompt_manager running real training on the ResNet-trigger node (CPU fast-search mode). Stress trials use synthetic workers (stress_scope_violation_worker, stress_no_op_patch_worker) to exercise forced failure paths. The governed control plane \u2014 append-only ledger, pending-trial guard, scope validation, state machine \u2014 is exercised identically in all modes."
 }

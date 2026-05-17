@@ -1,2 +1,2 @@
 campaign_id,total_trials,kept_count,discarded_count,failed_invalid_count,acceptance_rate,invalid_rate,complete_provenance_rate,editable_scope_violation_count,trials_with_rationale,command_failure_rate,metric_parsing_failure_rate,artifact_capture_completeness
-ablation_append_only_summary_with_rationale,5,2,0,3,0.4,0.6,1.0,0,5,0.6,0.0,0.4
+deepseek_resnet_append_only_summary_with_rationale_s3,10,0,0,10,0.0,1.0,1.0,0,10,0.9,0.0,0.9

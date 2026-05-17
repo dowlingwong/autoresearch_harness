@@ -1,0 +1,145 @@
+\section{Evaluation Protocol}\label{evaluation-protocol}
+
+The evaluation asks whether an autonomous ML experimentation loop is bounded, auditable, failure-aware, reproducible, and behaviorally affected by governance memory. The task metric is still reported, but governance metrics are primary.
+
+\subsection{Benchmark Node}\label{benchmark-node}
+
+The benchmark is the ResNet-trigger node (\passthrough{\lstinline!resnet\_trigger!}), a real scientific ML task for near-threshold detector waveform binary classification. The node trains a ResNet-style classifier on signal and noise traces. The editable surface is deliberately narrow: workers may modify only \passthrough{\lstinline!nodes/ResNet\_trigger/train.py!}, while data loading, split logic, node metadata, dependency files, and artifacts are frozen.
+
+The scientific task metric is validation AUC, exposed to the control plane as \passthrough{\lstinline!val\_auc!} with \passthrough{\lstinline!metric\_direction=maximize!}. The node also prints a compatibility scalar \passthrough{\lstinline!val\_bpb = 1 - best\_val\_auc!} for older worker paths, but the paper reports AUC directly.
+
+\subsection{Fixed-Budget Campaign Protocol}\label{fixed-budget-campaign-protocol}
+
+Each campaign starts from a reset node state and a fixed budget. The canonical five-trial campaign uses:
+
+\begin{table*}[t]
+\small
+\begin{tabular}{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 2\tabcolsep) * \real{0.5000}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 2\tabcolsep) * \real{0.5000}}@{}}
+\toprule
+\begin{minipage}[b]{\linewidth}\raggedright
+Field
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Value
+\end{minipage} \\
+\midrule
+\bottomrule
+Node & \passthrough{\lstinline!resnet\_trigger!} \\
+Campaign & \passthrough{\lstinline!kdd\_main\_5trial!} \\
+Budget & 5 trials \\
+Manager & \passthrough{\lstinline!prompt\_manager!} with structured state-aware hyperparameter proposals \\
+Memory mode & \passthrough{\lstinline!append\_only\_summary\_with\_rationale!} \\
+Worker & \passthrough{\lstinline!claw\_style\_worker!} with deterministic patch path for constant edits \\
+Acceptance rule & keep iff candidate \passthrough{\lstinline!val\_auc!} improves over current best \\
+\end{tabular}
+\end{table*}
+
+For every trial, the control plane records the proposal, patch reference, raw log reference, parsed metrics, validity status, failure category if any, decision rationale, provenance IDs, and reproducibility hashes. A valid improving trial is kept; a valid non-improving trial is discarded; an invalid trial is failed invalid.
+
+\subsection{Memory Ablation Design}\label{memory-ablation-design}
+
+The memory ablation runs equal budgets under three conditions: \passthrough{\lstinline!none!}, \passthrough{\lstinline!append\_only\_summary!}, and \passthrough{\lstinline!append\_only\_summary\_with\_rationale!}. Each arm uses the same node, budget, metric parser, acceptance rule, editable scope, and starting-state reset. The primary outcome is repeated-bad rate, computed as:
+
+\begin{lstlisting}
+RepeatedBadRate = repeated_bad_proposals / total_proposals
+\end{lstlisting}
+
+A repeated-bad proposal is one that repeats the same edit target and edit mechanism as a prior rejected, invalid, or degraded trial without adding a new corrective rationale, constraint, or justification.
+
+The hypothesis is pre-stated before results:
+
+\begin{lstlisting}
+repeated_bad_rate(none) > repeated_bad_rate(append_only_summary)
+                        > repeated_bad_rate(append_only_summary_with_rationale)
+\end{lstlisting}
+
+Rationale-augmented memory should reduce repeated-bad rate more than raw summaries because it gives the manager a targeted failure signal rather than history noise. This hypothesis is grounded in OpenAI's map-not-manual framing and Böckeler's combination of feedforward guides with feedback sensors. If the result is flat or reversed, it is a valid negative finding and is reported as such.
+
+\textbf{Two ablation configurations are reported.} The first uses \passthrough{\lstinline!prompt\_manager!}, which delegates to \passthrough{\lstinline!select\_structured\_hyperparameter\_edit!}, a deterministic round-robin indexed on \passthrough{\lstinline!budget\_index!}. Memory context is injected correctly and differs in content across modes, but the selector's determinism means it cannot produce a different proposal sequence regardless of memory content. This arm is reported as a design-constrained negative finding.
+
+The second ablation uses \passthrough{\lstinline!LangGraphManager!} (\passthrough{\lstinline!langgraph\_manager!}), which calls \passthrough{\lstinline!qwen2.5-coder:7b!} via Ollama at \passthrough{\lstinline!temperature=0.7!}. LLM proposals are converted to deterministic patches via the \passthrough{\lstinline!\_extract\_structured\_edit!} bridge; training does not require a live external coding agent. Campaign IDs: \passthrough{\lstinline!lg\_ablation2\_none!}, \passthrough{\lstinline!lg\_ablation2\_append\_only\_summary!}, \passthrough{\lstinline!lg\_ablation2\_append\_only\_summary\_with\_rationale!} (budget=10 each). Memory injection is verified per-trial by recording the SHA-256 of the formatted context in the ledger \passthrough{\lstinline!extra.manager.context\_sha256!} field; all 30 context hashes across the three arms are distinct (10 per arm), confirming that memory accumulates correctly across trials and differs across modes.
+
+A governance finding from the original five-trial LangGraph runs (\passthrough{\lstinline!lg\_ablation\_*!}): the \passthrough{\lstinline!edit\_failed!} failure mode arises when the \passthrough{\lstinline!claw\_style\_worker!} cannot translate free-form LLM proposals into file patches without a live AI coding agent. Training executes against the unmodified source; the worker reports ``worker did not modify train.py.'' The control plane correctly classifies these trials as \passthrough{\lstinline!failed\_invalid / edit\_failed!} --- it does not accept a baseline metric obtained on an unedited file as a keep. This demonstrates the governance layer's integrity under a novel failure mode. The v2 campaigns eliminate this dependency via the deterministic-patch bridge (zero \passthrough{\lstinline!edit\_failed!} outcomes in 30 trials).
+
+\subsection{Stress Trial}\label{stress-trial}
+
+The stress trial exercises invalid edit-scope handling. A dedicated scope-violation worker generates a patch that touches a forbidden file. The expected control-plane response is:
+
+\begin{lstlisting}
+worker attempts forbidden edit
+  -> scope validator rejects patch
+  -> trial is marked failed_invalid / invalid_edit_scope
+  -> patch and raw log references are retained
+  -> git state remains unchanged
+  -> pending guard is removed
+\end{lstlisting}
+
+This trial demonstrates that invalid actions are first-class audit objects rather than missing data.
+
+\subsection{Governance Metrics}\label{governance-metrics}
+
+Governance metrics are the primary evaluation criterion in this work. They measure the reliability of the experimentation process itself --- how many trials were valid, how many failures were classified and recorded, whether provenance is complete, and whether the agent repeated known-bad proposals. A campaign can show a high task metric while simultaneously hiding failures, producing unauditable decisions, or running on corrupted state; governance metrics make these behaviors visible. Task-metric AUC is reported as secondary evidence that the loop runs correctly end-to-end.
+
+\textbf{Definition 1 (Governance Metrics Suite).} Given a fixed-budget campaign of \(N\) trials, the following metrics characterise process reliability:
+
+\begin{table*}[t]
+\small
+\begin{tabular}{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule
+\begin{minipage}[b]{\linewidth}\raggedright
+Metric
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Formal definition
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+What it detects
+\end{minipage} \\
+\midrule
+\bottomrule
+\textbf{Acceptance rate} & \(\lvert\text{kept}\rvert / N\) & Whether the agent produces valid improving edits at all. \\
+\textbf{Invalid rate} & \(\lvert\text{failed\_invalid}\rvert / N\) & Proportion of trials that could not be evaluated. \\
+\textbf{Repeated-bad rate} & Repeated-bad proposals \(/ N\) & Whether the agent avoids redundant failure modes across trials. \\
+\textbf{Complete provenance rate} & Trials with all five IDs (proposal, patch, run, metric, decision) \(/ N\) & Whether every trial is independently reproducible. \\
+\textbf{Artifact capture completeness} & Trials with captured patch and log refs \(/ N\) & Whether physical evidence is retained for every trial. \\
+\textbf{Failure taxonomy} & Counts per \passthrough{\lstinline!FailureCategory!} & Whether failures are classified, not silently discarded. \\
+\textbf{Scope-violation count} & Trials rejected for editing frozen files & Whether the agent respects editable-scope constraints. \\
+\textbf{Gain per budget unit} & Net task-metric gain \(/ N\) & Secondary: whether governance overhead impedes improvement. \\
+\end{tabular}
+\end{table*}
+
+A well-governed campaign is not necessarily one with high acceptance rate. A campaign with 60\% invalid rate but 100\% provenance completeness, correct failure taxonomy, and no scope violations provides more interpretable evidence than one with 100\% acceptance rate and no audit trail.
+
+\subsection{Failure Taxonomy}\label{failure-taxonomy}
+
+\textbf{Table 2: Failure taxonomy for autonomous ML experimentation.}
+
+\begin{table*}[t]
+\small
+\begin{tabular}{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule
+\begin{minipage}[b]{\linewidth}\raggedright
+Category
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Definition
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Control-plane response
+\end{minipage} \\
+\midrule
+\bottomrule
+\passthrough{\lstinline!invalid\_edit\_scope!} & Patch touched a disallowed file or region. & Mark \passthrough{\lstinline!failed\_invalid!}, retain patch reference, do not commit state. \\
+\passthrough{\lstinline!syntax\_error!} & Code cannot be parsed or imported. & Mark \passthrough{\lstinline!failed\_invalid!}, retain logs, do not keep patch. \\
+\passthrough{\lstinline!runtime\_error!} & Training command exits nonzero. & Mark \passthrough{\lstinline!failed\_invalid!}, retain raw log. \\
+\passthrough{\lstinline!metric\_missing!} & Run completes but expected metric cannot be parsed. & Mark \passthrough{\lstinline!failed\_invalid!}, retain run artifact. \\
+\passthrough{\lstinline!degraded\_metric!} & Valid run is worse than current best. & Mark \passthrough{\lstinline!discarded!}, revert or avoid committing candidate state. \\
+\passthrough{\lstinline!no\_op\_patch!} & Worker produced no effective code change. & Mark \passthrough{\lstinline!failed\_invalid!}, skip training execution. \\
+\passthrough{\lstinline!edit\_failed!} & Worker ran but did not modify the target file (e.g., no AI coding agent present to apply a free-form LLM proposal). & Mark \passthrough{\lstinline!failed\_invalid!}, retain run artifact; do not accept baseline metric as a keep. \\
+\end{tabular}
+\end{table*}
+
+The taxonomy is included in the main experiment section so the reader can interpret failures before seeing results.

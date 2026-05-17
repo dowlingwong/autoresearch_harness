@@ -1,0 +1,14 @@
+name: openml_bank_marketing
+dataset:
+  source: openml
+  dataset_id: 1461
+  dataset_name: bank-marketing
+  target: y
+editable_scope:
+  allowed_files:
+    - config.yaml
+  frozen_files:
+    - train.py
+    - benchmark.py
+    - README.md
+metric: val_auc

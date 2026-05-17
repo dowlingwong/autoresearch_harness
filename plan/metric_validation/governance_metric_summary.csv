@@ -1,0 +1,8 @@
+campaign_id,node_id,manager_mode,memory_mode,trials,kept,discarded,failed_invalid,valid_fraction,invalid_action_rate,repeated_bad_rate,provenance_completeness,metric_name,best_metric,failure_categories
+kdd_resnet_scientific_20,resnet_trigger,prompt_manager,append_only_summary_with_rationale,20,4,5,11,0.450000,0.550000,0.700000,1.000000,val_auc,0.782733000,degraded_metric=5; proposal_precondition_failed=11
+openml_credit_g_main_20,openml_credit_g,langgraph_manager,append_only_summary,20,1,19,0,1.000000,0.000000,0.900000,1.000000,val_auc,0.761058000,degraded_metric=19
+openml_bank_marketing_main_20,openml_bank_marketing,langgraph_manager,append_only_summary,20,7,1,12,0.400000,0.600000,0.550000,1.000000,val_auc,0.934117000,degraded_metric=1; invalid_config=12
+lr_synth_lg_summary,lr_synthetic,langgraph_manager,append_only_summary,10,2,8,0,1.000000,0.000000,0.700000,1.000000,val_score,0.922833000,degraded_metric=8
+mlagentbench_vectorization_main_30,mlagentbench_vectorization,baseline_manager,append_only_summary,30,2,4,24,0.200000,0.800000,0.866667,1.000000,speed_score,10265.144599824,degraded_metric=4; proposal_precondition_failed=24
+metric_validation_vectorization_same_seed_a,mlagentbench_vectorization,baseline_manager,append_only_summary,6,2,4,0,1.000000,0.000000,0.500000,1.000000,speed_score,9929.699265382,degraded_metric=4
+metric_validation_vectorization_same_seed_b,mlagentbench_vectorization,baseline_manager,append_only_summary,6,2,4,0,1.000000,0.000000,0.500000,1.000000,speed_score,10517.123932822,degraded_metric=4

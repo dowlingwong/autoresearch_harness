@@ -1,0 +1,10 @@
+ledger,method,threshold,total_trials,repeated_bad_count,repeated_bad_rate,repeated_invalid_count,repeated_degraded_count,flagged_trial_ids
+experiments/ledgers/p8_memory10_none_trials.jsonl,hybrid,0.6,10,6,0.6,0,6,"p8_memory10_none-trial-003,p8_memory10_none-trial-005,p8_memory10_none-trial-006,p8_memory10_none-trial-007,p8_memory10_none-trial-009,p8_memory10_none-trial-010"
+experiments/ledgers/p8_memory10_none_trials.jsonl,token_set_jaccard,0.6,10,2,0.2,0,2,"p8_memory10_none-trial-006,p8_memory10_none-trial-007"
+experiments/ledgers/p8_memory10_none_trials.jsonl,fuzzy_sequence,0.6,10,3,0.3,0,3,"p8_memory10_none-trial-006,p8_memory10_none-trial-007,p8_memory10_none-trial-009"
+experiments/ledgers/p8_memory10_append_only_summary_trials.jsonl,hybrid,0.6,10,4,0.4,0,4,"p8_memory10_append_only_summary-trial-003,p8_memory10_append_only_summary-trial-005,p8_memory10_append_only_summary-trial-007,p8_memory10_append_only_summary-trial-008"
+experiments/ledgers/p8_memory10_append_only_summary_trials.jsonl,token_set_jaccard,0.6,10,0,0.0,0,0,
+experiments/ledgers/p8_memory10_append_only_summary_trials.jsonl,fuzzy_sequence,0.6,10,1,0.1,0,1,p8_memory10_append_only_summary-trial-007
+experiments/ledgers/p8_memory10_append_only_summary_with_rationale_trials.jsonl,hybrid,0.6,10,4,0.4,0,4,"p8_memory10_append_only_summary_with_rationale-trial-003,p8_memory10_append_only_summary_with_rationale-trial-005,p8_memory10_append_only_summary_with_rationale-trial-007,p8_memory10_append_only_summary_with_rationale-trial-008"
+experiments/ledgers/p8_memory10_append_only_summary_with_rationale_trials.jsonl,token_set_jaccard,0.6,10,0,0.0,0,0,
+experiments/ledgers/p8_memory10_append_only_summary_with_rationale_trials.jsonl,fuzzy_sequence,0.6,10,1,0.1,0,1,p8_memory10_append_only_summary_with_rationale-trial-007

@@ -15,7 +15,12 @@ class PromptManager:
         memory_context: MemoryContext,
         node_spec: NodeSpec,
     ) -> ManagerProposal:
-        summary, concrete_objective, base_rationale = select_bounded_objective(status, memory_context)
+        editable_path = node_spec.editable_paths[0] if node_spec.editable_paths else "train.py"
+        summary, concrete_objective, base_rationale, extra = select_bounded_objective(
+            status,
+            memory_context,
+            editable_path=editable_path,
+        )
         repeated_warning = ""
         if memory_context.repeated_bad_stats.repeated_bad_count:
             repeated_warning = (
@@ -44,4 +49,5 @@ class PromptManager:
             ),
             target_files=node_spec.editable_paths,
             objective=objective,
+            extra=extra,
         )

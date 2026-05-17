@@ -1,0 +1,8 @@
+implementation: loop
+batch_size: 8
+image_size: 32
+num_filters: 8
+kernel_size: 3
+stride: 2
+padding: 2
+repeat_count: 3

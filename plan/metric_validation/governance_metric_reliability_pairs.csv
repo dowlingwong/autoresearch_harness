@@ -1,0 +1,2 @@
+label,left_campaign_id,right_campaign_id,paired_trials,decision_agreement,mean_abs_metric_delta,max_abs_metric_delta
+vectorization_same_seed,metric_validation_vectorization_same_seed_a,metric_validation_vectorization_same_seed_b,6,1.000000,0.000073823,0.000230000

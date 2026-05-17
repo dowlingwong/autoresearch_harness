@@ -9,7 +9,7 @@ python3 scripts/reset_node_state.py --node resnet_trigger --dry-run
 # Reset editable files to a fixed baseline ref instead of moving HEAD
 python3 scripts/reset_node_state.py --node resnet_trigger --baseline-ref d589d88
 
-# Reset node files only (does not touch any ledger or artifacts)
+# Reset node files + node-local runtime state only
 python3 scripts/reset_node_state.py --node resnet_trigger
 
 # Reset node files + wipe a specific campaign's ledger and artifacts
@@ -51,30 +51,68 @@ def _sha256(path: Path) -> str:
 
 
 def _git_checkout(rel_path: str, node_root: Path, dry_run: bool, baseline_ref: str | None) -> None:
-    """Restore *rel_path* inside *node_root* to HEAD or a fixed baseline ref."""
+    """Restore *rel_path* inside *node_root* to HEAD or a fixed baseline ref.
+
+    Uses ``git show`` to read file content and write it directly, avoiding any
+    dependency on the git index (immune to .git/index.lock stale lock files).
+    Falls back to ``git checkout`` if ``git show`` is unavailable.
+    """
     abs_path = node_root / rel_path
-    ref_args = [baseline_ref] if baseline_ref else []
-    label = f"git checkout {baseline_ref} --" if baseline_ref else "git checkout --"
+    ref = baseline_ref or "HEAD"
+    # Compute path relative to repo root for git show
+    try:
+        rel_to_repo = abs_path.relative_to(ROOT)
+    except ValueError:
+        rel_to_repo = Path(rel_path)
+    git_object = f"{ref}:{rel_to_repo.as_posix()}"
+
+    baseline_template = node_root / ".autoresearch_baseline" / rel_path
+
     if dry_run:
-        print(f"  [dry-run] {label} {abs_path}")
+        print(f"  [dry-run] git show {git_object} → {abs_path}")
+        if baseline_template.exists():
+            print(f"  [dry-run] baseline template available: {baseline_template}")
         return
+
+    # Preferred path: git show reads from the object store, no index required.
     result = subprocess.run(
+        ["git", "show", git_object],
+        cwd=str(ROOT),
+        capture_output=True,
+    )
+    if result.returncode == 0:
+        abs_path.write_bytes(result.stdout)
+        print(f"  restored: {abs_path}  (source: {ref})")
+        return
+
+    # Some paper-validation nodes are intentionally untracked fixtures. For
+    # those, restore from a node-local immutable baseline template.
+    if baseline_template.exists():
+        abs_path.parent.mkdir(parents=True, exist_ok=True)
+        abs_path.write_bytes(baseline_template.read_bytes())
+        try:
+            source = baseline_template.relative_to(ROOT)
+        except ValueError:
+            source = baseline_template
+        print(f"  restored: {abs_path}  (source: {source})")
+        return
+
+    # Fallback: classic git checkout (may fail if index.lock exists).
+    ref_args = [baseline_ref] if baseline_ref else []
+    result2 = subprocess.run(
         ["git", "checkout", *ref_args, "--", str(abs_path)],
         cwd=str(ROOT),
         capture_output=True,
         text=True,
     )
-    if result.returncode != 0:
-        # Tolerate: if the file was never committed (e.g. in a fresh worktree),
-        # git checkout will error; warn but continue.
+    if result2.returncode != 0:
         print(
-            f"  [warn] {label} {abs_path} exited {result.returncode}: "
-            f"{result.stderr.strip()}",
+            f"  [warn] git checkout -- {abs_path} exited {result2.returncode}: "
+            f"{result2.stderr.strip()}",
             file=sys.stderr,
         )
     else:
-        source = baseline_ref or "HEAD"
-        print(f"  restored: {abs_path}  (source: {source})")
+        print(f"  restored (fallback): {abs_path}  (source: {ref})")
 
 
 def _remove_file(path: Path, label: str, dry_run: bool) -> None:
@@ -135,14 +173,17 @@ def reset_node(
     #      .autoresearch_state.json  — stores best_bpb / best_commit / pending
     #      results.tsv               — per-trial results table
     #      experiment_memory.jsonl   — legacy memory event log
+    #      run.log                   — latest legacy training output
+    #      artifacts/                — node-local checkpoints and metrics
     #
     #    If these are NOT cleared, the legacy ensure_autoresearch_baseline()
     #    sees an existing best_bpb and skips baseline re-establishment, causing
     #    every ablation arm to inherit the previous arm's best state and produce
     #    identical results.
     print("\nStep 2 — clear legacy node-local state:")
-    for legacy_file in (".autoresearch_state.json", "results.tsv", "experiment_memory.jsonl"):
+    for legacy_file in (".autoresearch_state.json", "results.tsv", "experiment_memory.jsonl", "run.log"):
         _remove_file(node_root / legacy_file, f"legacy {legacy_file}", dry_run)
+    _remove_dir(node_root / "artifacts", "legacy artifacts directory", dry_run)
 
     # 3. (Optional) wipe campaign ledger + artifacts so the ablation starts fresh.
     if campaign_id:
@@ -161,18 +202,11 @@ def reset_node(
         events = EXPERIMENTS_DIR / "events" / f"{campaign_id}_events.jsonl"
         _remove_file(events, "event stream", dry_run)
 
-        # Artifacts directory for this campaign.
-        # Artifacts live under experiments/artifacts/<trial_id>/, not per-campaign,
-        # so we look for trial dirs whose name starts with campaign_id.
-        if ARTIFACTS_DIR.exists():
-            matched = sorted(ARTIFACTS_DIR.glob(f"{campaign_id}*"))
-            if matched:
-                for art_dir in matched:
-                    _remove_dir(art_dir, f"artifact dir ({art_dir.name})", dry_run)
-            else:
-                print(f"  [skip] no artifact dirs matching {campaign_id}* in {ARTIFACTS_DIR}")
+        # Artifacts for real campaigns are rooted at
+        # experiments/artifacts/<campaign_id>/trial-NNN/.
+        _remove_dir(ARTIFACTS_DIR / campaign_id, "campaign artifact dir", dry_run)
 
-    # 3. Report the post-reset hash of each editable file.
+    # 4. Report the post-reset hash of each editable file.
     if not dry_run:
         print("\nPost-reset file hashes (node_state_hash):")
         for rel_path in spec.editable_paths:
@@ -248,7 +282,11 @@ def main() -> int:
         # on-disk spelling even on case-insensitive filesystems.
         candidate = nodes_dir / spec.name
         matches = list(nodes_dir.glob("*"))
-        lower_matches = [m for m in matches if m.name.lower() == spec.name.lower()]
+        # Normalize hyphens and underscores so that e.g. "autoresearch-macos"
+        # is found when the registered name is "autoresearch_macos".
+        def _normalise(s: str) -> str:
+            return s.lower().replace("-", "_")
+        lower_matches = [m for m in matches if _normalise(m.name) == _normalise(spec.name)]
         if lower_matches:
             candidate = lower_matches[0]
         node_root = candidate

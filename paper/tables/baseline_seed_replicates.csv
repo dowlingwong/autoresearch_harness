@@ -1,0 +1,6 @@
+seed,returncode,log_ref,val_auc,status
+123,0,/Users/wongdowling/Documents/autoresearch_harness/experiments/artifacts/p8_baseline_seed_replicates/seed-123/run.log,0.774711,success
+124,0,/Users/wongdowling/Documents/autoresearch_harness/experiments/artifacts/p8_baseline_seed_replicates/seed-124/run.log,0.7715110000000001,success
+125,0,/Users/wongdowling/Documents/autoresearch_harness/experiments/artifacts/p8_baseline_seed_replicates/seed-125/run.log,0.810711,success
+126,0,/Users/wongdowling/Documents/autoresearch_harness/experiments/artifacts/p8_baseline_seed_replicates/seed-126/run.log,0.7847999999999999,success
+127,0,/Users/wongdowling/Documents/autoresearch_harness/experiments/artifacts/p8_baseline_seed_replicates/seed-127/run.log,0.782044,success

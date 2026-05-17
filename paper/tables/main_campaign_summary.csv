@@ -1,2 +1,2 @@
 campaign_id,node_id,metric_name,metric_direction,initial_metric,best_metric,final_accepted_metric,net_gain,gain_per_trial,gain_per_accepted_trial,gain_per_budget_unit,total_wall_clock_seconds,gain_per_hour
-ablation_append_only_summary_with_rationale,resnet_trigger,val_auc,maximize,0.773778,0.774711,0.774711,0.0009330000000000727,0.00018660000000001454,0.00046650000000003633,0.00018660000000001454,313.0,0.010730990415336298
+deepseek_resnet_append_only_summary_with_rationale_s3,resnet_trigger,val_auc,maximize,,,,,,,,86.0,

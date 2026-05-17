@@ -106,9 +106,23 @@ def main() -> int:
     parser.add_argument(
         "--model",
         default="qwen2.5-coder:7b",
-        help="Model id. Supports provider/model form such as ollama/qwen2.5-coder:7b.",
+        help=(
+            "Manager model id. Supports provider/model form such as "
+            "ollama/qwen2.5-coder:7b, openai/gpt-4.1, or "
+            "anthropic/claude-sonnet-4-20250514, or deepseek/deepseek-v4-flash."
+        ),
     )
     parser.add_argument("--host", default="http://localhost:11434", help="Ollama host URL.")
+    parser.add_argument("--temperature", type=float, default=0.7, help="Manager sampling temperature.")
+    parser.add_argument(
+        "--worker-model",
+        default=None,
+        help=(
+            "Worker model id for ClawWorker. Defaults to --model for local providers, "
+            "or qwen2.5-coder:7b when --model is a cloud provider."
+        ),
+    )
+    parser.add_argument("--worker-host", default=None, help="Worker Ollama-compatible host URL.")
     parser.add_argument(
         "--llm-backend",
         default="native",
@@ -162,6 +176,14 @@ def main() -> int:
             args.model,
             artifacts_dir=ROOT / "experiments" / "artifacts" / args.campaign_id,
         )
+    elif args.manager == "langgraph_manager":
+        from autoresearch.manager.langgraph_manager import LangGraphManager
+
+        proposal_backend = LangGraphManager(
+            model=args.model,
+            host=args.host,
+            temperature=args.temperature,
+        )
 
     if args.dry_run:
         dry_profile = _resolve_dry_run_profile(args.memory_mode, args.dry_run_profile)
@@ -181,7 +203,9 @@ def main() -> int:
             parser.error("--node-root is required for real campaigns")
         from autoresearch.worker.claw_worker import ClawWorker
         artifacts_dir = ROOT / "experiments" / "artifacts" / args.campaign_id
-        worker_model, worker_host = resolve_worker_model_args(args.model, args.host)
+        worker_model_id = args.worker_model or _default_worker_model(args.model)
+        worker_host_arg = args.worker_host or args.host
+        worker_model, worker_host = resolve_worker_model_args(worker_model_id, worker_host_arg)
         worker = ClawWorker(
             repo_root=ROOT,
             node_root=Path(args.node_root),
@@ -264,6 +288,12 @@ def _resolve_dry_run_profile(memory_mode: str, requested_profile: str) -> str:
         "append_only_summary": "ablation_append_only_summary",
         "append_only_summary_with_rationale": "ablation_append_only_summary_with_rationale",
     }[memory_mode]
+
+
+def _default_worker_model(manager_model: str) -> str:
+    if manager_model.startswith(("openai/", "anthropic/", "deepseek/")):
+        return "qwen2.5-coder:7b"
+    return manager_model
 
 
 def _default_events_path(records_path: Path, campaign_id: str) -> Path:

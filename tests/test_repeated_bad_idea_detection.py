@@ -13,11 +13,14 @@ from autoresearch.memory.schemas import (
 )
 from autoresearch.memory.similarity import (
     RepeatedBadStats,
+    compare_repetition_detectors,
     compute_repeated_bad_stats,
     extract_parameter_direction,
+    fuzzy_sequence_similarity,
     is_similar_bad_proposal,
     jaccard_similarity,
     normalize_text,
+    token_set_similarity,
 )
 
 
@@ -100,6 +103,26 @@ class TestJaccardSimilarity(unittest.TestCase):
 
     def test_one_empty(self):
         self.assertAlmostEqual(jaccard_similarity("a b", ""), 0.0)
+
+
+class TestSimilarityDetectorComparison(unittest.TestCase):
+    def test_token_set_similarity_ignores_order(self):
+        self.assertAlmostEqual(token_set_similarity("reduce learning rate", "rate learning reduce"), 1.0)
+
+    def test_fuzzy_sequence_similarity_detects_close_text(self):
+        self.assertGreater(fuzzy_sequence_similarity("lower dropout", "lower drop out"), 0.8)
+
+    def test_compare_repetition_detectors_returns_all_methods(self):
+        records = [
+            _record(1, decision=TrialDecision.DISCARDED, summary="reduce learning rate"),
+            _record(2, decision=TrialDecision.DISCARDED, summary="reduce learning rate"),
+        ]
+        rows = compare_repetition_detectors(records, text_threshold=0.5)
+        self.assertEqual(
+            {row.method for row in rows},
+            {"hybrid", "token_set_jaccard", "fuzzy_sequence"},
+        )
+        self.assertTrue(all(row.repeated_bad_count >= 1 for row in rows))
 
 
 class TestExtractParameterDirection(unittest.TestCase):

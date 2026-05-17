@@ -1,0 +1,75 @@
+{
+  "name": "mlagentbench_vectorization",
+  "description": "A bounded adapter for the MLAgentBench vectorization task. The original task asks an agent to improve a NumPy convolution forward pass; this node freezes the benchmark code and allows only config.yaml edits over implementation and workload settings.",
+  "external_benchmark": {
+    "name": "MLAgentBench",
+    "task": "vectorization",
+    "repository": "https://github.com/snap-stanford/MLAgentBench",
+    "source_commit": "5d71205cc20a8e95d43aa7cb7120e89ca3323e31",
+    "license": "MIT"
+  },
+  "editable_paths": [
+    "config.yaml"
+  ],
+  "editable_symbols": [
+    "batch_size",
+    "image_size",
+    "implementation",
+    "kernel_size",
+    "num_filters",
+    "padding",
+    "repeat_count",
+    "stride"
+  ],
+  "frozen_paths": [
+    "train.py",
+    "README.md",
+    "requirements.txt",
+    "artifacts/"
+  ],
+  "setup_command": null,
+  "run_command": "python3 train.py --config config.yaml",
+  "metric_name": "speed_score",
+  "metric_direction": "maximize",
+  "metric_parser": "autoresearch.nodes.mlagentbench_vectorization.metric_parser:parse_speed_score",
+  "acceptance_rule": "candidate_metric > current_best_metric",
+  "validity_checks": [
+    "metric_present",
+    "editable_scope_only",
+    "no_pending_trial",
+    "implementation_correctness"
+  ],
+  "failure_categories": [
+    "proposal_precondition_failed",
+    "scope_violation",
+    "invalid_patch",
+    "runtime_error",
+    "metric_missing",
+    "artifact_missing",
+    "invalid_config",
+    "noop_patch",
+    "repeated_bad_proposal"
+  ],
+  "allowed_values": {
+    "implementation": ["loop", "im2col", "einsum"]
+  },
+  "allowed_ranges": {
+    "batch_size": [2, 32],
+    "image_size": [16, 64],
+    "num_filters": [4, 32],
+    "kernel_size": [2, 5],
+    "stride": [1, 4],
+    "padding": [0, 4],
+    "repeat_count": [1, 7]
+  },
+  "required_outputs": [
+    "artifacts/metrics.json",
+    "artifacts/run.log",
+    "submission.csv"
+  ],
+  "default_budget": {
+    "trials": 10,
+    "max_wall_clock_hours": 0.5
+  },
+  "expected_runtime": "~0.1-3 seconds/trial depending on implementation and workload"
+}

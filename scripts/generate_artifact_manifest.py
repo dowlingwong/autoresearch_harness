@@ -182,25 +182,25 @@ def build_manifest() -> dict:
     kdd_campaigns = [
         {
             "id": "kdd_main_5trial",
-            "description": "Main KDD campaign — 5 dry-run trials, baseline_manager, append_only_summary_with_rationale",
+            "description": "Main KDD campaign — 5 real trials, prompt_manager, claw_style_worker, append_only_summary_with_rationale; 2 kept, 3 failed_invalid (runtime_error)",
             "ledger": _relative(LEDGERS_DIR / "kdd_main_5trial_trials.jsonl"),
             "trials": _count_trials(LEDGERS_DIR / "kdd_main_5trial_trials.jsonl"),
-            "worker": "dry_run",
-            "manager": "baseline_manager",
+            "worker": "claw_style_worker",
+            "manager": "prompt_manager",
             "memory_mode": "append_only_summary_with_rationale",
         },
         {
             "id": "kdd_stress_scope",
-            "description": "Stress trial — scope-violation worker, forces invalid_edit_scope failure",
+            "description": "Stress trial — stress_scope_violation_worker, forces invalid_edit_scope failure; validates first-class audit object recording",
             "ledger": _relative(LEDGERS_DIR / "kdd_stress_scope_trials.jsonl"),
             "trials": _count_trials(LEDGERS_DIR / "kdd_stress_scope_trials.jsonl"),
-            "worker": "claw_worker (scope-violation mode)",
+            "worker": "stress_scope_violation_worker",
             "manager": "baseline_manager",
             "memory_mode": "append_only_summary_with_rationale",
         },
         {
             "id": "kdd_stress_noop",
-            "description": "Stress trial — no-op patch worker, forces no_op_patch failure",
+            "description": "Stress trial — stress_no_op_patch_worker, forces no_op_patch failure; validates no-op guard and first-class audit object recording",
             "ledger": _relative(LEDGERS_DIR / "kdd_stress_noop_trials.jsonl"),
             "trials": _count_trials(LEDGERS_DIR / "kdd_stress_noop_trials.jsonl"),
             "worker": "stress_no_op_patch_worker",
@@ -212,33 +212,33 @@ def build_manifest() -> dict:
     ablation_campaigns = [
         {
             "id": "ablation_none",
-            "description": "Memory ablation arm — no memory context",
+            "description": "Memory ablation arm — no memory context; 5 real trials, prompt_manager, claw_style_worker; 2 kept, 3 failed_invalid",
             "ledger": _relative(LEDGERS_DIR / "ablation_none_trials.jsonl"),
             "trials": _count_trials(LEDGERS_DIR / "ablation_none_trials.jsonl"),
-            "worker": "dry_run",
-            "manager": "baseline_manager",
+            "worker": "claw_style_worker",
+            "manager": "prompt_manager",
             "memory_mode": "none",
         },
         {
             "id": "ablation_append_only_summary",
-            "description": "Memory ablation arm — append-only summary (no rationale)",
+            "description": "Memory ablation arm — append-only summary (no rationale); 5 real trials, prompt_manager, claw_style_worker; 2 kept, 3 failed_invalid",
             "ledger": _relative(LEDGERS_DIR / "ablation_append_only_summary_trials.jsonl"),
             "trials": _count_trials(LEDGERS_DIR / "ablation_append_only_summary_trials.jsonl"),
-            "worker": "dry_run",
-            "manager": "baseline_manager",
+            "worker": "claw_style_worker",
+            "manager": "prompt_manager",
             "memory_mode": "append_only_summary",
         },
         {
             "id": "ablation_append_only_summary_with_rationale",
-            "description": "Memory ablation arm — append-only summary with rationale",
+            "description": "Memory ablation arm — append-only summary with rationale; 5 real trials, prompt_manager, claw_style_worker; 2 kept, 3 failed_invalid",
             "ledger": _relative(
                 LEDGERS_DIR / "ablation_append_only_summary_with_rationale_trials.jsonl"
             ),
             "trials": _count_trials(
                 LEDGERS_DIR / "ablation_append_only_summary_with_rationale_trials.jsonl"
             ),
-            "worker": "dry_run",
-            "manager": "baseline_manager",
+            "worker": "claw_style_worker",
+            "manager": "prompt_manager",
             "memory_mode": "append_only_summary_with_rationale",
         },
     ]
@@ -246,27 +246,61 @@ def build_manifest() -> dict:
     manager_comparison_campaigns = [
         {
             "id": "manager_comparison_baseline_manager",
-            "description": "Manager comparison — baseline_manager, 5 dry-run trials",
+            "description": "Manager comparison — baseline_manager, 5 real deterministic-patch trials; 2 kept, 3 discarded",
             "ledger": _relative(
                 LEDGERS_DIR / "manager_comparison_baseline_manager_trials.jsonl"
             ),
             "trials": _count_trials(
                 LEDGERS_DIR / "manager_comparison_baseline_manager_trials.jsonl"
             ),
-            "worker": "dry_run",
+            "worker": "claw_style_worker_deterministic_patch",
             "manager": "baseline_manager",
             "memory_mode": "append_only_summary_with_rationale",
         },
         {
             "id": "manager_comparison_prompt_manager",
-            "description": "Manager comparison — prompt_manager, 5 dry-run trials",
+            "description": "Manager comparison — prompt_manager, 5 real deterministic-patch trials; 2 kept, 3 discarded",
             "ledger": _relative(
                 LEDGERS_DIR / "manager_comparison_prompt_manager_trials.jsonl"
             ),
             "trials": _count_trials(
                 LEDGERS_DIR / "manager_comparison_prompt_manager_trials.jsonl"
             ),
-            "worker": "dry_run",
+            "worker": "claw_style_worker_deterministic_patch",
+            "manager": "prompt_manager",
+            "memory_mode": "append_only_summary_with_rationale",
+        },
+    ]
+
+    optional_p8_campaigns = [
+        {
+            "id": "p8_memory10_none",
+            "description": "Optional Priority 8 memory extension — no memory, 10 real deterministic-patch trials; 3 kept, 7 discarded",
+            "ledger": _relative(LEDGERS_DIR / "p8_memory10_none_trials.jsonl"),
+            "trials": _count_trials(LEDGERS_DIR / "p8_memory10_none_trials.jsonl"),
+            "worker": "claw_style_worker_deterministic_patch",
+            "manager": "prompt_manager",
+            "memory_mode": "none",
+        },
+        {
+            "id": "p8_memory10_append_only_summary",
+            "description": "Optional Priority 8 memory extension — append-only summary, 10 real deterministic-patch trials; 4 kept, 5 discarded, 1 precondition failure",
+            "ledger": _relative(LEDGERS_DIR / "p8_memory10_append_only_summary_trials.jsonl"),
+            "trials": _count_trials(LEDGERS_DIR / "p8_memory10_append_only_summary_trials.jsonl"),
+            "worker": "claw_style_worker_deterministic_patch",
+            "manager": "prompt_manager",
+            "memory_mode": "append_only_summary",
+        },
+        {
+            "id": "p8_memory10_append_only_summary_with_rationale",
+            "description": "Optional Priority 8 memory extension — append-only summary with rationale, 10 real deterministic-patch trials; 4 kept, 5 discarded, 1 precondition failure",
+            "ledger": _relative(
+                LEDGERS_DIR / "p8_memory10_append_only_summary_with_rationale_trials.jsonl"
+            ),
+            "trials": _count_trials(
+                LEDGERS_DIR / "p8_memory10_append_only_summary_with_rationale_trials.jsonl"
+            ),
+            "worker": "claw_style_worker_deterministic_patch",
             "manager": "prompt_manager",
             "memory_mode": "append_only_summary_with_rationale",
         },
@@ -313,45 +347,64 @@ def build_manifest() -> dict:
     # Canonical run commands                                               #
     # ------------------------------------------------------------------ #
     run_commands = [
-        # Main 5-trial dry-run campaign
+        # Main 5-trial real campaign (requires Ollama + node directory)
         (
-            "python3 scripts/run_kdd_main_campaign.py "
-            "--node resnet_trigger --campaign-id kdd_main_5trial --budget 5 --dry-run"
+            "RESNET_TRIGGER_FAST_SEARCH=1 RESNET_TRIGGER_FAST_N_SIGNAL=1000 "
+            "RESNET_TRIGGER_FAST_N_NOISE=1000 RESNET_TRIGGER_FAST_TRACE_LEN=4096 "
+            "RESNET_TRIGGER_FAST_BATCH_SIZE=64 RESNET_TRIGGER_FAST_EPOCHS=3 "
+            "RESNET_TRIGGER_FAST_SKIP_TEST=1 RESNET_TRIGGER_EARLY_STOP_PATIENCE=2 "
+            "RESNET_TRIGGER_EARLY_STOP_MIN_DELTA=0.002 RESNET_TRIGGER_DEVICE=cpu "
+            "uv run --extra dev python scripts/run_kdd_main_campaign.py "
+            "--node resnet_trigger --budget 5 --campaign-id kdd_main_5trial "
+            "--manager prompt_manager --memory-mode append_only_summary_with_rationale "
+            "--node-root nodes/ResNet_trigger --model ollama/qwen2.5-coder:7b --no-export"
         ),
-        # Stress trial
+        # Stress trials
         (
             "python3 scripts/run_kdd_stress_trial.py "
             "--node resnet_trigger --campaign-id kdd_stress_scope"
         ),
         (
             "python3 scripts/run_kdd_noop_trial.py "
-            "--node resnet_trigger --campaign-id kdd_stress_noop"
+            "--node resnet_trigger --campaign-id kdd_stress_noop "
+            "--node-root nodes/ResNet_trigger"
         ),
-        # Memory ablation (dry-run campaigns)
+        # Memory ablation (real campaigns — requires Ollama + node directory)
         (
-            "python3 scripts/run_kdd_memory_ablation.py "
+            "RESNET_TRIGGER_FAST_SEARCH=1 RESNET_TRIGGER_FAST_N_SIGNAL=1000 "
+            "RESNET_TRIGGER_FAST_N_NOISE=1000 RESNET_TRIGGER_FAST_TRACE_LEN=4096 "
+            "RESNET_TRIGGER_FAST_BATCH_SIZE=64 RESNET_TRIGGER_FAST_EPOCHS=3 "
+            "RESNET_TRIGGER_FAST_SKIP_TEST=1 RESNET_TRIGGER_EARLY_STOP_PATIENCE=2 "
+            "RESNET_TRIGGER_EARLY_STOP_MIN_DELTA=0.002 RESNET_TRIGGER_DEVICE=cpu "
+            "uv run --extra dev python scripts/run_kdd_memory_ablation.py "
             "--node resnet_trigger --budget 5 --memory-mode none "
-            "--campaign-id ablation_none --dry-run"
+            "--campaign-id ablation_none --node-root nodes/ResNet_trigger "
+            "--model ollama/qwen2.5-coder:7b"
         ),
         (
-            "python3 scripts/run_kdd_memory_ablation.py "
+            "RESNET_TRIGGER_FAST_SEARCH=1 RESNET_TRIGGER_FAST_N_SIGNAL=1000 "
+            "RESNET_TRIGGER_FAST_N_NOISE=1000 RESNET_TRIGGER_FAST_TRACE_LEN=4096 "
+            "RESNET_TRIGGER_FAST_BATCH_SIZE=64 RESNET_TRIGGER_FAST_EPOCHS=3 "
+            "RESNET_TRIGGER_FAST_SKIP_TEST=1 RESNET_TRIGGER_EARLY_STOP_PATIENCE=2 "
+            "RESNET_TRIGGER_EARLY_STOP_MIN_DELTA=0.002 RESNET_TRIGGER_DEVICE=cpu "
+            "uv run --extra dev python scripts/run_kdd_memory_ablation.py "
             "--node resnet_trigger --budget 5 --memory-mode append_only_summary "
-            "--campaign-id ablation_append_only_summary --dry-run"
+            "--campaign-id ablation_append_only_summary --node-root nodes/ResNet_trigger "
+            "--model ollama/qwen2.5-coder:7b"
         ),
         (
-            "python3 scripts/run_kdd_memory_ablation.py "
+            "RESNET_TRIGGER_FAST_SEARCH=1 RESNET_TRIGGER_FAST_N_SIGNAL=1000 "
+            "RESNET_TRIGGER_FAST_N_NOISE=1000 RESNET_TRIGGER_FAST_TRACE_LEN=4096 "
+            "RESNET_TRIGGER_FAST_BATCH_SIZE=64 RESNET_TRIGGER_FAST_EPOCHS=3 "
+            "RESNET_TRIGGER_FAST_SKIP_TEST=1 RESNET_TRIGGER_EARLY_STOP_PATIENCE=2 "
+            "RESNET_TRIGGER_EARLY_STOP_MIN_DELTA=0.002 RESNET_TRIGGER_DEVICE=cpu "
+            "uv run --extra dev python scripts/run_kdd_memory_ablation.py "
             "--node resnet_trigger --budget 5 "
             "--memory-mode append_only_summary_with_rationale "
-            "--campaign-id ablation_append_only_summary_with_rationale --dry-run"
+            "--campaign-id ablation_append_only_summary_with_rationale "
+            "--node-root nodes/ResNet_trigger --model ollama/qwen2.5-coder:7b"
         ),
-        # Manager comparison (dry-run)
-        (
-            "python3 scripts/run_manager_comparison.py "
-            "--node resnet_trigger --budget 5 "
-            "--memory-mode append_only_summary_with_rationale "
-            "--managers baseline_manager prompt_manager --dry-run"
-        ),
-        # Export paper tables
+        # Export paper tables (full mode)
         (
             "python3 scripts/export_kdd_tables.py "
             "--main-campaign kdd_main_5trial "
@@ -364,6 +417,21 @@ def build_manifest() -> dict:
             "python3 scripts/export_kdd_figures.py "
             "--figure architecture --output paper/figures/fig1_architecture.svg"
         ),
+        (
+            "python3 scripts/export_kdd_figures.py --figure repeated_bad_rate "
+            "--input paper/tables/memory_ablation_summary.csv "
+            "--output paper/figures/fig2_repeated_bad_rate.svg"
+        ),
+        (
+            "python3 scripts/export_kdd_figures.py --figure decision_breakdown "
+            "--input paper/tables/accepted_discarded_invalid_counts.csv "
+            "--output paper/figures/fig3_decision_breakdown.svg"
+        ),
+        (
+            "python3 scripts/export_kdd_figures.py --figure trajectory "
+            "--input paper/tables/campaign_trajectory.csv "
+            "--output paper/figures/fig4_trajectory.svg"
+        ),
         # Artifact completeness check
         (
             "python3 scripts/check_kdd_artifact_completeness.py "
@@ -372,12 +440,15 @@ def build_manifest() -> dict:
             "ablation_append_only_summary_with_rationale "
             "kdd_stress_scope kdd_stress_noop"
         ),
+        # Artifact manifest
+        "python3 scripts/generate_artifact_manifest.py --output artifact_manifest.json",
     ]
 
     campaign_groups = {
         "kdd": kdd_campaigns,
         "memory_ablation": ablation_campaigns,
         "manager_comparison": manager_comparison_campaigns,
+        "optional_p8": optional_p8_campaigns,
     }
 
     manifest = {
@@ -394,11 +465,14 @@ def build_manifest() -> dict:
         "environment": environment,
         "run_commands": run_commands,
         "notes": (
-            "Campaigns tagged worker=dry_run use DryRunWorker which generates "
-            "synthetic metrics without executing actual training. Artifact paths "
-            "for dry-run trials (experiments/artifacts/dry_run_trial_*/...) are "
-            "placeholder references; the real governed mechanism (append-only "
-            "ledger, pending-trial guard, scope validation) is exercised in full."
+            "All primary campaigns (kdd_main_5trial, ablation_none, "
+            "ablation_append_only_summary, ablation_append_only_summary_with_rationale) "
+            "use claw_style_worker with prompt_manager running real training on the "
+            "ResNet-trigger node (CPU fast-search mode). Stress trials use synthetic "
+            "workers (stress_scope_violation_worker, stress_no_op_patch_worker) to "
+            "exercise forced failure paths. The governed control plane — append-only "
+            "ledger, pending-trial guard, scope validation, state machine — is "
+            "exercised identically in all modes."
         ),
     }
     return manifest

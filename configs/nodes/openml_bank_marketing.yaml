@@ -1,0 +1,88 @@
+{
+  "name": "openml_bank_marketing",
+  "description": "A public OpenML bank-marketing tabular binary-classification node using dataset ID 1461 and a deterministic sklearn preprocessing pipeline. The dataset ID, split, target handling, training code, and metric logging are frozen; only bounded config.yaml hyperparameters are editable.",
+  "dataset": {
+    "source": "openml",
+    "dataset_id": 1461,
+    "dataset_name": "bank-marketing",
+    "target": "y"
+  },
+  "task": {
+    "type": "binary_classification",
+    "metric": "val_auc",
+    "metric_direction": "maximize",
+    "seed": 42,
+    "split": {
+      "method": "stratified_train_val_test",
+      "train_size": 0.70,
+      "val_size": 0.15,
+      "test_size": 0.15
+    }
+  },
+  "editable_paths": [
+    "config.yaml"
+  ],
+  "editable_symbols": [
+    "C",
+    "class_weight",
+    "imputer",
+    "learning_rate",
+    "max_depth",
+    "max_iter",
+    "model_type",
+    "n_estimators",
+    "scaler"
+  ],
+  "frozen_paths": [
+    "train.py",
+    "benchmark.py",
+    "NodeSpec.yaml",
+    "README.md",
+    "requirements.txt",
+    "artifacts/"
+  ],
+  "setup_command": null,
+  "run_command": "python3 train.py --config config.yaml",
+  "metric_name": "val_auc",
+  "metric_direction": "maximize",
+  "metric_parser": "autoresearch.nodes.openml_bank_marketing.metric_parser:parse_val_auc",
+  "acceptance_rule": "candidate_metric > current_best_metric",
+  "validity_checks": [
+    "metric_present",
+    "editable_scope_only",
+    "no_pending_trial"
+  ],
+  "failure_categories": [
+    "proposal_precondition_failed",
+    "scope_violation",
+    "invalid_patch",
+    "runtime_error",
+    "metric_missing",
+    "artifact_missing",
+    "invalid_config",
+    "noop_patch",
+    "repeated_bad_proposal"
+  ],
+  "allowed_values": {
+    "model_type": ["logistic_regression", "random_forest", "gradient_boosting"],
+    "class_weight": [null, "balanced"],
+    "scaler": ["none", "standard", "minmax"],
+    "imputer": ["most_frequent", "constant"]
+  },
+  "allowed_ranges": {
+    "C": [0.001, 100.0],
+    "max_depth": [2, 30],
+    "n_estimators": [20, 500],
+    "learning_rate": [0.001, 0.5],
+    "max_iter": [100, 3000]
+  },
+  "required_outputs": [
+    "artifacts/metrics.json",
+    "artifacts/run.log"
+  ],
+  "default_budget": {
+    "trials": 10,
+    "max_wall_clock_hours": 0.75
+  },
+  "expected_runtime": "~3-15 seconds/trial after OpenML cache warm-up"
+}

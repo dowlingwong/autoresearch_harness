@@ -1,6 +1,6 @@
 {
   "name": "resnet_trigger",
-  "description": "Near-threshold detector waveform binary-classification benchmark using the ResNet_trigger node.",
+  "description": "Near-threshold detector waveform binary-classification benchmark with frozen H5 signal/noise traces, read-only preparation/splitting code, and a single editable 1D ResNet training entrypoint.",
   "editable_paths": [
     "train.py"
   ],
@@ -36,6 +36,9 @@
   "failure_categories": [
     "syntax_error",
     "runtime_error",
+    "edit_failed",
+    "proposal_precondition_failed",
+    "effective_config_unchanged",
     "metric_missing",
     "invalid_edit_scope",
     "degraded_metric",

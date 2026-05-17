@@ -206,9 +206,21 @@ or the provider-normalized form:
 ```
 
 Supported prefixes are `ollama/`, `vllm/`, `lm_studio/`, `llamacpp/`,
-`openai/`, and `anthropic/`. Local providers resolve base URLs from
+`openai/`, `anthropic/`, and `deepseek/`. Local providers resolve base URLs from
 `OLLAMA_BASE_URL`, `VLLM_BASE_URL`, `LMSTUDIO_BASE_URL`, or
 `LLAMACPP_BASE_URL`, with localhost defaults.
+
+For DeepSeek API manager runs:
+
+```bash
+export DEEPSEEK_API_KEY=...
+export DEEPSEEK_THINKING=disabled
+# optional:
+# export DEEPSEEK_BASE_URL=https://api.deepseek.com
+```
+
+Use `--model deepseek/deepseek-v4-flash` for the manager. On ResNet/ClawWorker
+runs, keep the worker local with `--worker-model qwen2.5-coder:7b`.
 
 ### Summarize a ledger
 
@@ -341,6 +353,382 @@ python3 scripts/generate_artifact_manifest.py --output artifact_manifest.json
 
 The root [`artifact_manifest.json`](artifact_manifest.json) indexes campaign
 ledgers, per-trial artifacts, paper tables, figures, and canonical run commands.
+
+---
+
+## Campaign Commands
+
+This section collects the active campaign commands by node. Use a unique
+`--campaign-id` when you want to preserve an earlier run. If a run is
+interrupted, recover or clear the pending guard before continuing.
+
+### Common Setup
+
+Local manager/worker runs use Ollama:
+
+```bash
+ollama serve
+ollama pull qwen2.5-coder:7b
+```
+
+DeepSeek-manager runs use the API for the manager only:
+
+```bash
+export DEEPSEEK_API_KEY=...
+export DEEPSEEK_THINKING=disabled
+```
+
+For ResNet runs with a DeepSeek manager, the worker remains local Qwen:
+
+```bash
+--model deepseek/deepseek-v4-flash \
+--worker-model qwen2.5-coder:7b \
+--host http://localhost:11434
+```
+
+### ResNet-Trigger Scientific Node
+
+Local prompt-manager campaign:
+
+```bash
+python3 scripts/reset_node_state.py \
+  --node resnet_trigger \
+  --campaign-id kdd_resnet_scientific_20 \
+  --node-root nodes/ResNet_trigger
+
+uv run python3 scripts/run_kdd_main_campaign.py \
+  --node resnet_trigger \
+  --campaign-id kdd_resnet_scientific_20 \
+  --budget 20 \
+  --manager prompt_manager \
+  --memory-mode append_only_summary_with_rationale \
+  --node-root nodes/ResNet_trigger \
+  --model qwen2.5-coder:7b \
+  --host http://localhost:11434
+```
+
+DeepSeek-manager smoke test, local Qwen worker:
+
+```bash
+rm -f experiments/ledgers/deepseek_v4_flash_smoke_trials.jsonl
+rm -f experiments/events/deepseek_v4_flash_smoke_events.jsonl
+rm -rf experiments/artifacts/deepseek_v4_flash_smoke
+
+uv run python3 scripts/run_kdd_memory_ablation.py \
+  --node resnet_trigger \
+  --memory-mode append_only_summary \
+  --campaign-id deepseek_v4_flash_smoke \
+  --node-root nodes/ResNet_trigger \
+  --budget 1 \
+  --manager langgraph_manager \
+  --model deepseek/deepseek-v4-flash \
+  --worker-model qwen2.5-coder:7b \
+  --host http://localhost:11434 \
+  --temperature 0.2 \
+  --no-export
+```
+
+DeepSeek-manager three-arm memory ablation, local Qwen worker:
+
+```bash
+for mode in none append_only_summary append_only_summary_with_rationale; do
+  cid="deepseek_v4_flash_resnet_${mode}"
+  python3 scripts/reset_node_state.py \
+    --node resnet_trigger \
+    --campaign-id "${cid}" \
+    --node-root nodes/ResNet_trigger
+
+  uv run python3 scripts/run_kdd_memory_ablation.py \
+    --node resnet_trigger \
+    --memory-mode "${mode}" \
+    --campaign-id "${cid}" \
+    --node-root nodes/ResNet_trigger \
+    --budget 10 \
+    --manager langgraph_manager \
+    --model deepseek/deepseek-v4-flash \
+    --worker-model qwen2.5-coder:7b \
+    --host http://localhost:11434 \
+    --temperature 0.2
+done
+```
+
+### OpenML Public Tabular Nodes
+
+Run both OpenML nodes with a local LangGraph manager:
+
+```bash
+uv run python3 scripts/run_openml_tabular_campaign.py \
+  --node all \
+  --budget 20 \
+  --manager langgraph_manager \
+  --memory-mode append_only_summary \
+  --model qwen2.5-coder:7b \
+  --host http://localhost:11434
+```
+
+Run both OpenML nodes with a DeepSeek API manager. These nodes use
+`LocalWorker`, so there is no separate LLM worker:
+
+```bash
+uv run python3 scripts/run_openml_tabular_campaign.py \
+  --node all \
+  --budget 20 \
+  --manager langgraph_manager \
+  --memory-mode append_only_summary \
+  --model deepseek/deepseek-v4-flash \
+  --temperature 0.2
+```
+
+Single-node variants:
+
+```bash
+uv run python3 scripts/run_openml_tabular_campaign.py \
+  --node openml_credit_g \
+  --budget 20 \
+  --manager langgraph_manager \
+  --memory-mode append_only_summary \
+  --model deepseek/deepseek-v4-flash \
+  --temperature 0.2
+
+uv run python3 scripts/run_openml_tabular_campaign.py \
+  --node openml_bank_marketing \
+  --budget 20 \
+  --manager langgraph_manager \
+  --memory-mode append_only_summary \
+  --model deepseek/deepseek-v4-flash \
+  --temperature 0.2
+```
+
+Export the OpenML paper table:
+
+```bash
+uv run python3 scripts/export_openml_paper_table.py
+```
+
+### lr_synthetic Node
+
+Baseline governed campaign:
+
+```bash
+uv run python3 scripts/run_lr_synthetic_campaign.py \
+  --budget 5
+```
+
+Local-manager LangGraph memory ablation:
+
+```bash
+uv run python3 scripts/run_lr_synthetic_lg_ablation.py \
+  --budget 10 \
+  --model qwen2.5-coder:7b \
+  --host http://localhost:11434
+```
+
+DeepSeek-manager LangGraph memory ablation. This node uses `LocalWorker`, so
+there is no separate LLM worker:
+
+```bash
+uv run python3 scripts/run_lr_synthetic_lg_ablation.py \
+  --budget 10 \
+  --model deepseek/deepseek-v4-flash \
+  --temperature 0.2
+```
+
+Analyze the lr_synthetic ablation:
+
+```bash
+uv run python3 scripts/analyze_lr_synthetic_lg_ablation.py
+```
+
+### MLAgentBench Vectorization Adapter
+
+Run the bounded external-benchmark adapter:
+
+```bash
+uv run python3 scripts/run_local_node_campaign.py \
+  --node mlagentbench_vectorization \
+  --campaign-id mlagentbench_vectorization_main_30 \
+  --budget 30 \
+  --manager baseline_manager \
+  --memory-mode append_only_summary
+```
+
+Same-configuration metric-validation reruns:
+
+```bash
+uv run python3 scripts/run_local_node_campaign.py \
+  --node mlagentbench_vectorization \
+  --campaign-id metric_validation_vectorization_same_seed_a \
+  --budget 6 \
+  --manager baseline_manager \
+  --memory-mode append_only_summary
+
+uv run python3 scripts/run_local_node_campaign.py \
+  --node mlagentbench_vectorization \
+  --campaign-id metric_validation_vectorization_same_seed_b \
+  --budget 6 \
+  --manager baseline_manager \
+  --memory-mode append_only_summary
+```
+
+### Stress Campaigns
+
+ResNet scope-violation stress:
+
+```bash
+uv run python3 scripts/run_kdd_stress_trial.py \
+  --campaign-id kdd_stress_scope \
+  --node-root nodes/ResNet_trigger
+```
+
+ResNet no-op stress:
+
+```bash
+uv run python3 scripts/run_kdd_noop_trial.py \
+  --campaign-id kdd_stress_noop \
+  --node-root nodes/ResNet_trigger
+```
+
+OpenML invalid-config stress:
+
+```bash
+uv run python3 scripts/run_openml_invalid_config_stress.py \
+  --node openml_bank_marketing \
+  --campaign-id openml_bank_marketing_invalid_config_stress
+```
+
+### Export and Analyze
+
+Summarize any ledger:
+
+```bash
+uv run python3 scripts/summarize_campaign.py \
+  --campaign-id <campaign_id> \
+  --records experiments/ledgers/<campaign_id>_trials.jsonl
+```
+
+Compute trial-level bootstrap CIs for current ledgers:
+
+```bash
+uv run python3 scripts/bootstrap_governance_cis.py \
+  --campaign kdd_resnet_scientific_20 --node resnet_trigger \
+  --campaign openml_credit_g_main_20 --node openml_credit_g \
+  --campaign openml_bank_marketing_main_20 --node openml_bank_marketing \
+  --samples 10000 \
+  --out A-Governed-Harness-for-Auditable-LLM-Driven-ML-Experimentation/tables/governance_bootstrap_cis.csv
+```
+
+Export metric-validation summaries and taxonomy-rating sheets:
+
+```bash
+uv run python3 scripts/validate_governance_metrics.py \
+  --campaign kdd_resnet_scientific_20 \
+  --campaign openml_credit_g_main_20 \
+  --campaign openml_bank_marketing_main_20 \
+  --campaign lr_synth_lg_summary \
+  --campaign mlagentbench_vectorization_main_30 \
+  --campaign metric_validation_vectorization_same_seed_a \
+  --campaign metric_validation_vectorization_same_seed_b \
+  --pair vectorization_same_seed:metric_validation_vectorization_same_seed_a:metric_validation_vectorization_same_seed_b
+
+uv run python3 scripts/reexecute_kept_trials.py \
+  --campaign mlagentbench_vectorization_main_30 \
+  --node mlagentbench_vectorization \
+  --limit 2 \
+  --tolerance 1500
+
+uv run python3 scripts/export_failure_taxonomy_labels.py \
+  --campaign kdd_resnet_scientific_20 \
+  --campaign openml_bank_marketing_main_20 \
+  --campaign mlagentbench_vectorization_main_30 \
+  --limit 30 \
+  --out plan/metric_validation/failure_taxonomy_sample.csv
+```
+
+Regenerate artifact manifest:
+
+```bash
+uv run python3 scripts/generate_artifact_manifest.py \
+  --output artifact_manifest.json
+```
+
+## Cleaning and Resetting Campaigns
+
+Prefer `reset_node_state.py` before rerunning a campaign. It restores editable
+files from the node baseline where available, removes legacy node-local state,
+and clears the selected campaign ledger, events, pending guard, and artifacts.
+
+```bash
+python3 scripts/reset_node_state.py \
+  --node resnet_trigger \
+  --campaign-id <campaign_id> \
+  --node-root nodes/ResNet_trigger
+
+python3 scripts/reset_node_state.py \
+  --node openml_credit_g \
+  --campaign-id openml_credit_g_main_20
+
+python3 scripts/reset_node_state.py \
+  --node openml_bank_marketing \
+  --campaign-id openml_bank_marketing_main_20
+
+python3 scripts/reset_node_state.py \
+  --node lr_synthetic \
+  --campaign-id lr_synth_lg_summary
+
+python3 scripts/reset_node_state.py \
+  --node mlagentbench_vectorization \
+  --campaign-id mlagentbench_vectorization_main_30
+```
+
+Manual cleanup for one campaign:
+
+```bash
+cid=<campaign_id>
+rm -f "experiments/ledgers/${cid}_trials.jsonl"
+rm -f "experiments/ledgers/${cid}_pending.json"
+rm -f "experiments/ledgers/${cid}_trials_pending.json"
+rm -f "experiments/events/${cid}_events.jsonl"
+rm -rf "experiments/artifacts/${cid}"
+```
+
+Clean the active OpenML paper campaigns:
+
+```bash
+for cid in openml_credit_g_main_20 openml_bank_marketing_main_20; do
+  rm -f "experiments/ledgers/${cid}_trials.jsonl"
+  rm -f "experiments/ledgers/${cid}_pending.json"
+  rm -f "experiments/ledgers/${cid}_trials_pending.json"
+  rm -f "experiments/events/${cid}_events.jsonl"
+  rm -rf "experiments/artifacts/${cid}"
+done
+```
+
+Clean the active lr_synthetic LangGraph ablation campaigns:
+
+```bash
+for cid in lr_synth_lg_none lr_synth_lg_summary lr_synth_lg_rationale; do
+  rm -f "experiments/ledgers/${cid}_trials.jsonl"
+  rm -f "experiments/ledgers/${cid}_pending.json"
+  rm -f "experiments/ledgers/${cid}_trials_pending.json"
+  rm -f "experiments/events/${cid}_events.jsonl"
+  rm -rf "experiments/artifacts/${cid}"
+done
+```
+
+Recover an interrupted pending trial instead of deleting it:
+
+```bash
+python3 scripts/recover_pending.py list
+python3 scripts/recover_pending.py inspect experiments/ledgers/<campaign_id>_pending.json
+python3 scripts/recover_pending.py fail experiments/ledgers/<campaign_id>_pending.json \
+  --node resnet_trigger \
+  --manager-mode langgraph_manager \
+  --worker-mode claw_style_worker_deterministic_patch \
+  --memory-mode append_only_summary \
+  --message "worker interrupted"
+```
+
+Do not run broad cleanup commands if you still need those ledgers for the paper.
 
 ---
 

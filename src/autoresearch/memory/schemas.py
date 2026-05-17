@@ -30,8 +30,12 @@ class TrialDecision(StrEnum):
 class FailureCategory(StrEnum):
     SYNTAX_ERROR = "syntax_error"
     RUNTIME_ERROR = "runtime_error"
+    EDIT_FAILED = "edit_failed"
+    PROPOSAL_PRECONDITION_FAILED = "proposal_precondition_failed"
+    EFFECTIVE_CONFIG_UNCHANGED = "effective_config_unchanged"
     METRIC_MISSING = "metric_missing"
     INVALID_EDIT_SCOPE = "invalid_edit_scope"
+    INVALID_CONFIG = "invalid_config"
     DEGRADED_METRIC = "degraded_metric"
     NO_OP_PATCH = "no_op_patch"
 
@@ -180,4 +184,3 @@ class TrialRecord:
             patch_hash=payload.get("patch_hash") or None,
             repeated_bad_count=int(payload.get("repeated_bad_count") or 0),
         )
-

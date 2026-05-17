@@ -34,7 +34,28 @@ class MemoryContext:
         return payload
 
 
-def build_memory_context(records: list[TrialRecord], mode: str | MemoryMode, node_spec: NodeSpec, budget_index: int) -> MemoryContext:
+def build_memory_context(
+    records: list[TrialRecord],
+    mode: str | MemoryMode,
+    node_spec: NodeSpec,
+    budget_index: int,
+    rationale_max_tokens: int | None = None,
+) -> MemoryContext:
+    """Build a ``MemoryContext`` for injection into the manager.
+
+    Args:
+        records: All prior ``TrialRecord`` objects for this campaign.
+        mode: Memory mode — ``none``, ``append_only_summary``, or
+            ``append_only_summary_with_rationale``.
+        node_spec: The current node specification.
+        budget_index: Current trial index (1-based).
+        rationale_max_tokens: When set and mode is
+            ``append_only_summary_with_rationale``, truncate each trial's
+            rationale to this many whitespace-delimited tokens before
+            injection.  ``None`` (default) means no truncation.
+            Use this parameter to test the verbosity hypothesis: does shorter
+            rationale improve or match summary-only performance?
+    """
     memory_mode = MemoryMode(mode)
     raw_text = "\n".join(json.dumps(record.to_dict(), sort_keys=True) for record in records)
     repeated = compute_repeated_bad_stats(records)
@@ -51,7 +72,10 @@ def build_memory_context(records: list[TrialRecord], mode: str | MemoryMode, nod
     elif memory_mode == MemoryMode.APPEND_ONLY_SUMMARY:
         context = "\n".join(_summary_line(record, include_rationale=False) for record in records)
     else:
-        lines = [_summary_line(record, include_rationale=True) for record in records]
+        lines = [
+            _summary_line(record, include_rationale=True, rationale_max_tokens=rationale_max_tokens)
+            for record in records
+        ]
         if repeated.repeated_bad_count:
             lines.append(f"repeated_bad_warnings={','.join(repeated.flagged_trial_ids)}")
         lines.append(_best_strategy_line(records, node_spec.metric_name))
@@ -69,8 +93,30 @@ def build_memory_context(records: list[TrialRecord], mode: str | MemoryMode, nod
     )
 
 
-def _summary_line(record: TrialRecord, include_rationale: bool) -> str:
-    metric = record.parsed_metrics.get("val_auc")
+def _truncate_tokens(text: str, max_tokens: int | None) -> str:
+    """Truncate *text* to at most *max_tokens* whitespace-delimited tokens.
+
+    Returns *text* unchanged when *max_tokens* is ``None`` or the text is
+    already within the limit.
+    """
+    if max_tokens is None or not text:
+        return text
+    tokens = text.split()
+    if len(tokens) <= max_tokens:
+        return text
+    return " ".join(tokens[:max_tokens]) + " …"
+
+
+def _summary_line(
+    record: TrialRecord,
+    include_rationale: bool,
+    rationale_max_tokens: int | None = None,
+) -> str:
+    # Use the node's metric name if known; fall back to val_auc for backwards
+    # compatibility with existing callers and tests.
+    metric = record.parsed_metrics.get("val_auc") or next(
+        iter(record.parsed_metrics.values()), None
+    )
     metric_text = f"{metric:.6f}" if metric is not None else "missing"
     line = (
         f"{record.trial_id}: decision={record.decision.value}; "
@@ -79,7 +125,8 @@ def _summary_line(record: TrialRecord, include_rationale: bool) -> str:
     )
     if include_rationale:
         failure = record.failure_category.value if record.failure_category else "none"
-        line += f"; rationale={record.decision_rationale}; failure={failure}"
+        rationale = _truncate_tokens(record.decision_rationale or "", rationale_max_tokens)
+        line += f"; rationale={rationale}; failure={failure}"
     return line
 
 

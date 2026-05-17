@@ -1,0 +1,14 @@
+{
+  "created_at": "2026-05-13T10:18:35Z",
+  "git_commit_after": "e599b18-dirty",
+  "kept_trials": 2,
+  "ledger": "experiments/ledgers/manager_comparison_prompt_manager_trials.jsonl",
+  "metric_direction": "maximize",
+  "metric_name": "val_auc",
+  "node_state_hash": "4810f89c30582a07d7d1b2319f6a912f916926cd5479b4a12c29b5b4df3106f0",
+  "patch_hash": "6ff3052811745decc54d877e7b2c3ee03191afc1d32aa6e0547713e85b56b037",
+  "patch_ref": "/Users/wongdowling/Documents/autoresearch_harness/experiments/artifacts/manager_comparison_prompt_manager/trial-004/patch.diff",
+  "promoted_metric": 0.776533,
+  "promoted_trial": "manager_comparison_prompt_manager-trial-004",
+  "total_trials": 5
+}

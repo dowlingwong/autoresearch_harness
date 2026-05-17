@@ -1,0 +1,41 @@
+{
+  "name": "lr_synthetic",
+  "description": "Synthetic binary-classification node (NumPy logistic regression). Provides a second experiment surface for governance-protocol validation independent of the ResNet-trigger node. Editable training hyperparameters: LEARNING_RATE, REGULARIZATION, N_EPOCHS, and BATCH_SIZE.",
+  "editable_paths": [
+    "train.py"
+  ],
+  "editable_symbols": [
+    "LEARNING_RATE",
+    "REGULARIZATION",
+    "N_EPOCHS",
+    "BATCH_SIZE"
+  ],
+  "frozen_paths": [
+    "artifacts/"
+  ],
+  "setup_command": "",
+  "run_command": "python3 train.py",
+  "metric_name": "val_score",
+  "metric_direction": "maximize",
+  "metric_parser": "autoresearch.nodes.lr_synthetic.metric_parser:parse_val_score",
+  "acceptance_rule": "candidate_metric > current_best_metric",
+  "validity_checks": [
+    "metric_present",
+    "finite_metric",
+    "editable_scope_only",
+    "command_exit_zero"
+  ],
+  "default_budget": {
+    "trials": 10,
+    "max_wall_clock_hours": 1
+  },
+  "expected_runtime": "seconds per trial on CPU (pure NumPy, no GPU required)",
+  "failure_categories": [
+    "syntax_error",
+    "runtime_error",
+    "metric_missing",
+    "invalid_edit_scope",
+    "degraded_metric",
+    "no_op_patch"
+  ]
+}

@@ -82,12 +82,13 @@ def test_chunk_4_4_results_order_and_artifact_links() -> None:
     text = _read("05_results.md")
     ordered = [
         "Table 1: Main campaign",
-        "Figure 2:",
-        "Figure 3:",
-        "Table 2 result artifact",
-        "Table 4 result artifact",
-        "Figure 4:",
-        "The accepted edit also improved validation AUC by 0.002845",
+        "Table 2 result artifact",   # failure taxonomy — precedes memory ablation
+        "Figure 2:",                  # repeated-bad rate figure — in memory ablation
+        "Figure 3:",                  # decision breakdown
+        "Table 4 result artifact",   # provenance chain
+        "Figure 4:",                  # trajectory
+        # Real evidence: net gain from the actual kdd_main_5trial run
+        "+0.000933 over five trials",
     ]
     assert _positions(text, ordered) == sorted(_positions(text, ordered))
     for artifact in (
@@ -101,27 +102,29 @@ def test_chunk_4_4_results_order_and_artifact_links() -> None:
         "../../../artifact_manifest.json",
         "../../figures/fig4_trajectory.svg",
     ):
-        assert artifact in text
+        assert artifact in text, f"Section 05 missing artifact link: {artifact}"
 
 
 def test_chunk_4_5_discussion_acceptance() -> None:
     text = _read("06_discussion_limitations.md")
-    non_claims = (
-        "This work does not claim to build a general autonomous scientist, prove scientific "
-        "discovery, introduce a universal optimization algorithm, or depend on a specific "
-        "coding-agent backend. The ResNet-trigger task is used as a real scientific ML case "
-        "study for evaluating governed autonomous experimentation; it is not claimed to "
-        "represent all ML optimization tasks."
-    )
-    assert non_claims in text
-    for paragraph in (
-        "We evaluate on one real scientific ML node. This demonstrates real governed execution, but does not claim broad benchmark coverage.",
-        "All experiments use the ResNet-trigger node. We cannot rule out that reported improvements overfit to this evaluation domain. Applying the harness hill-climbing methodology of Trivedy (2026) across multiple evaluation nodes with holdout splits would strengthen the governance claims.",
-        "Dry-run tests validate control-plane contracts; reported empirical results use real worker campaigns unless explicitly marked as smoke tests.",
-        "Orchestration backends, cloud execution, and UI layers are future extensions. This work focuses on the control-plane protocol and its audit metrics.",
+    # Non-claims are expressed as a formal scope-and-non-claims bullet list.
+    for non_claim in (
+        "General autonomous scientist capability",
+        "Scientific discovery",
+        "Universal optimisation algorithm",
+        "Backend-specific dependency",
+        "Broad benchmark coverage",
+        "Flagship-campaign lifecycle diversity",
+        "Memory effect on repeated-bad rate",
     ):
-        assert paragraph in text
+        assert non_claim in text, f"Missing non-claim bullet: {non_claim}"
+    # Memory ablation section must be present and honest
+    assert "Memory Ablation Analysis" in text
+    assert "edit_failed" in text
+    assert "fail-safe" in text
+    # Limitations section must name key gaps
     assert "holdout" in text
+    assert "Single node" in text
     assert (
         "The NodeSpec YAML pattern generalises the harness to new ML experiments without "
         "code changes; each spec is a harness template for a class of experiments."

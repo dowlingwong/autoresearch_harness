@@ -23,6 +23,7 @@ _LOCAL_PROVIDERS = {
 _CLOUD_PROVIDERS = {
     "openai": ("OPENAI_BASE_URL", "https://api.openai.com/v1", "OPENAI_API_KEY"),
     "anthropic": ("ANTHROPIC_BASE_URL", "https://api.anthropic.com", "ANTHROPIC_API_KEY"),
+    "deepseek": ("DEEPSEEK_BASE_URL", "https://api.deepseek.com", "DEEPSEEK_API_KEY"),
 }
 
 
@@ -36,6 +37,7 @@ def resolve_llm_config(model_id: str) -> LLMConfig:
       - ``llamacpp/model.gguf``
       - ``openai/gpt-4.1``
       - ``anthropic/claude-3-5-sonnet-latest``
+      - ``deepseek/deepseek-v4-flash``
 
     A bare model id is returned unchanged for backward compatibility.
     """
@@ -79,7 +81,7 @@ def resolve_llm_config(model_id: str) -> LLMConfig:
 
     raise ValueError(
         f"unsupported LLM provider prefix {prefix!r}; expected one of "
-        "ollama, vllm, lm_studio, llamacpp, openai, anthropic"
+        "ollama, vllm, lm_studio, llamacpp, openai, anthropic, deepseek"
     )
 
 

@@ -45,6 +45,7 @@ class NodeSpec:
     default_budget: BudgetSpec
     expected_runtime: str | None = None
     failure_categories: tuple[str, ...] = field(default_factory=tuple)
+    editable_symbols: tuple[str, ...] = field(default_factory=tuple)
 
     @classmethod
     def from_mapping(cls, payload: dict[str, Any]) -> "NodeSpec":
@@ -93,6 +94,7 @@ class NodeSpec:
                 else None
             ),
             failure_categories=tuple(str(category) for category in payload.get("failure_categories", ())),
+            editable_symbols=tuple(str(symbol) for symbol in payload.get("editable_symbols", ())),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -101,6 +103,7 @@ class NodeSpec:
         payload["frozen_paths"] = list(self.frozen_paths)
         payload["validity_checks"] = list(self.validity_checks)
         payload["failure_categories"] = list(self.failure_categories)
+        payload["editable_symbols"] = list(self.editable_symbols)
         return payload
 
 
@@ -116,4 +119,3 @@ def load_node_spec(path: str | Path) -> NodeSpec:
     if not isinstance(payload, dict):
         raise NodeSpecError("node spec root must be an object")
     return NodeSpec.from_mapping(payload)
-

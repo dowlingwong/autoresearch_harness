@@ -73,7 +73,7 @@
 
 % -------------------------------------------------------------
 %  2. HARNESS ENGINEERING — BLOG AND PRACTITIONER ARTICLES
-%     (use @misc with howpublished for web sources)
+%     (use misc entries with howpublished for web sources)
 % -------------------------------------------------------------
 
 @misc{trivedy2026anatomy,
@@ -95,7 +95,7 @@
   howpublished = {LangChain Blog},
   month        = apr,
   year         = {2026},
-  url          = {https://blog.langchain.com/better-harness/},
+  url          = {https://blog.langchain.com/better-harness-a-recipe-for-harness-hill-climbing-with-evals/},
   note         = {% URL-VERIFY. Harness hill-climbing loop: source evals,
                   optimize/holdout split, trace-based diagnosis, targeted
                   harness change, holdout validation. Cited for the
@@ -105,10 +105,10 @@
 @misc{bockeler2026firstthoughts,
   author       = {B{\"o}ckeler, Birgitta},
   title        = {Harness Engineering --- First Thoughts},
-  howpublished = {Thoughtworks Insights},
+  howpublished = {Martin Fowler},
   month        = feb,
   year         = {2026},
-  url          = {https://www.thoughtworks.com/insights/blog/ai/harness-engineering-first-thoughts},
+  url          = {https://martinfowler.com/articles/exploring-gen-ai/harness-engineering-memo.html},
   note         = {% URL-VERIFY. Key insight: increasing trust and reliability
                   required constraining the solution space. Harnesses as
                   future service templates. Cited for editable-scope
@@ -118,10 +118,10 @@
 @misc{bockeler2026coders,
   author       = {B{\"o}ckeler, Birgitta},
   title        = {Harness Engineering for Coding Agent Users},
-  howpublished = {Thoughtworks Insights},
+  howpublished = {Martin Fowler},
   month        = apr,
   year         = {2026},
-  url          = {https://www.thoughtworks.com/insights/blog/ai/harness-engineering-for-coding-agent-users},
+  url          = {https://martinfowler.com/articles/harness-engineering.html},
   note         = {% URL-VERIFY. Introduces Guides (feedforward) x Sensors
                   (feedback) x Computational/Inferential taxonomy.
                   Cited for the 2x2 harness architecture table in
@@ -135,7 +135,7 @@
   howpublished = {Personal blog},
   month        = feb,
   year         = {2026},
-  url          = {https://mitchellh.com/writing/ai-journey},
+  url          = {https://mitchellh.com/writing/my-ai-adoption-journey},
   note         = {% URL-VERIFY. Practitioner account of harness engineering:
                   anytime an agent makes a mistake, engineer a structural
                   fix so it never recurs. Two forms: AGENTS.md (prompt)
@@ -150,7 +150,7 @@
   howpublished = {{OpenAI} Blog},
   month        = feb,
   year         = {2026},
-  url          = {https://openai.com/research/codex-harness-engineering},
+  url          = {https://openai.com/index/harness-engineering/},
   note         = {% URL-VERIFY. Account of building a 1M-LOC product with
                   zero manually-written code in 5 months using agentic
                   coding. Key principle: give the agent a map, not a
@@ -166,20 +166,20 @@
   howpublished = {Anthropic Engineering Blog},
   month        = nov,
   year         = {2025},
-  url          = {https://www.anthropic.com/engineering/effective-agents-long-running},
+  url          = {https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents},
   note         = {% URL-VERIFY. Identifies four failure modes for long-running
                   agents and their structural fixes: initializer + coder
                   pattern, git commits for state, verifiable feature spec.
                   Cited for the failure-mode motivation table in Section 3.}
 }
 
-@misc{anthropic2026longrunnningb,
+@misc{anthropic2026longrunningb,
   author       = {Rajasekaran, Anu and others},
   title        = {Harness Design for Long-Running Application Development},
   howpublished = {Anthropic Engineering Blog},
   month        = mar,
   year         = {2026},
-  url          = {https://www.anthropic.com/engineering/harness-design-long-running},
+  url          = {https://www.anthropic.com/engineering/harness-design-long-running-apps},
   note         = {% URL-VERIFY. GAN-inspired multi-agent architecture:
                   planner, generator, evaluator. Key finding: LLM
                   self-evaluation is systematically lenient; separating
@@ -223,7 +223,7 @@
   author       = {Karpathy, Andrej},
   title        = {karpathy/autoresearch},
   howpublished = {GitHub},
-  month        = apr,
+  month        = mar,
   year         = {2026},
   url          = {https://github.com/karpathy/autoresearch},
   note         = {Open-source autonomous research agent. Cited as broader

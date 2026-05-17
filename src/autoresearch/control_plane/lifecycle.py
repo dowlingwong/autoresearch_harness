@@ -78,6 +78,9 @@ def build_trial_record_from_legacy_result(
     if not scope.valid:
         validity_status = ValidityStatus.INVALID
         failure_category = FailureCategory.INVALID_EDIT_SCOPE
+    elif not success and not changed_files:
+        validity_status = ValidityStatus.INVALID
+        failure_category = FailureCategory.EDIT_FAILED
     elif not success:
         validity_status = ValidityStatus.INVALID
         failure_category = FailureCategory.RUNTIME_ERROR

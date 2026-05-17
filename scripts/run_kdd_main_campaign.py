@@ -95,9 +95,28 @@ def main() -> int:
     parser.add_argument(
         "--model",
         default="qwen2.5-coder:7b",
-        help="Model id. Supports provider/model form such as ollama/qwen2.5-coder:7b.",
+        help=(
+            "Manager model id. Supports provider/model form such as "
+            "ollama/qwen2.5-coder:7b or deepseek/deepseek-v4-flash."
+        ),
     )
     parser.add_argument("--host", default="http://localhost:11434", help="Ollama host URL.")
+    parser.add_argument(
+        "--worker-model",
+        default=None,
+        help=(
+            "Worker model id for ClawWorker. Defaults to --model for local providers, "
+            "or qwen2.5-coder:7b when --model is a cloud manager provider."
+        ),
+    )
+    parser.add_argument("--worker-host", default=None, help="Worker Ollama-compatible host URL.")
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        help="LLM sampling temperature for langgraph_manager (e.g. 0.7). "
+             "Defaults to the manager's built-in default (0.2) when omitted.",
+    )
     parser.add_argument(
         "--llm-backend",
         default="native",
@@ -116,6 +135,17 @@ def main() -> int:
     parser.add_argument("--tables-dir", default=str(ROOT / "paper" / "tables"))
     parser.add_argument("--no-export", action="store_true",
                         help="Skip table export after campaign completes.")
+    parser.add_argument(
+        "--rationale-max-tokens",
+        type=int,
+        default=None,
+        dest="rationale_max_tokens",
+        help=(
+            "Truncate each trial's rationale to this many tokens when using "
+            "append_only_summary_with_rationale memory mode. "
+            "Used by the rationale-verbosity ablation (P13-H)."
+        ),
+    )
     args = parser.parse_args()
 
     if args.budget < 1:
@@ -138,6 +168,8 @@ def main() -> int:
     print(f"  manager     : {args.manager}")
     print(f"  llm_backend : {args.llm_backend}")
     print(f"  memory_mode : {args.memory_mode}")
+    if args.temperature is not None:
+        print(f"  temperature : {args.temperature}")
     print(f"  ledger      : {records_path}")
     if event_store is not None:
         print(f"  events      : {event_store.path}")
@@ -149,6 +181,14 @@ def main() -> int:
             args.model,
             artifacts_dir=ROOT / "experiments" / "artifacts" / args.campaign_id,
         )
+    elif args.manager == "langgraph_manager":
+        from autoresearch.manager.langgraph_manager import LangGraphManager
+
+        proposal_backend = LangGraphManager(
+            model=args.model,
+            host=args.host,
+            temperature=args.temperature if args.temperature is not None else 0.2,
+        )
 
     if args.dry_run:
         result = run_dry_campaign(
@@ -158,6 +198,7 @@ def main() -> int:
             manager_mode=args.manager,
             memory_mode=args.memory_mode,
             records_path=records_path,
+            manager_temperature=args.temperature,
             dry_run_profile=args.dry_run_profile,
             proposal_backend=proposal_backend,
             event_store=event_store,
@@ -167,7 +208,9 @@ def main() -> int:
             parser.error("--node-root is required for real campaigns")
         from autoresearch.worker.claw_worker import ClawWorker
         artifacts_dir = ROOT / "experiments" / "artifacts" / args.campaign_id
-        worker_model, worker_host = resolve_worker_model_args(args.model, args.host)
+        worker_model_id = args.worker_model or _default_worker_model(args.model)
+        worker_host_arg = args.worker_host or args.host
+        worker_model, worker_host = resolve_worker_model_args(worker_model_id, worker_host_arg)
         worker = ClawWorker(
             repo_root=ROOT,
             node_root=Path(args.node_root),
@@ -183,9 +226,11 @@ def main() -> int:
             manager_mode=args.manager,
             memory_mode=args.memory_mode,
             records_path=records_path,
+            manager_temperature=args.temperature,
             worker=worker,
             proposal_backend=proposal_backend,
             event_store=event_store,
+            rationale_max_tokens=args.rationale_max_tokens,
         )
 
     print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
@@ -248,6 +293,12 @@ def _validate_main_campaign(records, campaign_id: str, budget: int, ledger_path:
 def _default_events_path(records_path: Path, campaign_id: str) -> Path:
     root = records_path.parent.parent if records_path.parent.name == "ledgers" else records_path.parent
     return root / "events" / f"{campaign_id}_events.jsonl"
+
+
+def _default_worker_model(manager_model: str) -> str:
+    if manager_model.startswith(("openai/", "anthropic/", "deepseek/")):
+        return "qwen2.5-coder:7b"
+    return manager_model
 
 
 if __name__ == "__main__":

@@ -85,6 +85,17 @@ class TestNodeSpecFromMapping(unittest.TestCase):
         )
         self.assertIn("syntax_error", spec.failure_categories)
 
+    def test_editable_symbols_optional(self):
+        spec = NodeSpec.from_mapping(_minimal_payload())
+        self.assertEqual(spec.editable_symbols, ())
+
+    def test_editable_symbols_parsed_and_serialised(self):
+        spec = NodeSpec.from_mapping(
+            _minimal_payload(editable_symbols=["LEARNING_RATE", "BATCH_SIZE"])
+        )
+        self.assertEqual(spec.editable_symbols, ("LEARNING_RATE", "BATCH_SIZE"))
+        self.assertEqual(spec.to_dict()["editable_symbols"], ["LEARNING_RATE", "BATCH_SIZE"])
+
     def test_expected_runtime_optional(self):
         spec = NodeSpec.from_mapping(_minimal_payload())
         self.assertIsNone(spec.expected_runtime)
@@ -124,6 +135,60 @@ class TestLoadNodeSpec(unittest.TestCase):
         self.assertEqual(spec.name, "resnet_trigger")
         self.assertIn("train.py", spec.editable_paths)
         self.assertEqual(spec.metric_direction, "maximize")
+
+    def test_load_mlp_synthetic_real_config(self):
+        """The real mlp_synthetic.yaml must load without error."""
+        root = Path(__file__).resolve().parents[1]
+        config = root / "configs" / "nodes" / "mlp_synthetic.yaml"
+        spec = load_node_spec(config)
+        self.assertEqual(spec.name, "mlp_synthetic")
+        self.assertEqual(spec.editable_symbols, (
+            "LEARNING_RATE",
+            "HIDDEN_DIM",
+            "REGULARIZATION",
+            "N_EPOCHS",
+            "BATCH_SIZE",
+        ))
+        self.assertEqual(spec.metric_direction, "maximize")
+
+    def test_load_openml_tabular_real_configs(self):
+        """The real OpenML sklearn node configs must load without error."""
+        root = Path(__file__).resolve().parents[1]
+        for filename, name in (
+            ("openml_credit_g.yaml", "openml_credit_g"),
+            ("openml_bank_marketing.yaml", "openml_bank_marketing"),
+        ):
+            with self.subTest(name=name):
+                config = root / "configs" / "nodes" / filename
+                spec = load_node_spec(config)
+                self.assertEqual(spec.name, name)
+                self.assertEqual(spec.editable_symbols, (
+                    "C",
+                    "class_weight",
+                    "imputer",
+                    "learning_rate",
+                    "max_depth",
+                    "max_iter",
+                    "model_type",
+                    "n_estimators",
+                    "scaler",
+                ))
+                self.assertEqual(spec.editable_paths, ("config.yaml",))
+                self.assertIn("train.py", spec.frozen_paths)
+                self.assertEqual(spec.metric_name, "val_auc")
+                self.assertEqual(spec.metric_direction, "maximize")
+
+    def test_load_mlagentbench_vectorization_config(self):
+        """The MLAgentBench vectorization adapter config must load without error."""
+        root = Path(__file__).resolve().parents[1]
+        config = root / "configs" / "nodes" / "mlagentbench_vectorization.yaml"
+        spec = load_node_spec(config)
+        self.assertEqual(spec.name, "mlagentbench_vectorization")
+        self.assertEqual(spec.editable_paths, ("config.yaml",))
+        self.assertIn("train.py", spec.frozen_paths)
+        self.assertEqual(spec.metric_name, "speed_score")
+        self.assertEqual(spec.metric_direction, "maximize")
+        self.assertIn("implementation", spec.editable_symbols)
 
 
 if __name__ == "__main__":

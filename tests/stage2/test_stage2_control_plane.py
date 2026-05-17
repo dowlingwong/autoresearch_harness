@@ -5,6 +5,7 @@ import json
 import subprocess
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,6 +19,7 @@ from autoresearch.control_plane.campaign import (
 )
 from autoresearch.manager.base import ManagerProposal, ManagerStatus
 from autoresearch.manager.baseline_manager import BaselineManager
+from autoresearch.manager.hyperparam_edits import build_effective_config
 from autoresearch.manager.langgraph_manager import LangGraphManager
 from autoresearch.manager.prompt_manager import PromptManager
 from autoresearch.memory.append_store import TrialAppendStore
@@ -25,7 +27,7 @@ from autoresearch.memory.schemas import FailureCategory, TrialDecision, Validity
 from autoresearch.memory.summarizer import MemoryMode, build_memory_context
 from autoresearch.nodes.registry import load_registered_node
 from autoresearch.worker.base import WorkerResult
-from autoresearch.worker.claw_worker import _extract_worker_result, _packet_from_proposal
+from autoresearch.worker.claw_worker import ClawWorker, _extract_worker_result, _packet_from_proposal
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -47,6 +49,21 @@ class RaisingWorker:
 
     def run_trial(self, proposal, node_spec, budget_index):
         raise RuntimeError("worker crashed")
+
+
+class RaisingNodeWorker(RaisingWorker):
+    def __init__(self, node_root: Path) -> None:
+        self.node_root = Path(node_root)
+
+
+class StaticProposalBackend:
+    mode = "static_backend"
+
+    def __init__(self, proposal: ManagerProposal) -> None:
+        self.proposal = proposal
+
+    def propose_next_trial(self, status, memory_context, node_spec):
+        return self.proposal
 
 
 class MutatingWorker:
@@ -102,12 +119,57 @@ def worker_result(
 class TestManagers(unittest.TestCase):
     def test_baseline_manager_returns_bounded_proposal(self):
         spec = node_spec()
-        status = ManagerStatus("c", 1, None, spec.metric_name, spec.metric_direction)
+        constants = {
+            "WEIGHT_DECAY": "5e-5",
+            "DROPOUT": "0.02",
+            "KERNEL_SIZE": "5",
+            "GRAD_CLIP_NORM": "0.5",
+            "BATCH_SIZE": "32",
+            "EPOCHS": "5",
+            "LEARNING_RATE": "5e-4",
+        }
+        status = ManagerStatus(
+            "c",
+            1,
+            None,
+            spec.metric_name,
+            spec.metric_direction,
+            current_constants=constants,
+            effective_config=build_effective_config(constants),
+        )
         ctx = build_memory_context([], MemoryMode.NONE, spec, 1)
         proposal = BaselineManager().propose_next_trial(status, ctx, spec)
         self.assertEqual(proposal.manager_mode, "baseline_manager")
         self.assertEqual(proposal.target_files, spec.editable_paths)
-        self.assertTrue(proposal.objective)
+        self.assertIn("structured_edit", proposal.extra)
+        self.assertEqual(proposal.extra["structured_edit"]["old"], "5e-5")
+        self.assertEqual(proposal.extra["structured_edit"]["new"], "3e-5")
+        self.assertTrue(proposal.extra["deterministic_patch"])
+
+    def test_baseline_manager_skips_noop_targets(self):
+        spec = node_spec()
+        constants = {
+            "WEIGHT_DECAY": "3e-5",
+            "DROPOUT": "0.02",
+            "KERNEL_SIZE": "5",
+            "GRAD_CLIP_NORM": "0.5",
+            "BATCH_SIZE": "32",
+            "EPOCHS": "5",
+            "LEARNING_RATE": "5e-4",
+        }
+        status = ManagerStatus(
+            "c",
+            1,
+            None,
+            spec.metric_name,
+            spec.metric_direction,
+            current_constants=constants,
+            effective_config=build_effective_config(constants),
+        )
+        ctx = build_memory_context([], MemoryMode.NONE, spec, 1)
+        proposal = BaselineManager().propose_next_trial(status, ctx, spec)
+        self.assertEqual(proposal.proposal_summary, "small-dropout")
+        self.assertEqual(proposal.extra["structured_edit"]["symbol"], "DROPOUT")
 
     def test_baseline_manager_avoids_prior_summaries_when_memory_available(self):
         spec = node_spec()
@@ -268,6 +330,7 @@ class TestCampaigns(unittest.TestCase):
     def test_worker_exception_appends_failed_record(self):
         spec = node_spec()
         with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
             records_path = Path(tmp) / "exception_trials.jsonl"
             run_real_campaign(
                 node_spec=spec,
@@ -280,8 +343,90 @@ class TestCampaigns(unittest.TestCase):
             )
             record = TrialAppendStore(records_path).read_all()[0]
             self.assertEqual(record.worker_mode, "raising_worker")
-            self.assertEqual(record.failure_category, FailureCategory.RUNTIME_ERROR)
+            self.assertEqual(record.failure_category, FailureCategory.EDIT_FAILED)
             self.assertEqual(record.extra["worker_failure_message"], "worker crashed")
+
+    def test_structured_proposal_precondition_failure_skips_worker(self):
+        spec = node_spec()
+        proposal = ManagerProposal(
+            manager_mode="static",
+            proposal_summary="bad-old-value",
+            proposal_rationale="test",
+            target_files=("train.py",),
+            objective="Change WEIGHT_DECAY.",
+            extra={
+                "deterministic_patch": True,
+                "structured_edit": {
+                    "type": "python_constant",
+                    "path": "train.py",
+                    "symbol": "WEIGHT_DECAY",
+                    "old": "1e-4",
+                    "new": "3e-5",
+                    "effective_key": "weight_decay",
+                },
+            },
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "train.py").write_text("WEIGHT_DECAY = 5e-5\n", encoding="utf-8")
+            records_path = root / "precondition_trials.jsonl"
+            run_real_campaign(
+                node_spec=spec,
+                campaign_id="precondition",
+                budget=1,
+                manager_mode="baseline_manager",
+                memory_mode="none",
+                records_path=records_path,
+                worker=RaisingNodeWorker(root),
+                proposal_backend=StaticProposalBackend(proposal),
+            )
+            record = TrialAppendStore(records_path).read_all()[0]
+            self.assertEqual(record.failure_category, FailureCategory.PROPOSAL_PRECONDITION_FAILED)
+            self.assertIn("expected 1e-4, found 5e-5", record.extra["worker_failure_message"])
+
+    def test_effective_config_unchanged_skips_worker(self):
+        spec = node_spec()
+        proposal = ManagerProposal(
+            manager_mode="static",
+            proposal_summary="larger-batch",
+            proposal_rationale="test",
+            target_files=("train.py",),
+            objective="Change BATCH_SIZE.",
+            extra={
+                "deterministic_patch": True,
+                "structured_edit": {
+                    "type": "python_constant",
+                    "path": "train.py",
+                    "symbol": "BATCH_SIZE",
+                    "old": "32",
+                    "new": "64",
+                    "effective_key": "batch_size",
+                },
+            },
+        )
+        with tempfile.TemporaryDirectory() as tmp, unittest.mock.patch.dict(
+            "os.environ",
+            {
+                "RESNET_TRIGGER_FAST_SEARCH": "1",
+                "RESNET_TRIGGER_FAST_BATCH_SIZE": "64",
+            },
+        ):
+            root = Path(tmp)
+            (root / "train.py").write_text("BATCH_SIZE = 32\n", encoding="utf-8")
+            records_path = root / "effective_trials.jsonl"
+            run_real_campaign(
+                node_spec=spec,
+                campaign_id="effective",
+                budget=1,
+                manager_mode="baseline_manager",
+                memory_mode="none",
+                records_path=records_path,
+                worker=RaisingNodeWorker(root),
+                proposal_backend=StaticProposalBackend(proposal),
+            )
+            record = TrialAppendStore(records_path).read_all()[0]
+            self.assertEqual(record.failure_category, FailureCategory.EFFECTIVE_CONFIG_UNCHANGED)
+            self.assertTrue(record.extra["worker"]["worker_skipped"])
 
     def test_real_campaign_passes_memory_context_to_worker_proposal(self):
         class CapturingWorker(FakeWorker):
@@ -471,6 +616,55 @@ class TestClawWorkerExtraction(unittest.TestCase):
             self.assertTrue(Path(result.patch_ref).exists())
             self.assertTrue(Path(result.extra["parsed_metrics_ref"]).exists())
             self.assertTrue(Path(result.extra["legacy_loop_result_ref"]).exists())
+
+    def test_claw_worker_deterministic_constant_patch_runs_without_llm(self):
+        spec = node_spec()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "node"
+            artifacts = Path(tmp) / "artifacts"
+            root.mkdir()
+            subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            (root / "train.py").write_text(
+                "DROPOUT = 0.02\nprint('val_auc:          0.812345')\n",
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "add", "train.py"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-m", "base"], cwd=root, check=True, capture_output=True, text=True)
+            proposal = ManagerProposal(
+                manager_mode="test",
+                proposal_summary="small-dropout",
+                proposal_rationale="test",
+                target_files=("train.py",),
+                objective="Change DROPOUT.",
+                extra={
+                    "deterministic_patch": True,
+                    "structured_edit": {
+                        "type": "python_constant",
+                        "path": "train.py",
+                        "symbol": "DROPOUT",
+                        "old": "0.02",
+                        "new": "0.022",
+                        "effective_key": "dropout",
+                    },
+                },
+            )
+            worker = ClawWorker(
+                repo_root=ROOT,
+                node_root=root,
+                artifacts_dir=artifacts,
+                packet_defaults={
+                    "train_command": "python train.py > run.log 2>&1",
+                    "syntax_check_command": "python -m py_compile train.py",
+                },
+            )
+            result = worker.run_trial(proposal, spec, 1)
+            self.assertTrue(result.success)
+            self.assertEqual(result.parsed_metrics[spec.metric_name], 0.812345)
+            self.assertIn("DROPOUT = 0.022", (root / "train.py").read_text(encoding="utf-8"))
+            self.assertTrue(Path(result.patch_ref).exists())
+            self.assertTrue(result.extra["effective_config_changed"])
 
 
 if __name__ == "__main__":

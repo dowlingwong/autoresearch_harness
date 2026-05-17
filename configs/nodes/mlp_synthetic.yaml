@@ -1,0 +1,44 @@
+{
+  "name": "mlp_synthetic",
+  "description": "A dependency-light synthetic binary-classification node with a pure NumPy one-hidden-layer MLP. The data generation, split, seed, and metric parser are frozen; only bounded training hyperparameters are editable.",
+  "editable_paths": [
+    "train.py"
+  ],
+  "editable_symbols": [
+    "LEARNING_RATE",
+    "HIDDEN_DIM",
+    "REGULARIZATION",
+    "N_EPOCHS",
+    "BATCH_SIZE"
+  ],
+  "frozen_paths": [
+    "benchmark.py",
+    "artifacts/"
+  ],
+  "setup_command": null,
+  "run_command": "python3 train.py",
+  "metric_name": "val_score",
+  "metric_direction": "maximize",
+  "metric_parser": "autoresearch.nodes.mlp_synthetic.metric_parser:parse_val_score",
+  "acceptance_rule": "candidate_metric > current_best_metric",
+  "validity_checks": [
+    "metric_present",
+    "editable_scope_only",
+    "no_pending_trial"
+  ],
+  "failure_categories": [
+    "proposal_precondition_failed",
+    "scope_violation",
+    "invalid_patch",
+    "runtime_error",
+    "metric_missing",
+    "artifact_missing",
+    "noop_patch",
+    "repeated_bad_proposal"
+  ],
+  "default_budget": {
+    "trials": 10,
+    "max_wall_clock_hours": 0.25
+  },
+  "expected_runtime": "~1 second/trial on laptop CPU"
+}

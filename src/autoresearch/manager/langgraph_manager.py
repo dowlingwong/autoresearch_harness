@@ -21,7 +21,8 @@ from typing import Any, TypedDict
 from autoresearch.manager.base import ManagerProposal, ManagerStatus
 from autoresearch.memory.summarizer import MemoryContext
 from autoresearch.nodes.spec import NodeSpec
-from autoresearch.llm.providers import resolve_llm_config
+from autoresearch.llm.langchain_client import _build_chat_model
+from autoresearch.llm.providers import LLMConfig, resolve_llm_config
 
 
 class _PlanState(TypedDict):
@@ -55,31 +56,125 @@ def _prepare_context(state: _PlanState) -> _PlanState:
         "",
     ]
 
+    editable_file = node_spec.editable_paths[0] if node_spec.editable_paths else "train.py"
+
+    # List editable values so the LLM can use exact names and current values.
+    current_constants = getattr(status, "current_constants", {}) or {}
+    if current_constants:
+        lines.append(f"Editable values currently in {editable_file} (use exact names):")
+        for k, v in current_constants.items():
+            lines.append(f"  {k} = {v}")
+        lines.append("")
+
     if memory_context.context_text.strip():
         lines += ["Prior trial memory:", memory_context.context_text, ""]
+        lines += [
+            "AVOIDANCE RULE (mandatory): Study the trial history above carefully.",
+            "Identify every hyperparameter that was already tried in the same direction "
+            "(e.g. increasing BATCH_SIZE, reducing LEARNING_RATE) and produced no "
+            "improvement or a failure. You MUST NOT propose the same parameter change "
+            "in the same direction again.",
+            "Choose a DIFFERENT hyperparameter or a DIFFERENT direction than what has "
+            "already been tried. If every direction for a parameter has been explored, "
+            "switch to a completely different parameter.",
+            "",
+        ]
     else:
         lines.append("No prior trial memory available.")
         lines.append("")
 
     lines += [
         "Propose exactly one bounded experiment. Respond with ONLY a JSON object "
-        "(no markdown fences, no extra text) with these three string fields:",
-        '  "summary"   — short slug describing the change (e.g. "reduce-lr-5e-4")',
-        '  "rationale" — one sentence on why this might improve the metric',
-        '  "objective" — complete, self-contained instruction for the worker',
+        "(no markdown fences, no extra text) with these six string fields:",
+        '  "summary"    — short slug (e.g. "reduce-lr-2e-4")',
+        '  "rationale"  — one sentence on why this might improve the metric',
+        '  "objective"  — complete worker instruction: '
+        f'"In {editable_file}, change PARAM from OLD to NEW. Edit only {editable_file}."',
+        '  "param"      — exact editable value name from the list above (e.g. "LEARNING_RATE")',
+        '  "old_value"  — current value as shown above (e.g. "5e-4")',
+        '  "new_value"  — proposed replacement value (e.g. "2e-4")',
         "",
-        "Constraints the objective must enforce:",
+        "Constraints:",
         f"  - edit only: {', '.join(node_spec.editable_paths)}",
-        "  - make exactly one change",
-        "  - do not run the experiment yourself; the manager will run it after your edit",
+        "  - change exactly one listed value",
+        "  - param must be one of the editable values listed above",
+        "  - do not run the experiment; the harness runs it after your edit",
         "",
-        'Example: {"summary": "reduce-lr-5e-4", '
-        '"rationale": "smaller lr often improves convergence", '
-        '"objective": "In train.py, change learning_rate from 1e-3 to 5e-4. '
-        'Edit only train.py. Make no other changes."}',
+        'Example: {"summary": "reduce-lr-2e-4", '
+        '"rationale": "smaller lr often improves convergence on noisy signals", '
+        f'"objective": "In {editable_file}, change LEARNING_RATE from 5e-4 to 2e-4. Edit only {editable_file}.", '
+        '"param": "LEARNING_RATE", "old_value": "5e-4", "new_value": "2e-4"}',
     ]
 
     return {**state, "context_text": "\n".join(lines)}
+
+
+def _extract_structured_edit(
+    parsed: dict[str, Any],
+    objective: str,
+    current_constants: dict[str, str],
+    node_spec: NodeSpec,
+) -> dict[str, str] | None:
+    """Try to extract {symbol, old, new, path} for the deterministic patch path.
+
+    Priority:
+    1. Explicit ``param`` / ``old_value`` / ``new_value`` fields in the parsed JSON.
+    2. Regex fallback on the ``objective`` string: "change SYMBOL from OLD to NEW".
+
+    Returns a structured-edit dict or None if extraction fails.
+    """
+    if not current_constants:
+        return None
+
+    # Case-insensitive lookup: "learning_rate" -> "LEARNING_RATE"
+    const_lookup: dict[str, str] = {k.lower(): k for k in current_constants}
+
+    def _resolve(raw_sym: str) -> str | None:
+        raw_sym = raw_sym.strip()
+        if raw_sym in current_constants:
+            return raw_sym
+        return const_lookup.get(raw_sym.lower())
+
+    # Strategy 1: explicit JSON fields
+    p_raw = str(parsed.get("param") or "").strip()
+    o_raw = str(parsed.get("old_value") or "").strip()
+    n_raw = str(parsed.get("new_value") or "").strip()
+    edit_path = node_spec.editable_paths[0] if node_spec.editable_paths else "train.py"
+    edit_type = "config_value" if edit_path.endswith((".yaml", ".yml")) else "python_constant"
+
+    if p_raw and n_raw:  # old_value optional — worker validates against live file
+        sym = _resolve(p_raw)
+        if sym:
+            return {
+                "type": edit_type,
+                "symbol": sym,
+                "old": o_raw or current_constants.get(sym, ""),
+                "new": n_raw,
+                "path": edit_path,
+            }
+
+    # Strategy 2: regex on objective string
+    # Values may contain dots (0.02), hyphens (5e-4), so capture non-whitespace
+    # and strip trailing sentence punctuation afterward.
+    pat = re.compile(
+        r"change\s+([A-Za-z_][A-Za-z0-9_]*)\s+from\s+(\S+)\s+to\s+(\S+)",
+        re.IGNORECASE,
+    )
+    m = pat.search(objective)
+    if m:
+        old_val = m.group(2).rstrip(".,;:")
+        new_val = m.group(3).rstrip(".,;:")
+        sym = _resolve(m.group(1))
+        if sym:
+            return {
+                "type": edit_type,
+                "symbol": sym,
+                "old": old_val,
+                "new": new_val,
+                "path": edit_path,
+            }
+
+    return None
 
 
 def _validate_proposal(state: _PlanState) -> _PlanState:
@@ -94,6 +189,7 @@ def _validate_proposal(state: _PlanState) -> _PlanState:
         f"to improve {node_spec.metric_name}. "
         "Edit only the listed files. Do not run the experiment."
     )
+    parsed: dict[str, Any] = {}
 
     try:
         cleaned = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
@@ -112,17 +208,27 @@ def _validate_proposal(state: _PlanState) -> _PlanState:
     except Exception:
         rationale = f"parse-failed; raw={raw[:120]!r}"
 
+    extra: dict[str, Any] = {
+        "context_sha256": sha256(state.get("context_text", "").encode("utf-8")).hexdigest(),
+        "raw_proposal_sha256": sha256(raw.encode("utf-8")).hexdigest(),
+        "raw_proposal_chars": len(raw),
+    }
+
+    # Attempt to extract a structured edit so claw_style_worker can apply
+    # the proposal via its deterministic patch path (no coding agent required).
+    current_constants = getattr(status, "current_constants", {}) or {}
+    structured_edit = _extract_structured_edit(parsed, objective, current_constants, node_spec)
+    if structured_edit:
+        extra["deterministic_patch"] = True
+        extra["structured_edit"] = structured_edit
+
     proposal = ManagerProposal(
         manager_mode=LangGraphManager.mode,
         proposal_summary=summary,
         proposal_rationale=rationale,
         target_files=node_spec.editable_paths,
         objective=objective,
-        extra={
-            "context_sha256": sha256(state.get("context_text", "").encode("utf-8")).hexdigest(),
-            "raw_proposal_sha256": sha256(raw.encode("utf-8")).hexdigest(),
-            "raw_proposal_chars": len(raw),
-        },
+        extra=extra,
     )
     return {**state, "proposal": proposal}
 
@@ -227,26 +333,12 @@ class LangGraphManager:
         if self._injected_llm is not None:
             return self._injected_llm
         config = resolve_llm_config(self._model)
-        model_name = config.model_name
-        base_url = config.base_url
         if config.provider == "legacy":
-            model_name = self._model
-            base_url = self._host
-        if config.provider not in {"legacy", "ollama"}:
-            raise ValueError(
-                "LangGraphManager currently supports Ollama-compatible local models; "
-                f"got provider {config.provider!r}"
+            config = LLMConfig(
+                provider="ollama",
+                model_name=self._model,
+                base_url=self._host,
+                api_key="",
+                model_id=f"ollama/{self._model}",
             )
-        try:
-            from langchain_ollama import ChatOllama
-            return ChatOllama(
-                model=model_name,
-                base_url=base_url,
-                temperature=self._temperature,
-            )
-        except ImportError as exc:
-            raise ImportError(
-                "langchain-ollama is required for LangGraphManager with a real LLM. "
-                "Install it: uv pip install langchain-ollama. "
-                "For tests, inject a FakeListChatModel via LangGraphManager(llm=...)."
-            ) from exc
+        return _build_chat_model(config, self._temperature)

@@ -14,6 +14,8 @@ class ManagerStatus:
     current_best_metric: float | None
     metric_name: str
     metric_direction: str
+    current_constants: dict[str, str] = field(default_factory=dict)
+    effective_config: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)

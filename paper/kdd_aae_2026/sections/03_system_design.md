@@ -8,6 +8,13 @@ The manager is responsible for proposal generation: a summary, rationale, target
 
 This separation is the replacement principle. A baseline heuristic manager, prompt manager, LangGraph manager, AIDE-style tree-search manager, local worker, Claw-style worker, or future cloud worker can be swapped in without changing the paper-facing governance contract. The append-only ledger remains the source of truth.
 
+**Worker replication paths.** Two worker implementations cover the full reproducibility spectrum:
+
+- `LocalWorker` (`local_worker.py`): parses "Change PARAM from X to Y" directives from proposal text and applies edits directly with no external dependencies. Suitable for protocol verification without a running LLM or coding agent.
+- `ClawWorker` (`claw_worker.py`): generates a packet JSON and invokes the legacy claw-harness loop, which requires a live AI coding agent (such as Claude Code) for free-form LLM proposals. For structured proposals, `ClawWorker` routes through a deterministic constant-patch path that requires only Ollama, not a coding agent.
+
+Both workers implement the same `Worker` protocol and produce ledger records under the same schema; the control plane and paper-facing governance contract are identical regardless of which worker is used.
+
 ## Trial Lifecycle
 
 Each trial follows a fixed lifecycle:

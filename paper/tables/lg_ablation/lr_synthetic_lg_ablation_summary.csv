@@ -1,0 +1,4 @@
+arm,campaign_id,expected_memory_mode,memory_modes,ledger_exists,pending_guard_exists,total_trials,kept,discarded,failed_invalid,acceptance_rate,repeated_bad_count,repeated_bad_rate,repeated_invalid_count,repeated_degraded_count,best_val_score,manager_modes,worker_modes,edited_symbols,all_symbols_allowed
+none,lr_synth_lg_none,none,none,True,False,10,2,8,0,0.2,7,0.7,0,7,0.922983,langgraph_manager,local_worker,BATCH_SIZE;N_EPOCHS,True
+summary,lr_synth_lg_summary,append_only_summary,append_only_summary,True,False,10,2,8,0,0.2,7,0.7,0,7,0.922833,langgraph_manager,local_worker,BATCH_SIZE;N_EPOCHS;REGULARIZATION,True
+rationale,lr_synth_lg_rationale,append_only_summary_with_rationale,append_only_summary_with_rationale,True,False,10,1,9,0,0.1,8,0.8,0,8,0.922733,langgraph_manager,local_worker,BATCH_SIZE;N_EPOCHS;REGULARIZATION,True

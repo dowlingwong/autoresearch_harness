@@ -1,0 +1,65 @@
+{
+  "name": "autoresearch_macos",
+  "description": "Karpathy nanochat GPT language model training node (autoresearch-macos fork). A fixed 5-minute wall-clock training budget runs a small GPT on TinyStories/similar data; the metric is val_bpb (validation bits per byte, lower is better, vocab-size-independent). Only train.py is editable; prepare.py, data, and tokenizer are frozen. Demonstrates governance on the node that conceptually originated the autoresearch pattern.",
+  "external_benchmark": {
+    "name": "autoresearch-macos",
+    "repository": "https://github.com/karpathy/autoresearch",
+    "fork_note": "macOS/MPS-compatible fork; original by @karpathy, March 2026",
+    "license": "MIT"
+  },
+  "editable_paths": [
+    "train.py"
+  ],
+  "editable_symbols": [
+    "DEPTH",
+    "ASPECT_RATIO",
+    "HEAD_DIM",
+    "TOTAL_BATCH_SIZE",
+    "DEVICE_BATCH_SIZE",
+    "EMBEDDING_LR",
+    "MATRIX_LR",
+    "SCALAR_LR",
+    "WEIGHT_DECAY",
+    "WARMDOWN_RATIO",
+    "FINAL_LR_FRAC",
+    "WINDOW_PATTERN"
+  ],
+  "frozen_paths": [
+    "prepare.py",
+    "program.md",
+    "pyproject.toml",
+    "uv.lock",
+    "results.tsv",
+    "experiment_memory.jsonl",
+    "memory/",
+    "data/",
+    "artifacts/"
+  ],
+  "setup_command": "uv sync",
+  "run_command": "uv run train.py > run.log 2>&1",
+  "metric_name": "val_bpb",
+  "metric_direction": "minimize",
+  "metric_parser": "autoresearch.nodes.autoresearch_macos.metric_parser:parse_val_bpb",
+  "acceptance_rule": "candidate_metric < current_best_metric",
+  "validity_checks": [
+    "metric_present",
+    "finite_metric",
+    "editable_scope_only",
+    "command_exit_zero"
+  ],
+  "default_budget": {
+    "trials": 20,
+    "max_wall_clock_hours": 2.0
+  },
+  "expected_runtime": "~5 min/trial (fixed wall-clock training budget); ~2 hours for 20 trials on Apple Silicon or NVIDIA GPU",
+  "one_time_setup": "Run `uv run prepare.py` once to download training data and train the BPE tokenizer before the first campaign.",
+  "failure_categories": [
+    "syntax_error",
+    "runtime_error",
+    "metric_missing",
+    "invalid_edit_scope",
+    "degraded_metric",
+    "no_op_patch",
+    "proposal_precondition_failed"
+  ]
+}
