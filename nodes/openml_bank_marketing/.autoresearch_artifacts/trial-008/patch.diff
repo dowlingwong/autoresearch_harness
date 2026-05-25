@@ -1,0 +1,9 @@
+--- a/config.yaml
++++ b/config.yaml
+@@ -1,5 +1,5 @@
+ model_type: random_forest
+-C: 1.0
++C: 10.0
+ max_depth: 24
+ n_estimators: 500
+ learning_rate: 0.05

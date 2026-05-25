@@ -1,2 +1,0 @@
-campaign_id,total_trials,kept_count,discarded_count,failed_invalid_count,acceptance_rate,invalid_rate,complete_provenance_rate,editable_scope_violation_count,trials_with_rationale,command_failure_rate,metric_parsing_failure_rate,artifact_capture_completeness
-kdd_main_5trial,5,2,0,3,0.4,0.6,1.0,0,5,0.6,0.0,0.4

@@ -438,6 +438,7 @@ def run_real_campaign(
     proposal_backend: object | None = None,
     event_store: object | None = None,
     rationale_max_tokens: int | None = None,
+    ungoverned: bool = False,
 ) -> CampaignRunResult:
     """Run a fixed-budget campaign with a real worker.
 
@@ -447,9 +448,36 @@ def run_real_campaign(
     - releases the guard on completion or failure
     - decides keep/discard based on parsed metric, never trusting the worker
     - appends one authoritative TrialRecord per trial
+
+    If *ungoverned* is True the three governance mechanisms that would
+    otherwise protect the campaign are disabled, to produce the
+    "ungoverned counterfactual" used in the paper's Level 2 analysis:
+
+      1. Pending-trial guard — NOT written/deleted.  A mid-trial crash
+         leaves no sentinel file; the next campaign start has no way to
+         detect it.
+      2. Ledger append on failure — failed_invalid trials are NOT written
+         to the append-only JSONL ledger.  From the ledger's perspective
+         those trials never happened.
+      3. Scope enforcement — still performed and recorded in the
+         observation log, but does NOT block the trial from being appended
+         if it somehow succeeds (scope violations can execute).
+
+    A lightweight *_ungoverned_obs.jsonl* observation log is written
+    alongside the ledger so that we can compare the two and show exactly
+    what the governed ledger would have captured versus what the ungoverned
+    regime left behind.
     """
     records_path = Path(records_path)
     records_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Ungoverned observation log — written only when ungoverned=True.
+    # Each line: lightweight JSON with what an ungoverned regime actually saw.
+    obs_path: Path | None = None
+    if ungoverned:
+        stem = records_path.stem  # e.g. "some_campaign_trials"
+        cid_stem = stem[:-len("_trials")] if stem.endswith("_trials") else stem
+        obs_path = records_path.parent / f"{cid_stem}_ungoverned_obs.jsonl"
 
     manager = proposal_backend or _manager(manager_mode, llm=manager_llm, temperature=manager_temperature)
     store = TrialAppendStore(records_path)
@@ -519,19 +547,31 @@ def run_real_campaign(
             payload={"summary": proposal.proposal_summary, "manager_mode": proposal.manager_mode},
         )
 
-        guard = _acquire_pending(
-            records_path,
-            campaign_id=campaign_id,
-            trial_id=trial_id,
-            budget_index=budget_index,
-        )
-        emit(
-            event_store,
-            campaign_id=campaign_id,
-            trial_id=trial_id,
-            event_type="pending_guard_acquired",
-            payload={"guard_path": str(guard)},
-        )
+        if ungoverned:
+            # UNGOVERNED: pending guard is not written.
+            # A crash here leaves no sentinel; it is silently unrecoverable.
+            guard = None  # type: ignore[assignment]
+            emit(
+                event_store,
+                campaign_id=campaign_id,
+                trial_id=trial_id,
+                event_type="pending_guard_acquired",
+                payload={"guard_path": None, "ungoverned": True},
+            )
+        else:
+            guard = _acquire_pending(
+                records_path,
+                campaign_id=campaign_id,
+                trial_id=trial_id,
+                budget_index=budget_index,
+            )
+            emit(
+                event_store,
+                campaign_id=campaign_id,
+                trial_id=trial_id,
+                event_type="pending_guard_acquired",
+                payload={"guard_path": str(guard)},
+            )
         ts_start = _iso_now()
         worker_started = time.perf_counter()
         emit(
@@ -626,24 +666,54 @@ def run_real_campaign(
         rbs = compute_repeated_bad_stats(existing_records + records + [record])
         record = replace(record, repeated_bad_count=rbs.repeated_bad_count)
         records.append(record)
-        store.append_many([record])
+
+        if ungoverned:
+            # UNGOVERNED: write an observation entry regardless of outcome,
+            # but only append to the governed ledger if the trial would have
+            # been kept or discarded (i.e. valid).  Failed-invalid trials are
+            # silently dropped — exactly what a system without a governed
+            # ledger would do.
+            _write_ungoverned_obs(obs_path, record, trial_id, budget_index)
+            if record.decision != TrialDecision.FAILED_INVALID:
+                store.append_many([record])
+                emit(
+                    event_store,
+                    campaign_id=campaign_id,
+                    trial_id=trial_id,
+                    event_type="trial_record_appended",
+                    payload={"trial_id": trial_id, "repeated_bad_count": rbs.repeated_bad_count,
+                             "ungoverned": True},
+                )
+            else:
+                emit(
+                    event_store,
+                    campaign_id=campaign_id,
+                    trial_id=trial_id,
+                    event_type="trial_record_dropped_ungoverned",
+                    payload={"trial_id": trial_id,
+                             "failure_category": record.failure_category.value if record.failure_category else None},
+                )
+            # No pending guard to release.
+        else:
+            store.append_many([record])
+            emit(
+                event_store,
+                campaign_id=campaign_id,
+                trial_id=trial_id,
+                event_type="trial_record_appended",
+                payload={"trial_id": trial_id, "repeated_bad_count": rbs.repeated_bad_count},
+            )
+            _release_pending(guard)
+            emit(
+                event_store,
+                campaign_id=campaign_id,
+                trial_id=trial_id,
+                event_type="pending_guard_released",
+                payload={},
+            )
+
         if record.decision != TrialDecision.KEPT:
             _restore_editable_state(editable_snapshot)
-        emit(
-            event_store,
-            campaign_id=campaign_id,
-            trial_id=trial_id,
-            event_type="trial_record_appended",
-            payload={"trial_id": trial_id, "repeated_bad_count": rbs.repeated_bad_count},
-        )
-        _release_pending(guard)
-        emit(
-            event_store,
-            campaign_id=campaign_id,
-            trial_id=trial_id,
-            event_type="pending_guard_released",
-            payload={},
-        )
 
         if record.decision == TrialDecision.KEPT and node_spec.metric_name in record.parsed_metrics:
             current_best = record.parsed_metrics[node_spec.metric_name]
@@ -659,10 +729,19 @@ def run_real_campaign(
             "elapsed_seconds": max(time.perf_counter() - campaign_started, 0.0),
         },
     )
+    # In ungoverned mode only valid (kept/discarded) trials reach the ledger;
+    # failed_invalid trials are silently dropped.  Report what's actually there.
+    if ungoverned:
+        ledger_written = sum(
+            1 for r in records if r.decision != TrialDecision.FAILED_INVALID
+        )
+    else:
+        ledger_written = len(records)
+
     return CampaignRunResult(
         campaign_id=campaign_id,
         records_path=str(records_path),
-        records_written=len(records),
+        records_written=ledger_written,
         dry_run=False,
     )
 
@@ -983,6 +1062,43 @@ def _record_from_worker_result(
         fast_config_hash=worker_result.extra.get("fast_config_hash") or None,
         training_seed=worker_result.extra.get("training_seed") or None,
     )
+
+
+def _write_ungoverned_obs(obs_path: "Path | None", record: "TrialRecord", trial_id: str, budget_index: int) -> None:
+    """Append a lightweight observation entry to the ungoverned observation log.
+
+    This captures what actually happened on disk during an ungoverned run,
+    for comparison with the governed ledger in the paper's Level 2 analysis.
+    The observation log is NOT the governed ledger — it contains only the
+    raw execution outcome, with no provenance IDs, no taxonomy, and no
+    decision authority.
+    """
+    if obs_path is None:
+        return
+    obs = {
+        "trial_id": trial_id,
+        "budget_index": budget_index,
+        "timestamp_start": record.timestamp_start,
+        "timestamp_end": record.timestamp_end,
+        "wall_clock_seconds": record.wall_clock_seconds,
+        "worker_success": record.execution_status.value == "success",
+        "failure_message": (record.extra or {}).get("worker_failure_message"),
+        # What governance would have classified this as — but is NOT recorded
+        # in the ungoverned ledger:
+        "governance_would_have_classified": {
+            "decision": record.decision.value,
+            "failure_category": record.failure_category.value if record.failure_category else None,
+            "validity_status": record.validity_status.value,
+        },
+        "ungoverned_ledger_entry": record.decision.value != "failed_invalid",
+        "note": (
+            "This trial was dropped silently (not recorded in ledger)"
+            if record.decision.value == "failed_invalid"
+            else "This trial was recorded in the ungoverned ledger"
+        ),
+    }
+    with open(obs_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(obs) + "\n")
 
 
 def _manager(manager_mode: str, llm: object | None = None, temperature: float | None = None):

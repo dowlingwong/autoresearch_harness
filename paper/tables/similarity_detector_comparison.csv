@@ -1,7 +1,0 @@
-ledger,method,threshold,total_trials,repeated_bad_count,repeated_bad_rate,repeated_invalid_count,repeated_degraded_count,flagged_trial_ids
-experiments/ledgers/manager_comparison_baseline_manager_trials.jsonl,hybrid,0.6,5,2,0.4,0,2,"manager_comparison_baseline_manager-trial-003,manager_comparison_baseline_manager-trial-005"
-experiments/ledgers/manager_comparison_baseline_manager_trials.jsonl,token_set_jaccard,0.6,5,0,0.0,0,0,
-experiments/ledgers/manager_comparison_baseline_manager_trials.jsonl,fuzzy_sequence,0.6,5,0,0.0,0,0,
-experiments/ledgers/manager_comparison_prompt_manager_trials.jsonl,hybrid,0.6,5,2,0.4,0,2,"manager_comparison_prompt_manager-trial-003,manager_comparison_prompt_manager-trial-005"
-experiments/ledgers/manager_comparison_prompt_manager_trials.jsonl,token_set_jaccard,0.6,5,0,0.0,0,0,
-experiments/ledgers/manager_comparison_prompt_manager_trials.jsonl,fuzzy_sequence,0.6,5,0,0.0,0,0,

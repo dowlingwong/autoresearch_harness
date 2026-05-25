@@ -1,7 +1,0 @@
-campaign_id,failure_category,count,rate,total_trials
-kdd_main_5trial,runtime_error,3,0.6,5
-lg_ablation_none,degraded_metric,4,0.8,5
-lg_ablation_append_only_summary,degraded_metric,4,0.8,5
-lg_ablation_append_only_summary_with_rationale,degraded_metric,4,0.8,5
-kdd_stress_scope,invalid_edit_scope,1,1.0,1
-kdd_stress_noop,no_op_patch,1,1.0,1

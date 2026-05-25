@@ -6,6 +6,29 @@ A governed autonomous experimentation framework for evaluating agentic optimizat
 
 ---
 
+## KDD 2026 AAE paper status
+
+The active submission is `A-Governed-Harness-for-Auditable-LLM-Driven-ML-Experimentation/`, titled **Evaluating Governed LLM-Driven ML Experimentation**.
+
+Current submission state:
+
+- Six reported ML nodes: ResNet-trigger, LR synthetic, two OpenML tabular nodes, MLAgentBench vectorization, and autoresearch Linux.
+- 1,355 reported governed trials.
+- Blocking paper edits are complete: abstract is under 250 words, trial count is synchronized, generated ResNet L40S figure is linked, and `latexmk -pdf` compiles.
+- Local build output has body through page 9, with references beginning afterward.
+- `mlp_synthetic` remains ledger-only portability evidence and is not part of the six-node paper framing.
+
+Before submission, only final packaging checks remain:
+
+1. Visually inspect the generated PDF.
+2. Recompile from scratch on Overleaf with `main.tex` as the main document.
+3. Confirm anonymisation, workshop metadata, and submission-system fields.
+4. Exclude generated plots with MLP or stale env-failure framing from the paper package.
+
+The authoritative planning file is `plan/master_plan.md`.
+
+---
+
 ## What this is
 
 A research system in which an LLM manager proposes bounded hyperparameter changes, a controlled worker executes them, and a formal control plane decides what to keep — with every trial recorded in an append-only ledger for full auditability.
@@ -241,7 +264,7 @@ python3 scripts/run_memory_ablation.py \
 
 ## Real Campaign Quickstart
 
-This is the canonical KDD AAE real execution path. Stage 2 owns the campaign
+This is the canonical KDD workshop real execution path. Stage 2 owns the campaign
 lifecycle, pending guard, validity checks, decision, artifact capture,
 append-only ledger, and event stream. `harness/claw-code` is called only as the
 current worker backend.
@@ -315,7 +338,9 @@ python3 scripts/run_memory_ablation.py \
     --packet-defaults tests/stage_1_sprint_deliverable/loop_packet.json
 ```
 
-## Reproduce KDD AAE Results
+## Reproduce KDD Workshop Results
+
+The historical commands below reproduce the original KDD workshop campaign artifacts. The current 2026 submission additionally includes Linux L40S ResNet and autoresearch campaigns plus OpenML/MLAgentBench updates; see `plan/master_plan.md` for the authoritative submitted-node inventory and trial counts.
 
 1. Install the project with `uv venv && uv pip install -e ".[dev]"`.
 2. Start the local model backend, for example Ollama at `http://localhost:11434`.

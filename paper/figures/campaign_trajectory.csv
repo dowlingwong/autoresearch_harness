@@ -1,6 +1,0 @@
-budget_index,trial_id,metric,running_best,decision
-1,kdd_main_5trial-trial-001,,,failed_invalid
-2,kdd_main_5trial-trial-002,0.773778,0.773778,kept
-3,kdd_main_5trial-trial-003,,0.773778,failed_invalid
-4,kdd_main_5trial-trial-004,,0.773778,failed_invalid
-5,kdd_main_5trial-trial-005,0.774711,0.774711,kept

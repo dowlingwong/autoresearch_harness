@@ -1,0 +1,11 @@
+--- a/config.yaml
++++ b/config.yaml
+@@ -1,7 +1,7 @@
+ model_type: random_forest
+ C: 1.0
+ max_depth: 12
+-n_estimators: 150
++n_estimators: 300
+ learning_rate: 0.05
+ class_weight: balanced
+ scaler: none

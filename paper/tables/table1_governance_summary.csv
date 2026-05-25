@@ -1,0 +1,7 @@
+Node,Seeds,Trials,AR,95% CI,IR,Best metric,Prov. 100%
+ResNet-trigger,16,245,0.468,"[0.36,0.57]",4.9%,0.9435,Yes
+LR-Synthetic,15,450,0.157,"[0.15,0.40]",46.2%,0.9230,Yes
+OpenML Credit-G,9,230,0.182,"[0.15,0.23]",26.1%,0.7691,Yes
+OpenML Bank,9,230,0.192,"[0.15,0.23]",32.2%,0.9347,Yes
+MLAgentBench,3,50,0.538,"[0.33,0.70]",48.0%,N/A,Yes
+Autoresearch Linux,8,240,0.197,"[0.19,0.22]",70.4%,N/A,Yes

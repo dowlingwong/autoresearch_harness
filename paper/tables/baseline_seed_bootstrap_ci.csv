@@ -1,2 +1,0 @@
-n,mean_val_auc,std_val_auc,min_val_auc,max_val_auc,bootstrap_samples,mean_ci_low,mean_ci_high
-5,0.7847554,0.013837275405223354,0.7715110000000001,0.810711,10000,0.7748088,0.7983288

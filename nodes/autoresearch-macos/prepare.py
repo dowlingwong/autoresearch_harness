@@ -23,16 +23,17 @@ import rustbpe
 import tiktoken
 import torch
 
-def verify_macos_env():
-    import sys
-    if sys.platform != "darwin":
-        raise RuntimeError(f"This script requires macOS with Metal. Detected platform: {sys.platform}")
-    if not torch.backends.mps.is_available():
-        raise RuntimeError("MPS (Metal Performance Shaders) is not available. Ensure you are running on Apple Silicon with a compatible PyTorch build.")
-    print("Environment verified: macOS detected with Metal (MPS) hardware acceleration available.")
+def verify_env():
+    if torch.cuda.is_available():
+        print(f"Environment verified: CUDA ({torch.cuda.get_device_name(0)})")
+    elif sys.platform == "darwin" and torch.backends.mps.is_available():
+        print("Environment verified: macOS detected with Metal (MPS) hardware acceleration available.")
+    else:
+        import warnings
+        warnings.warn("No GPU detected -- running on CPU.")
     print()
 
-verify_macos_env()
+verify_env()
 
 # ---------------------------------------------------------------------------
 # Constants (fixed, do not modify)
@@ -46,7 +47,10 @@ EVAL_TOKENS = 40 * 524288  # number of tokens for val eval
 # Configuration
 # ---------------------------------------------------------------------------
 
-CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "autoresearch")
+CACHE_DIR = os.environ.get(
+    "AUTORESEARCH_CACHE_DIR",
+    os.path.join(os.path.expanduser("~"), ".cache", "autoresearch"),
+)
 DATA_DIR = os.path.join(CACHE_DIR, "data")
 TOKENIZER_DIR = os.path.join(CACHE_DIR, "tokenizer")
 BASE_URL = "https://huggingface.co/datasets/karpathy/climbmix-400b-shuffle/resolve/main"

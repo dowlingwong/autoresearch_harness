@@ -813,6 +813,9 @@ def _parse_fallback_metric(parser, log_path: Path, log_text: str):
 
 
 def _extract_fallback_metric(parsed, metric_name: str) -> float | None:
+    # parse_val_bpb and similar parsers return a plain float directly.
+    if isinstance(parsed, (int, float)):
+        return float(parsed)
     metric = getattr(parsed, "metric_value", None)
     if metric is not None:
         return float(metric)

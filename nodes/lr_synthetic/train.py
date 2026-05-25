@@ -23,10 +23,10 @@ import random
 import numpy as np
 
 # ── editable hyperparameters ────────────────────────────────────────────────
-LEARNING_RATE = 3e-4
-REGULARIZATION = 0.05
+LEARNING_RATE = 5e-4
+REGULARIZATION = 0.001
 N_EPOCHS = 80
-BATCH_SIZE = 32
+BATCH_SIZE = 4
 
 # ── fixed settings ───────────────────────────────────────────────────────────
 RANDOM_SEED = 42

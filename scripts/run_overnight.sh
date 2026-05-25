@@ -47,6 +47,22 @@
 set -uo pipefail
 
 # ---------------------------------------------------------------------------
+# -1. Activate project virtualenv so all harness dependencies are available
+# ---------------------------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+VENV="$PROJECT_ROOT/.venv/bin/activate"
+
+if [[ -f "$VENV" ]]; then
+  # shellcheck disable=SC1090
+  source "$VENV"
+else
+  echo "[ERROR] No .venv found at $PROJECT_ROOT/.venv"
+  echo "        Run: cd $PROJECT_ROOT && uv sync"
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
 # 0. Parse flags
 # ---------------------------------------------------------------------------
 SKIP_RESNET=0
@@ -54,6 +70,7 @@ SKIP_AUTORESEARCH=0
 FAST_RESNET=0
 SKIP_ANALYSIS=0
 DRY_RUN=0
+SMOKE=0   # --smoke: run 1 trial per node to validate pipeline end-to-end (~3 min)
 
 for arg in "$@"; do
   case "$arg" in
@@ -62,9 +79,15 @@ for arg in "$@"; do
     --fast-resnet)       FAST_RESNET=1 ;;
     --skip-analysis)     SKIP_ANALYSIS=1 ;;
     --dry-run)           DRY_RUN=1 ;;
+    --smoke)             SMOKE=1; FAST_RESNET=1; SKIP_ANALYSIS=1 ;;
     *) echo "[ERROR] Unknown option: $arg"; exit 1 ;;
   esac
 done
+
+# In smoke mode, all budgets are capped at 1 and campaign IDs get a _smoke suffix
+# so they don't block the real overnight run.
+smoke_budget() { [[ $SMOKE -eq 1 ]] && echo 1 || echo "$1"; }
+smoke_id()     { [[ $SMOKE -eq 1 ]] && echo "${1}_smoke" || echo "$1"; }
 
 # ---------------------------------------------------------------------------
 # 1. Paths and log setup
@@ -78,7 +101,7 @@ MASTER_LOG="$LOG_DIR/master.log"
 echo "============================================================" | tee -a "$MASTER_LOG"
 echo " Overnight runner started: $(date)"                           | tee -a "$MASTER_LOG"
 echo " Log dir : $LOG_DIR"                                          | tee -a "$MASTER_LOG"
-echo " Options : skip_resnet=$SKIP_RESNET  skip_autoresearch=$SKIP_AUTORESEARCH  fast_resnet=$FAST_RESNET  dry_run=$DRY_RUN" | tee -a "$MASTER_LOG"
+echo " Options : skip_resnet=$SKIP_RESNET  skip_autoresearch=$SKIP_AUTORESEARCH  fast_resnet=$FAST_RESNET  smoke=$SMOKE  dry_run=$DRY_RUN" | tee -a "$MASTER_LOG"
 echo "============================================================" | tee -a "$MASTER_LOG"
 
 # ---------------------------------------------------------------------------
@@ -178,11 +201,12 @@ log "═════════════════════════
 
 # ── B1: mlagentbench_vectorization ──────────────────────────────────────────
 for SEED in s1 s2; do
-  run_campaign "deepseek_mlagentbench_${SEED}" 10 \
+  CID=$(smoke_id "deepseek_mlagentbench_${SEED}")
+  run_campaign "$CID" "$(smoke_budget 10)" \
     python3 "$REPO/scripts/run_local_node_campaign.py" \
       --node mlagentbench_vectorization \
-      --campaign-id "deepseek_mlagentbench_${SEED}" \
-      --budget 10 --manager langgraph_manager \
+      --campaign-id "$CID" \
+      --budget "$(smoke_budget 10)" --manager langgraph_manager \
       --memory-mode append_only_summary \
       --model deepseek/deepseek-v4-flash --temperature 0.2
 done
@@ -190,47 +214,52 @@ done
 # ── B2: lr_synthetic extra seeds (s4, s5 per arm) ───────────────────────────
 for ARM in none append_only_summary append_only_summary_with_rationale; do
   for SEED in s4 s5; do
-    run_campaign "deepseek_lr_${ARM}_${SEED}" 10 \
+    CID=$(smoke_id "deepseek_lr_${ARM}_${SEED}")
+    run_campaign "$CID" "$(smoke_budget 10)" \
       python3 "$REPO/scripts/run_local_node_campaign.py" \
         --node lr_synthetic \
-        --campaign-id "deepseek_lr_${ARM}_${SEED}" \
-        --budget 10 --manager langgraph_manager \
+        --campaign-id "$CID" \
+        --budget "$(smoke_budget 10)" --manager langgraph_manager \
         --memory-mode "${ARM}" \
         --model deepseek/deepseek-v4-flash --temperature 0.2
   done
 done
 
 # ── B3: mlp_synthetic — add missing none and rationale arms ─────────────────
-run_campaign "deepseek_mlp_none_s1" 10 \
+CID=$(smoke_id "deepseek_mlp_none_s1")
+run_campaign "$CID" "$(smoke_budget 10)" \
   python3 "$REPO/scripts/run_local_node_campaign.py" \
     --node mlp_synthetic \
-    --campaign-id deepseek_mlp_none_s1 \
-    --budget 10 --manager langgraph_manager \
+    --campaign-id "$CID" \
+    --budget "$(smoke_budget 10)" --manager langgraph_manager \
     --memory-mode none \
     --model deepseek/deepseek-v4-flash --temperature 0.2
 
-run_campaign "deepseek_mlp_rationale_s1" 10 \
+CID=$(smoke_id "deepseek_mlp_rationale_s1")
+run_campaign "$CID" "$(smoke_budget 10)" \
   python3 "$REPO/scripts/run_local_node_campaign.py" \
     --node mlp_synthetic \
-    --campaign-id deepseek_mlp_rationale_s1 \
-    --budget 10 --manager langgraph_manager \
+    --campaign-id "$CID" \
+    --budget "$(smoke_budget 10)" --manager langgraph_manager \
     --memory-mode append_only_summary_with_rationale \
     --model deepseek/deepseek-v4-flash --temperature 0.2
 
 # ── B4: openml extra seeds ───────────────────────────────────────────────────
-run_campaign "deepseek_openml_cg_s4" 20 \
+CID=$(smoke_id "deepseek_openml_cg_s4")
+run_campaign "$CID" "$(smoke_budget 20)" \
   python3 "$REPO/scripts/run_openml_tabular_campaign.py" \
     --node openml_credit_g \
-    --campaign-id deepseek_openml_cg_s4 \
-    --budget 20 --manager langgraph_manager \
+    --campaign-id "$CID" \
+    --budget "$(smoke_budget 20)" --manager langgraph_manager \
     --memory-mode append_only_summary \
     --model deepseek/deepseek-v4-flash --temperature 0.2
 
-run_campaign "deepseek_openml_bm_s4" 20 \
+CID=$(smoke_id "deepseek_openml_bm_s4")
+run_campaign "$CID" "$(smoke_budget 20)" \
   python3 "$REPO/scripts/run_openml_tabular_campaign.py" \
     --node openml_bank_marketing \
-    --campaign-id deepseek_openml_bm_s4 \
-    --budget 20 --manager langgraph_manager \
+    --campaign-id "$CID" \
+    --budget "$(smoke_budget 20)" --manager langgraph_manager \
     --memory-mode append_only_summary \
     --model deepseek/deepseek-v4-flash --temperature 0.2
 
@@ -303,32 +332,30 @@ if [[ $SKIP_RESNET -eq 0 && $RESNET_SMOKE_PASS -eq 1 ]]; then
     export RESNET_TRIGGER_FAST_EPOCHS=3
   fi
 
+  RESNET_BUDGET=$(smoke_budget 15)
   for ARM in none append_only_summary append_only_summary_with_rationale; do
     for SEED in s1 s2 s3; do
-      CID="deepseek_resnet_${ARM}_${SEED}"
+      CID=$(smoke_id "deepseek_resnet_${ARM}_${SEED}")
       ACTUAL=$(trial_count "$CID")
 
-      # If ledger exists but has < 15 trials AND the old trials were all failed
-      # (sklearn bug), reset and rerun from scratch at budget 15.
-      # If already at 15+, skip.
-      if [[ "$ACTUAL" -ge 15 ]]; then
-        log "SKIP  $CID  ($ACTUAL/15 trials already in ledger)"
+      if [[ "$ACTUAL" -ge "$RESNET_BUDGET" ]]; then
+        log "SKIP  $CID  ($ACTUAL/$RESNET_BUDGET trials already in ledger)"
         SKIPPED+=("$CID")
         continue
       fi
 
-      # For the failed sklearn runs (10 trials, all failed_invalid), wipe and restart.
-      if [[ "$ACTUAL" -gt 0 && "$ACTUAL" -lt 15 ]]; then
+      # Stale sklearn-bug ledgers: wipe and restart
+      if [[ "$ACTUAL" -gt 0 && "$ACTUAL" -lt "$RESNET_BUDGET" && $SMOKE -eq 0 ]]; then
         log "INFO  $CID has $ACTUAL stale trials — resetting before rerun"
         reset_campaign "$CID" "resnet_trigger" "$RESNET_ROOT"
       fi
 
-      run_campaign "$CID" 15 \
+      run_campaign "$CID" "$RESNET_BUDGET" \
         python3 "$REPO/scripts/run_kdd_memory_ablation.py" \
           --node resnet_trigger \
           --campaign-id "$CID" \
           --node-root "$RESNET_ROOT" \
-          --budget 15 --manager langgraph_manager \
+          --budget "$RESNET_BUDGET" --manager langgraph_manager \
           --memory-mode "${ARM}" \
           --model deepseek/deepseek-v4-flash \
           --worker-model qwen2.5-coder:7b \
@@ -384,17 +411,21 @@ else
       fi
     fi
 
-    # 4 seeds with DeepSeek manager
-    for SEED in s1 s2 s3 s4; do
-      CID="deepseek_autoresearch_${SEED}"
+    # 4 seeds with DeepSeek manager (smoke mode: only s1 at budget 1)
+    AR_SEEDS=(s1 s2 s3 s4)
+    [[ $SMOKE -eq 1 ]] && AR_SEEDS=(s1)
+    AR_BUDGET=$(smoke_budget 20)
+
+    for SEED in "${AR_SEEDS[@]}"; do
+      CID=$(smoke_id "deepseek_autoresearch_${SEED}")
       reset_campaign "$CID" "autoresearch_macos" "$AR_ROOT"
 
-      run_campaign "$CID" 20 \
+      run_campaign "$CID" "$AR_BUDGET" \
         python3 "$REPO/scripts/run_kdd_memory_ablation.py" \
           --node autoresearch_macos \
           --campaign-id "$CID" \
           --node-root "$AR_ROOT" \
-          --budget 20 --manager langgraph_manager \
+          --budget "$AR_BUDGET" --manager langgraph_manager \
           --memory-mode append_only_summary \
           --model deepseek/deepseek-v4-flash \
           --worker-model qwen2.5-coder:7b \

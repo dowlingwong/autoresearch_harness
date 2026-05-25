@@ -1,4 +1,0 @@
-campaign_id,memory_mode,total_trials,kept,discarded,failed_invalid,acceptance_rate,repeated_bad_count,repeated_bad_rate,repeated_invalid_count,repeated_degraded_count,best_metric
-lg_ablation_none,none,5,1,4,0,0.2,3,0.6,0,3,0.774711
-lg_ablation_append_only_summary,append_only_summary,5,1,4,0,0.2,3,0.6,0,3,0.774711
-lg_ablation_append_only_summary_with_rationale,append_only_summary_with_rationale,5,1,4,0,0.2,3,0.6,0,3,0.774711

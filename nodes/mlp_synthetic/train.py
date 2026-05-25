@@ -4,11 +4,11 @@ from __future__ import annotations
 from benchmark import run_mlp_benchmark
 
 
-LEARNING_RATE = 0.02
+LEARNING_RATE = 0.01
 HIDDEN_DIM = 64
-REGULARIZATION = 0.0001
-N_EPOCHS = 150
-BATCH_SIZE = 32
+REGULARIZATION = 0.001
+N_EPOCHS = 10000
+BATCH_SIZE = 128
 
 
 def main() -> None:

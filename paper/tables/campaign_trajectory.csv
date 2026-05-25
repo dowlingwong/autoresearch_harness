@@ -1,6 +1,0 @@
-budget_index,trial_id,decision,metric_value,current_best_before,delta_vs_best,memory_mode
-1,kdd_main_5trial-trial-001,failed_invalid,,,,append_only_summary_with_rationale
-2,kdd_main_5trial-trial-002,kept,0.773778,,,append_only_summary_with_rationale
-3,kdd_main_5trial-trial-003,failed_invalid,,0.773778,,append_only_summary_with_rationale
-4,kdd_main_5trial-trial-004,failed_invalid,,0.773778,,append_only_summary_with_rationale
-5,kdd_main_5trial-trial-005,kept,0.774711,0.773778,0.0009330000000000727,append_only_summary_with_rationale

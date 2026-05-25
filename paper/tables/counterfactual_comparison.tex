@@ -1,0 +1,40 @@
+\begin{table*}[t]
+\footnotesize
+\caption{Governed vs.\ ungoverned counterfactual comparison across two nodes.
+Ledger completeness $=$ (trials with a ledger record)\,/\,(trials that ran).
+Governed completeness is 1.00 by structural invariant
+(Section~\ref{trial-lifecycle}); the pending-trial guard and append-only ledger
+guarantee a record for every budget slot regardless of outcome.
+Ungoverned completeness falls below 1.00 because \texttt{failed\_invalid}
+trials are silently absent from the ledger; the observation log
+(\texttt{*\_ungov\_obs.jsonl}) is the only evidence they ran.
+IR\,=\,invalid rate of the governed arm.
+95\% bootstrap CIs: 10{,}000 resamples, seed~42.}
+\label{tab:counterfactual}
+\begin{tabular}{@{}p{0.19\textwidth}rp{0.14\textwidth}p{0.16\textwidth}rp{0.30\textwidth}@{}}
+\toprule
+Node (profile) & $N$ & Governed & Ungoverned & Drops & Interpretation \\
+\midrule
+\texttt{autoresearch\allowbreak\_linux}
+  \newline IR\,=\,100\% &
+  30 &
+  1.00\newline$[1.00,\,1.00]$ &
+  0.00\newline$[0.00,\,0.00]$ &
+  30\,(100\%) &
+  Total failure: ungoverned ledger is empty; campaign is indistinguishable from one that never ran \\[6pt]
+\texttt{openml\allowbreak\_bank\allowbreak\_mkt}
+  \newline IR\,=\,55\% &
+  20 &
+  1.00\newline$[1.00,\,1.00]$ &
+  0.35\newline$[0.15,\,0.55]$ &
+  13\,(65\%) &
+  Mixed outcomes: ungoverned ledger retains only the 7 valid trials; 11 classified failures leave no trace \\
+\midrule
+\multicolumn{6}{@{}p{\linewidth}@{}}{%
+  \textit{Combined: 43\,/\,50 ungoverned trials (86\%) are silently absent from the ledger;
+  0\,/\,50 governed trials are absent (100\% completeness by structural invariant).
+  Governed CI collapses to the point $[1.00,\,1.00]$ on both nodes; ungoverned CI
+  lies strictly below 1.00 on both nodes.}} \\
+\bottomrule
+\end{tabular}
+\end{table*}

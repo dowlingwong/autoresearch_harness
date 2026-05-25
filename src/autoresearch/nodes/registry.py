@@ -23,6 +23,7 @@ def node_spec_path(node_name: str, repo_root: str | Path | None = None) -> Path:
         "openml_credit_g": root / "configs" / "nodes" / "openml_credit_g.yaml",
         "openml_bank_marketing": root / "configs" / "nodes" / "openml_bank_marketing.yaml",
         "autoresearch_macos": root / "configs" / "nodes" / "autoresearch_macos.yaml",
+        "autoresearch_linux": root / "configs" / "nodes" / "autoresearch_linux.yaml",
     }
     try:
         return registry[node_name]

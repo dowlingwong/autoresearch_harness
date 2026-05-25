@@ -142,6 +142,16 @@ def main() -> int:
                         help="Directory to write per-campaign CSV summary tables.")
     parser.add_argument("--no-export", action="store_true",
                         help="Skip table export after the campaign completes.")
+    parser.add_argument(
+        "--ungoverned",
+        action="store_true",
+        help=(
+            "Run in ungoverned mode: disable pending-trial guard and suppress "
+            "ledger append for failed_invalid trials. Produces a side-by-side "
+            "comparison with the governed ledger for Level 2 paper evidence. "
+            "A *_ungoverned_obs.jsonl observation log is written instead."
+        ),
+    )
     args = parser.parse_args()
 
     if args.budget < 1:
@@ -158,7 +168,7 @@ def main() -> int:
         Path(args.events) if args.events else _default_events_path(records_path, args.campaign_id)
     )
 
-    print(f"\n{'[DRY-RUN] ' if args.dry_run else ''}KDD AAE Memory Ablation")
+    print(f"\n{'[DRY-RUN] ' if args.dry_run else ''}{'[UNGOVERNED] ' if getattr(args, 'ungoverned', False) else ''}KDD AAE Memory Ablation")
     print(f"  node         : {args.node}")
     print(f"  memory_mode  : {args.memory_mode}")
     print(f"  campaign_id  : {args.campaign_id}")
@@ -224,6 +234,7 @@ def main() -> int:
             worker=worker,
             proposal_backend=proposal_backend,
             event_store=event_store,
+            ungoverned=getattr(args, "ungoverned", False),
         )
 
     print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
