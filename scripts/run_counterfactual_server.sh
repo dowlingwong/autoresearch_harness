@@ -2,7 +2,7 @@
 # run_counterfactual_server.sh
 #
 # Run the full N=30 governed vs. ungoverned counterfactual for autoresearch_linux
-# on deepthought2 (NVIDIA GPU cluster, etp.kit.edu).
+# on an anonymous NVIDIA GPU cluster.
 #
 # ── Step 1: sync repo from your laptop ────────────────────────────────────────
 #   bash scripts/sync_to_deepthought2.sh --push

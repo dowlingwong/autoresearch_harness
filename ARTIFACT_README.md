@@ -4,7 +4,7 @@
 and Failure Metrics"  
 **Venue:** KDD 2026 ETAAI Workshop  
 **Commit:** `ff3717b729652d4ba1de50848d8533078ccbcdfa`  
-**Repository:** https://github.com/dowlingwong/autoresearch_harness
+**Repository:** withheld during anonymous review; to be released after review
 
 ---
 
@@ -27,6 +27,7 @@ autoresearch-harness-artifact/
 ├── scripts/                    ← campaign runners and export scripts
 ├── tests/                      ← unit + integration test suite
 ├── experiments/ledgers/        ← append-only JSONL trial records (paper evidence)
+├── artifact_manifest.json      ← primary-campaign index and count summary
 ├── paper_figures.ipynb         ← notebook that regenerates all paper figures/tables
 └── nodes/                      ← per-node training environments
     ├── ResNet_trigger/         ← Physics CNN (requires GPU + HDF5 data files)
@@ -60,8 +61,10 @@ python3 scripts/export_kdd_figures.py
 # or open paper_figures.ipynb → Kernel → Restart & Run All
 ```
 
-All paper tables and figures are produced from `experiments/ledgers/`; no
-training re-execution is required to reproduce the reported numbers.
+All paper governance numbers are produced from the primary campaign ledgers
+listed in `artifact_manifest.json`; no training re-execution is required to
+reproduce the reported governance metrics. The artifact also contains
+development and smoke ledgers that are excluded from paper totals.
 
 ---
 
@@ -94,7 +97,10 @@ python3 scripts/run_memory_ablation.py \
 
 **Hardware:** NVIDIA GPU with ≥ 8 GB VRAM (paper used NVIDIA L40S)  
 **Data:** `nodes/ResNet_trigger/noise_traces_4000x8000.h5` and
-          `nodes/ResNet_trigger/signal_vacuum_sum_crop_4000x8000.h5` (included)  
+          `nodes/ResNet_trigger/signal_vacuum_sum_crop_4000x8000.h5`
+          are not included in the anonymous review ZIP. They are not needed for
+          ledger-based governance verification and can be released after review
+          if policy permits.  
 **Manager:** `deepseek-v4-flash` via OpenAI-compatible API  
 **Worker:** `qwen2.5-coder:7b` via Ollama at `http://localhost:11434`
 
@@ -241,7 +247,8 @@ Set `OLLAMA_HOST` if Ollama is not on `http://localhost:11434`.
 
 ## Ledger provenance
 
-Every trial in `experiments/ledgers/` is an append-only JSONL record.
+Every trial in `experiments/ledgers/` is an append-only JSONL record. Path-like
+fields in the anonymous artifact are sanitized to relative artifact paths.
 Each record contains:
 
 - `trial_id`, `campaign_id`, `budget_index` — identity
