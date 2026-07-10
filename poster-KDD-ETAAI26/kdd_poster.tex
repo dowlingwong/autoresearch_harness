@@ -1,0 +1,266 @@
+\documentclass[UKenglish]{article}
+
+\usepackage[
+ horizontal,
+ heros
+ ]{KITposter}
+
+\graphicspath{{figs/}}
+
+% The sandbox/system "Courier" fallback is unavailable; use TeX Gyre Cursor
+% for \texttt so xdvipdfmx does not abort on an unresolved mono font.
+\setmonofont{texgyrecursor}[ Extension = .otf ,
+  UprightFont = *-regular , ItalicFont = *-italic ,
+  BoldFont = *-bold , BoldItalicFont = *-bolditalic ]
+
+\usepackage{amsmath}
+\usepackage{pagecolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit}
+
+\definecolor{PosterBG}{RGB}{248,247,242}
+\definecolor{PosterPanel}{RGB}{235,239,236}
+\definecolor{PosterBlue}{RGB}{0,114,178}
+\definecolor{PosterOrange}{RGB}{230,159,0}
+\definecolor{PosterRed}{RGB}{213,94,0}
+\definecolor{InkDark}{RGB}{40,40,40}
+
+\newcommand{\cpt}[1]{{\fontsize{28bp}{34bp}\selectfont #1\par}}
+\newcommand{\callout}[1]{%
+  \par\medskip
+  \colorbox{white}{\parbox{\dimexpr\hsize-2\fboxsep}{\centering\bfseries #1}}%
+  \par\medskip}
+% metric badge: small white rounded box
+\newcommand{\badge}[1]{%
+  \tikz{\node[draw=KITgreen,very thick,rounded corners=3mm,fill=white,
+    minimum width=0.30\hsize, minimum height=16mm, inner sep=2mm,
+    font=\bfseries\fontsize{26bp}{30bp}\selectfont, align=center]{#1};}}
+
+%==================== Architecture (poster-scale) ====================
+\newcommand{\archdiagram}{%
+\begin{tikzpicture}[
+  >={Latex[length=8mm,width=6mm]},
+  lbl/.style={font=\bfseries\fontsize{28bp}{32bp}\selectfont, align=center},
+  sub/.style={font=\fontsize{24bp}{29bp}\selectfont, align=left},
+  alab/.style={font=\fontsize{24bp}{28bp}\selectfont, align=center}]
+  \node[lbl, draw=InkDark, very thick, rounded corners=3mm, fill=white,
+    minimum width=78mm, minimum height=30mm] (mgr) at (0,0) {Manager\\(LLM)};
+  \node[lbl, draw=KITgreen, line width=2.5mm, rounded corners=4mm, fill=white,
+    minimum width=118mm, minimum height=94mm] (cp) at (114mm,0) {};
+  \node[lbl, anchor=north] at ([yshift=-5mm]cp.north) {CONTROL PLANE};
+  \node[sub, anchor=north west] at ([xshift=7mm,yshift=-19mm]cp.north west)
+    {scope validation\\pending-trial guard\\lifecycle state machine\\
+     metric parsing\\keep/discard authority};
+  \node[lbl, draw=InkDark, very thick, rounded corners=3mm, fill=white,
+    minimum width=70mm, minimum height=30mm] (wrk) at (230mm,0) {Worker\\(edit $+$ run)};
+  \node[lbl, draw=PosterBlue, line width=2mm, rounded corners=3mm, fill=white,
+    minimum width=110mm, minimum height=26mm] (led) at (114mm,-85mm)
+    {Append-only ledger};
+  \draw[->, very thick] (mgr.east) -- node[alab,above]{proposal} (cp.west);
+  \draw[->, very thick] (cp.east) -- node[alab,above]{bounded edit} (wrk.west);
+  \draw[->, very thick] (cp.south) -- node[alab,right=2mm]{one record per trial} (led.north);
+  \draw[->, very thick, dashed, PosterBlue]
+    (led.west) -| node[alab,left=2mm,pos=0.85]{optional\\memory\\context} (mgr.south);
+\end{tikzpicture}}
+
+%==================== Lifecycle (central visual) ====================
+\newcommand{\lifecyclediagram}{%
+\begin{tikzpicture}[
+  >={Latex[length=9mm,width=7mm]},
+  stp/.style={draw=KITgreen, very thick, rounded corners=3mm, fill=white,
+    minimum width=190mm, minimum height=23mm,
+    font=\bfseries\fontsize{29bp}{33bp}\selectfont, align=center},
+  note/.style={font=\fontsize{24bp}{28bp}\selectfont, text=InkDark, align=left},
+  term/.style={very thick, rounded corners=3mm,
+    minimum width=82mm, minimum height=26mm,
+    font=\bfseries\fontsize{27bp}{31bp}\selectfont, text=white, align=center}]
+  \node[stp] (s1) at (0,0) {PROPOSE};
+  \node[stp, below=7mm of s1] (s2) {VALIDATE SCOPE};
+  \node[stp, below=7mm of s2] (s3) {WRITE PENDING GUARD};
+  \node[stp, below=7mm of s3] (s4) {EXECUTE};
+  \node[stp, below=7mm of s4] (s5) {PARSE $+$ ADJUDICATE};
+  \node[stp, below=7mm of s5] (s6) {APPEND EXACTLY ONE RECORD};
+  \foreach \a/\b in {s1/s2,s2/s3,s3/s4,s4/s5,s5/s6}
+    \draw[->, very thick] (\a.south) -- (\b.north);
+  \node[note, right=4mm of s2] {frozen file\\$\rightarrow$ rejected};
+  \node[note, right=4mm of s4] {crash $\rightarrow$ recovered into\\a classified record};
+  \node[term, fill=PosterBlue, below=7mm of s6] (t2) {DISCARDED};
+  \node[term, fill=KITgreen, left=6mm of t2] (t1) {KEPT};
+  \node[term, fill=PosterOrange, right=6mm of t2] (t3) {FAILED-INVALID};
+  \draw[->, very thick] (s6.south) -- (t1.north);
+  \draw[->, very thick] (s6.south) -- (t2.north);
+  \draw[->, very thick] (s6.south) -- (t3.north);
+\end{tikzpicture}}
+
+%==================== Six-node decision distribution ====================
+\newcommand{\decisionrow}[5]{% y, label, kept%, disc% (rest = failed-invalid)
+  \node[left,font=\fontsize{26bp}{30bp}\selectfont] at (0,#1) {#2};
+  \fill[KITgreen]     (2,#1-3.1) rectangle ({2+1.9*#3},#1+3.1);
+  \fill[PosterBlue]   ({2+1.9*#3},#1-3.1) rectangle ({2+1.9*#3+1.9*#4},#1+3.1);
+  \fill[PosterOrange] ({2+1.9*#3+1.9*#4},#1-3.1) rectangle ({2+190},#1+3.1);
+}
+\newcommand{\decisionchart}{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \decisionrow{36.5}{ResNet}{43}{54}{}
+  \decisionrow{29.2}{LR}{8}{46}{}
+  \decisionrow{21.9}{Credit}{14}{60}{}
+  \decisionrow{14.6}{Bank}{13}{55}{}
+  \decisionrow{7.3}{MLAgent}{28}{24}{}
+  \decisionrow{0}{LM}{6}{24}{}
+  \draw[very thick] (2,-6) -- (192,-6);
+  \foreach \x/\l in {2/0,97/50,192/100}{
+    \draw[very thick] (\x,-8) -- (\x,-4);
+    \node[below,font=\fontsize{24bp}{28bp}\selectfont] at (\x,-9) {\l\%};}
+  % legend
+  \fill[KITgreen] (200,32) rectangle (208,39);
+  \node[right,font=\fontsize{24bp}{28bp}\selectfont] at (209,35.5) {kept};
+  \fill[PosterBlue] (200,18) rectangle (208,25);
+  \node[right,font=\fontsize{24bp}{28bp}\selectfont] at (209,21.5) {discarded};
+  \fill[PosterOrange] (200,4) rectangle (208,11);
+  \node[right,align=left,font=\fontsize{24bp}{28bp}\selectfont] at (209,7.5) {failed-\\invalid};
+\end{tikzpicture}}
+
+%==================== Matched governed vs ungoverned pairs ====================
+\newcommand{\pairchart}{%
+\begin{tikzpicture}[x=1mm,y=0.34mm]
+  \draw[very thick,->] (0,0) -- (0,118);
+  \draw[very thick] (0,0) -- (250,0);
+  \foreach \y in {0,50,100}{
+    \draw[gray!55] (0,\y) -- (250,\y);
+    \node[left,font=\fontsize{26bp}{30bp}\selectfont] at (0,\y) {\y};}
+  \node[rotate=90,font=\fontsize{26bp}{30bp}\selectfont] at (-22,58)
+    {Ledger completeness (\%)};
+  % OpenML Bank pair
+  \filldraw[fill=KITgreen,draw=black,very thick]  (25,0)  rectangle (65,100);
+  \filldraw[fill=PosterRed,draw=black,very thick] (72,0)  rectangle (112,35);
+  % LM training pair
+  \filldraw[fill=KITgreen,draw=black,very thick]  (145,0) rectangle (185,100);
+  \filldraw[fill=PosterRed,draw=black,very thick] (192,0) rectangle (232,2);
+  \node[above,font=\bfseries\fontsize{28bp}{32bp}\selectfont] at (45,100) {100};
+  \node[above,font=\bfseries\fontsize{28bp}{32bp}\selectfont] at (92,35) {35};
+  \node[above,font=\bfseries\fontsize{28bp}{32bp}\selectfont] at (165,100) {100};
+  \node[above,font=\bfseries\fontsize{28bp}{32bp}\selectfont] at (212,2) {0};
+  \node[above,font=\fontsize{24bp}{28bp}\selectfont,PosterRed] at (92,95)
+    {13\,/\,20 absent};
+  \node[above,font=\fontsize{24bp}{28bp}\selectfont,PosterRed] at (212,60)
+    {30\,/\,30 absent};
+  \node[below,align=center,font=\bfseries\fontsize{26bp}{30bp}\selectfont] at (68,-26)
+    {OpenML Bank};
+  \node[below,align=center,font=\bfseries\fontsize{26bp}{30bp}\selectfont] at (188,-26)
+    {LM training};
+\end{tikzpicture}}
+
+\fboxsep8mm
+\setlength\emergencystretch{2em}
+\hyphenpenalty=10000
+\exhyphenpenalty=10000
+
+% KITposter's landscape boxes use a four-column grid. These wrappers retain
+% the template styling while switching the content row to a three-column grid.
+\makeatletter
+\newenvironment{panelthree}[3][]
+ {\begingroup\advance\hsize by -12mm\relax
+  \let\@horizontal\@undenfined\b@x{#1}{1}{KITgreen}{#2}{#3}}
+ {\endb@x\optarg{PosterPanel}\endgroup}
+\makeatother
+
+\renewcommand\topfraction{1.0}
+\renewcommand\bottomfraction{1.0}
+\renewcommand\textfraction{0.0}
+\renewcommand\floatpagefraction{0.0}
+\setcounter{totalnumber}{20}
+\setcounter{bottomnumber}{6}
+\setcounter{topnumber}{6}
+
+%======================== header meta ========================
+\title{\textcolor{KITgreen}{\texorpdfstring
+  {Evaluating governed LLM-driven ML experimentation:\\ lifecycle, provenance, and failure metrics}
+  {Evaluating governed LLM-driven ML experimentation: lifecycle, provenance, and failure metrics}}}
+\subtitle{The LLM proposes; the control plane validates and adjudicates; the ledger makes every trial auditable.}
+\author{\textcolor{KITgray}{Dowling Wong \textbar{} Karlsruhe Institute of Technology (KIT)}}
+\institute{\textbf{KIT} Karlsruhe Institute of Technology}
+\instadd{KDD Workshop on Evaluation and Trustworthiness\\ of Agentic AI (ETAAI'26) \textbar{} Jeju, Korea}
+
+%======================== foot line ========================
+\footline{\fontsize{28bp}{34bp}\selectfont
+  \parbox[b]{0.34\hsize}
+   {\textbf{Dowling Wong} \textbar{} \url{dowling.wong@kit.edu}\\
+    KDD ETAAI'26 \textbar{} August 9, 2026 \textbar{} ICC Jeju}%
+  \hfill
+  \parbox[b]{0.60\hsize}{\raggedleft
+    \textbf{Refs:} [1] Trivedy \textit{et al.}, Anatomy of an Agent (2026);
+    [2] Zaharia \textit{et al.}, Compound AI Systems (2024).\\
+    \textbf{Paper $+$ code $+$ ledgers:} QR in panel 3 --- all governance
+    metrics recomputable without a GPU.}}
+
+\begin{document}
+\pagecolor{PosterBG}
+\maketitle
+
+%======================== Column 1 ========================
+\begin{panelthree}[390mm]
+  {1. Task scores evaluate results,\\not experimental conduct}
+  {Why outcome-only evaluation fails}
+  \color{black}\raggedright
+  \textbullet~Did the agent edit only permitted files?\\
+  \textbullet~Were crashes and invalid attempts preserved?\\
+  \textbullet~Was acceptance decided independently of the agent?
+
+  \par\medskip\centerline{\archdiagram}\medskip
+  \cpt{\textbf{Memory is optional manager input; the ledger is the
+  authoritative audit record} --- owned by the control plane, never by the
+  agent.}
+
+  \medskip
+  \textbf{Six governance metrics}, reported alongside the task metric:
+
+  \par\medskip
+  \centerline{\badge{Acceptance}\hfill\badge{Invalid actions}\hfill\badge{Repeated bad}}
+  \par\smallskip
+  \centerline{\badge{Provenance}\hfill\badge{Artifact links}\hfill\badge{Failure taxonomy}}
+\end{panelthree}
+%======================== Column 2 ========================
+\begin{panelthree}[390mm]
+  {2. The governed trial contract}
+  {Lifecycle $\rightarrow$ exactly one immutable record per trial}
+  \color{black}\raggedright
+
+  \par\medskip\centerline{\lifecyclediagram}\medskip
+
+  \callout{Every opened trial produces \textbf{exactly one immutable terminal
+  record} before the next trial begins --- the agent never owns lifecycle
+  state or acceptance decisions.}
+
+  \par\smallskip
+  \centerline{\colorbox{white}{\parbox{0.92\hsize}{\centering\bfseries
+  Each record: proposal ID $\cdot$ patch hash $\cdot$ run log $\cdot$
+  metric $\cdot$ decision $\cdot$ failure category}}}
+\end{panelthree}
+%======================== Column 3 ========================
+\begin{panelthree}[390mm]
+  {3. What the evidence shows}
+  {\textbf{6 nodes \, $\cdot$ \, 1{,}445 trials \, $\cdot$ \, 100\% provenance}}
+  \color{black}\raggedright
+
+  \par\smallskip\centerline{\decisionchart}
+  \cpt{\textbf{Lifecycle outcomes per node} --- provenance complete on every
+  node, including the 120-trial total-failure arm (LM, no-memory).}
+
+  \par\centerline{\pairchart}\par
+  \cpt{\textbf{Matched pairs} (green $=$ governed, red $=$ ungoverned);
+  removed: pending guard, failure appends, blocking scope checks.}
+
+  \callout{Without the control plane, \textbf{43 of 50} matched trials left
+  \textbf{no ledger record}.}
+
+  \noindent\begin{minipage}[c]{0.12\hsize}
+    \includegraphics[width=\linewidth]{qr_artifact.png}
+  \end{minipage}\hfill
+  \begin{minipage}[c]{0.82\hsize}
+    \cpt{\textbf{Paper $+$ code $+$ ledgers} --- recomputable without a GPU.
+    All 150 LM-training crashes classified and traceable.}
+  \end{minipage}\par
+\end{panelthree}
+\par
+
+\end{document}

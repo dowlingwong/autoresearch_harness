@@ -1,0 +1,1034 @@
+%%
+%% This is file `KITposter.sty',
+%% generated with the docstrip utility.
+%%
+%% The original source files were:
+%%
+%% KITstyles.dtx  (with options: `poster')
+%% -----------------------------------------------------------------
+%% Author:     le-tex publishing services
+%% Maintainer: le-tex publishing services
+%% 
+%% This file is part of the KITstyles package for
+%% preparing reports, posters, letters or slides
+%% for Karlsruhe Institute of Technology (KIT)
+%% 
+%%       Copyright (C) 2022--2025 Karlsruhe Institute of Technology
+%% -----------------------------------------------------------------
+\NeedsTeXFormat{LaTeX2e}[2021/11/15]
+\ProvidesPackage{KITposter}
+    [2025/03/17 v1.02 KIT poster]
+
+\ifx\directlua\undefined\else\ifnum\luatexversion>84\relax
+  \usepackage{luatex85}
+\fi\fi
+\emergencystretch1em
+\@ifl@t@r\fmtversion{2020-10-01}{}{%
+  \protected\def\@centercr{\ifhmode \unskip\else \@nolnerr\fi
+       \par\@ifstar{\nobreak\@xcentercr}\@xcentercr}}
+\clubpenalty\@M
+\widowpenalty\@M
+\long\def\@nfor#1:=#2\do#3{%
+  \expandafter\def\expandafter\@fortmp\expandafter{#2}%
+  \ifx\@fortmp\@empty \else
+    \expandafter\@nforloop#2\\\@nil\\\@nil\@@#1{#3}\fi}
+\long\def\@nforloop#1\\#2\\#3\@@#4#5{\def#4{#1}\ifx #4\@nnil \else
+       #5\def#4{#2}\ifx #4\@nnil \else#5\@niforloop #3\@@#4{#5}\fi\fi}
+\long\def\@niforloop#1\\#2\@@#3#4{\def#3{#1}\ifx #3\@nnil
+       \expandafter\@fornoop \else
+      #4\relax\expandafter\@niforloop\fi#2\@@#3{#4}}
+\DeclareMathSizes{14bp}{14bp}{10bp}{7bp}
+\DeclareMathSizes{17bp}{17bp}{12bp}{9bp}
+\DeclareMathSizes{21bp}{21bp}{15bp}{11bp}
+\DeclareMathSizes{26bp}{26bp}{18bp}{13bp}
+\DeclareMathSizes{32bp}{32bp}{23bp}{16bp}
+\DeclareMathSizes{40bp}{40bp}{28bp}{20bp}
+\DeclareMathSizes{50bp}{50bp}{36bp}{25bp}
+\DeclareMathSizes{60bp}{60bp}{42bp}{30bp}
+\DeclareMathSizes{80bp}{80bp}{57bp}{40bp}
+\DeclareMathSizes{110bp}{110bp}{78bp}{56bp}
+\def\enumerate{%
+  \ifnum \@enumdepth >\thr@@\@toodeep\else
+    \advance\@enumdepth\@ne
+    \edef\@enumctr{enum\romannumeral\the\@enumdepth}%
+      \expandafter
+      \list
+        \csname label\@enumctr\endcsname
+        {\usecounter\@enumctr\def\makelabel##1{\upshape##1\hss}}%
+  \fi}
+\def\itemize{%
+  \ifnum \@itemdepth >\thr@@\@toodeep\else
+    \advance\@itemdepth\@ne
+    \edef\@itemitem{labelitem\romannumeral\the\@itemdepth}%
+    \expandafter
+    \list
+      \csname\@itemitem\endcsname
+      {\def\makelabel##1{##1\hss}}%
+  \fi}
+\def\subtitle#1{\gdef\@subtitle{#1}}
+\def\@subtitle{\@latex@warning@no@line{No \noexpand\subtitle given}}
+\let\@@subtitle\@subtitle
+\let\@@author\@author
+\def\institute#1{\gdef\@institute{#1}}
+\def\@institute{\@latex@warning@no@line{No \noexpand\institute given}}
+\let\@@institute\@institute
+\def\instadd#1{\gdef\@instadd{#1}}
+\let\@instadd\@empty
+\def\footline#1{\gdef\@footline{#1}}
+\def\@footline{\@latex@warning@no@line{No \noexpand\footline given}}
+\let\ps@plain\ps@empty
+\def\fussy{%
+  \emergencystretch1em
+  \tolerance 200%
+  \hfuzz .1\p@
+  \vfuzz\hfuzz}
+\def\cleardoublepage{\clearpage\if@twoside \ifodd\c@page\else
+  \hbox{}\thispagestyle{empty}\newpage\if@twocolumn\hbox{}\newpage\fi\fi\fi}
+\@ifclassloaded{article}
+  {\relax}
+  {\PackageWarningNoLine{KITposter}
+     {You are not using the document class 'article'.\MessageBreak
+      See package documentation}}
+\DeclareOption{horizontal}{\let\@horizontal\relax}
+\DeclareOption{work}{\let\w@rk\relax}
+\DeclareOption{helvet}{\let\@helvet\relax}
+\DeclareOption{heros}{\let\@heros\relax}
+\DeclareOption{cursor}{\let\@cursor\relax}
+\ProcessOptions
+\ifx\@horizontal\@undefined
+  \paperwidth841mm
+  \paperheight1189mm
+\else
+  \paperwidth1189mm
+  \paperheight841mm
+\fi
+\@twocolumnfalse
+\renewcommand\normalsize{%
+   \@setfontsize\normalsize{32bp}{38bp}%
+   \abovedisplayskip 32bp \@plus8bp \@minus17bp
+   \abovedisplayshortskip \z@ \@plus15bp
+   \belowdisplayshortskip 18bp \@plus12bp \@minus12bp
+   \belowdisplayskip \abovedisplayskip
+   \let\@listi\@listI}
+\@setfontsize\normalsize\@xxvpt{38bp}%
+\AtBeginDocument{\normalsize \let\@normalsize\normalsize}
+\ifx\MakeRobust\@undefined \else
+    \MakeRobust\normalsize
+\fi
+\DeclareRobustCommand\small{%
+   \@setfontsize\small{26bp}{31bp}%
+   \abovedisplayskip 26bp \@plus12bp \@minus13bp
+   \abovedisplayshortskip \z@ \@plus9bp
+   \belowdisplayshortskip 14bp \@plus8bp \@minus8bp
+   \belowdisplayskip \abovedisplayskip}
+\DeclareRobustCommand\footnotesize{%
+   \@setfontsize\footnotesize{21bp}{25bp}%
+   \abovedisplayskip 20bp \@plus7bp \@minus10bp
+   \abovedisplayshortskip \z@ \@plus4.5bp
+   \belowdisplayshortskip 14bp \@plus4.5bp \@minus5bp
+   \belowdisplayskip \abovedisplayskip}
+\DeclareRobustCommand\scriptsize{\@setfontsize\scriptsize{17bp}{20bp}}
+\DeclareRobustCommand\tiny{\@setfontsize\tiny{14bp}{17bp}}
+\DeclareRobustCommand\large{\@setfontsize\large{40bp}{48bp}}
+\DeclareRobustCommand\Large{\@setfontsize\Large{50bp}{59bp}}
+\DeclareRobustCommand\LARGE{\@setfontsize\LARGE{60bp}{70bp}}
+\DeclareRobustCommand\huge{\@setfontsize\huge{80bp}{92bp}}
+\DeclareRobustCommand\Huge{\@setfontsize\Huge{110bp}{124bp}}
+\parindent\z@
+\setlength\smallskipamount{8.5bp\@plus3bp\@minus3bp}
+\setlength\medskipamount{19bp\@plus6bp\@minus6bp}
+\setlength\bigskipamount{38bp\@plus12bp\@minus12bp}
+\def\showinmm#1{%
+  \@tempdima=0.35146 #1\relax
+  \edef\@tempa{\strip@pt\@tempdima\space mm}
+  \show\@tempa}
+\newdimen\gridwidth
+\gridwidth20mm
+\oddsidemargin 2\gridwidth
+\evensidemargin2\gridwidth
+\textwidth\dimexpr\paperwidth-\oddsidemargin-\evensidemargin%841-40-40=761
+\topmargin \gridwidth
+\headheight\dimexpr\gridwidth+93mm\relax%
+\ifx\@horizontal\@undenfined
+  \headsep 3\gridwidth
+\else
+  \headsep 2\gridwidth
+\fi
+\topskip   38bp
+\maxdepth  0.5\topskip
+\footskip  2.5\gridwidth
+\textheight\dimexpr\paperheight-\topmargin-\headheight-\headsep-\footskip-\gridwidth\relax%1189-40-113-60-30-20=926
+\setlength{\skip\footins}{40bp \@plus 4bp \@minus 2bp}%
+\partopsep\medskipamount
+\parsep\z@
+\topsep\z@
+\def\@listi  {\leftmargin\leftmargini
+              \labelwidth\leftmargini
+              \advance\labelwidth-\labelsep
+              \itemsep\smallskipamount
+             }
+\let\@listI\@listi
+\@listi
+\def\@listii {\leftmargin\leftmarginii
+              \labelwidth\leftmarginii
+              \advance\labelwidth-\labelsep
+              \itemsep\z@}
+\def\@listiii{\leftmargin\leftmarginiii
+              \labelwidth\leftmarginiii
+              \advance\labelwidth-\labelsep}
+\def\@listiv {\leftmargin\leftmarginiv
+              \labelwidth\leftmarginiv
+              \advance\labelwidth-\labelsep}
+\def\@listv  {\leftmargin\leftmarginv
+              \labelwidth\leftmarginv
+              \advance\labelwidth-\labelsep}
+\def\@listvi {\leftmargin\leftmarginvi
+              \labelwidth\leftmarginvi
+              \advance\labelwidth-\labelsep}
+\parskip\medskipamount
+\newbox\KITl@g@
+\AtBeginDocument{%
+  \iflanguage{ngerman}
+   {\def\@KITlogo{kitlogo_de_rgb}}%
+   {\def\@KITlogo{kitlogo_en_rgb}}%
+  \sbox\KITl@g@{\includegraphics[width=200mm,trim=0 2 0 0]{\@KITlogo}}}
+\def\ps@headings{%
+  \def\@oddhead{%
+    \smash{\lower\dimexpr\paperheight-2.75\gridwidth-\topmargin-\headheight
+      \rlap{\kern\dimexpr-\oddsidemargin+\gridwidth
+      \def\KIT@llx{\z@}%
+      \def\KIT@lly{\z@}%
+      \def\KIT@urx{\dimexpr\paperwidth-2\gridwidth}%
+      \def\KIT@ury{\dimexpr\paperheight-3.75\gridwidth}%
+      \pgfpicture{\KIT@llx}{\KIT@lly}{\KIT@urx}{\KIT@ury}
+        \pgfsetstrokecolor{gray}%
+        \pgfsetlinewidth{\KIT@framewidth}%
+        \pgfsetcornersarced{\pgfpoint{\KIT@radius}{\KIT@radius}}%
+        \pgfpathmoveto{\pgfpoint{\KIT@urx}{0mm}}%
+        \pgfpathlineto{\pgfpoint{\KIT@urx}{\KIT@ury}}%
+        \pgfsetcornersarced{\pgfpointorigin}%
+        \pgfpathlineto{\pgfpoint{0mm}{\KIT@ury}}%
+        \pgfsetcornersarced{\pgfpoint{\KIT@radius}{\KIT@radius}}%
+        \pgfpathlineto{\pgfpointorigin}%
+        \pgfsetcornersarced{\pgfpointorigin}%
+        \pgfpathclose
+        \pgfusepath{stroke,clip}%
+        \pgftext[left,bottom]{\relax}%
+      \endpgfpicture
+    }}%
+    \usebox\KITl@g@\hfill\usebox\@instbox}%
+  \def\@oddfoot{\kern\dimexpr-\oddsidemargin+\gridwidth\hb@xt@\dimexpr\paperwidth-2\gridwidth{%
+    \footnotesize KIT --
+    \iflanguage{ngerman}
+      {Die Universität in der Helmholtz-Gemeinschaft}%
+      {The University in the Helmholtz Association}%
+    \hfill\Large\bfseries\hypersetup{urlcolor=black}\url{www.kit.edu}}\hss}
+  \let\@mkboth\@gobbletwo
+  \let\sectionmark\@gobble
+  \let\subsectionmark\@gobble}
+\let\ps@plain\ps@headings
+\pagestyle{headings}
+\newbox\@instbox
+\def\@maketitle{%
+  \global\sbox\@instbox{%here, because \AtBeginDocument collides with colortbl !?
+    \parbox[b]{\dimexpr\textwidth-200mm-\gridwidth}{\raggedleft\color{KITgray}\Large
+      \@nfor\inst@line:=\@institute\do{\eqmakebox[inst][l]{\ignorespaces\inst@line}\par}%
+      \@nfor\inst@line:=\@instadd\do{\eqmakebox[inst][l]{\ignorespaces\inst@line}\par}}}%
+  \leavevmode
+  {\raggedright
+   {\bfseries\huge\@title\par}%
+   \Large
+   \ifx\@subtitle\@@subtitle\else\vskip20bp\@subtitle\par\fi
+   \ifx\@author\@@author\else\@author\fi
+   \par
+   \@thanks}%
+  \ifx\@horizontal\@undenfined
+    \vskip3\baselineskip
+  \else
+    \vskip1\baselineskip
+  \fi
+  \@float{figure}[b!]\@footline\end@float}
+\renewcommand\section{\@startsection {section}{1}{\z@}%
+                                   {-\dimexpr3.33\baselineskip-1\parskip}%
+                                   {\dimexpr0.67\baselineskip-1\parskip}%
+                                   {\LARGE\textcolor{KITgreen}}}
+\renewcommand\subsection{\@startsection{subsection}{2}{\z@}%
+                                     {-\dimexpr0.67\baselineskip-1\parskip}%
+                                     {\dimexpr0.33\baselineskip-1\parskip}%
+                                     {\Large\textcolor{KITgreen}}}
+\renewcommand\subsubsection{\@startsection{subsubsection}{3}{\z@}%
+                                     {-\dimexpr0.67\baselineskip-1\parskip}%
+                                     {\dimexpr0.33\baselineskip-1\parskip}%
+                                     {\large\textcolor{KITgreen}}}
+\renewcommand\paragraph{\@startsection{paragraph}{4}{\z@}%
+                                     {\dimexpr1\baselineskip-1\parskip}%
+                                    {-1em}%
+                                    {\large\textcolor{KITgreen}}}
+\renewcommand\subparagraph{\@startsection{subparagraph}{5}{\parindent}%
+                                        {\dimexpr1\baselineskip-1\parskip}%
+                                       {-1em}%
+                                      {\large\textcolor{KITgreen}}}
+\def\KIT@labelitem{%
+  \pgfpicture{\z@}{\z@}{0.5em}{0.5em}
+    \pgfsetlinewidth{\z@}%
+    \pgfsetcornersarced{\pgfpoint{0.1em}{0.1em}}%
+    \pgfpathmoveto{\pgfpoint{0.5em}{0mm}}%
+    \pgfpathlineto{\pgfpoint{0.5em}{0.5em}}%
+    \pgfsetcornersarced{\pgfpointorigin}%
+    \pgfpathlineto{\pgfpoint{0mm}{0.5em}}%
+    \pgfsetcornersarced{\pgfpoint{0.1em}{0.1em}}%
+    \pgfpathlineto{\pgfpointorigin}%
+    \pgfsetcornersarced{\pgfpointorigin}%
+    \pgfpathclose
+    \pgfusepath{fill}%
+  \endpgfpicture}
+\leftmargini1.5em
+\leftmarginii \leftmargini
+\leftmarginiii\leftmargini
+\leftmarginiv \leftmargini
+\leftmarginv  \leftmargini
+\leftmarginvi \leftmargini
+\labelwidth\dimexpr\leftmargini-\labelsep
+\def\labelenumi  {\textcolor{KITgreen}{\bfseries\theenumi.}}
+\def\labelenumii {\textcolor{KITgreen}{\bfseries\theenumii.}}
+\def\labelenumiii{\textcolor{KITgreen}{\bfseries\theenumiii.}}
+\def\labelenumiv {\textcolor{KITgreen}{\bfseries\theenumiv.}}
+\def\labelitemi  {\textcolor{KITgreen}{\KIT@labelitem}}
+\def\labelitemii {\textcolor{KITblue}{\KIT@labelitem}}
+\def\labelitemiii{\textcolor{KITgray}{\KIT@labelitem}}
+\def\labelitemiv {\textcolor{KITgray}{\bfseries\textendash}}
+\leftmargini1em
+\leftmargin\leftmargini
+\leftmarginii1em
+\leftmarginiii1em
+\leftmarginiv1em
+\labelwidth\dimexpr\leftmargini-\labelsep\relax
+\def\labelitemfont{}
+\fboxsep15mm
+\def\b@x#1#2#3#4#5{%
+  \def\optarg{#1}%
+  \ifx\@horizontal\@undenfined
+    \hsize\dimexpr(\hsize+\columnsep)*#2/3-\columnsep-2\fboxsep\relax
+  \else
+    \hsize\dimexpr(\hsize+\columnsep)*#2/4-\columnsep-2\fboxsep\relax
+  \fi
+  \linewidth\hsize
+  \def\@tempa{white}\def\@tempb{#3}\ifx\@tempa\@tempb\def\tablefont{\normalcolor}\fi
+  \setbox\@tempboxa\vbox\bgroup
+    \color{#3}%
+    \if!#4!\else\ifx\@tempa\@tempb\centering\fi{\bfseries\large#4\par}\fi
+    \if!#5!\else{\large#5\par}\fi
+    \if!#4#5!\else\vskip0.5\baselineskip\fi}
+\def\endb@x#1#2{%
+  \ifhmode\unskip\strut\par\fi
+  \egroup
+  \if!#1!\else\setbox\@tempboxa\vbox to#1{\unvbox\@tempboxa\vss}\fi
+  \colorbox{#2}{\box\@tempboxa}%
+  \hskip\columnsep
+  \aftergroup\normalcolor
+  \aftergroup\ignorespaces}
+\newenvironment{boxgray}[3][]
+ {\b@x{#1}{1}{KITgreen}{#2}{#3}}
+ {\endb@x\optarg{KITlightgray}}
+\newenvironment{boxgray2}[3][]
+ {\b@x{#1}{2}{KITgreen}{#2}{#3}}
+ {\endb@x\optarg{KITlightgray}}
+\newenvironment{boxgray3}[3][]
+ {\b@x{#1}{3}{KITgreen}{#2}{#3}}
+ {\endb@x\optarg{KITlightgray}}
+\newenvironment{boxgray4}[3][]
+ {\b@x{#1}{4}{KITgreen}{#2}{#3}}
+ {\endb@x\optarg{KITlightgray}}
+\newenvironment{boxgreen}[3][]
+ {\b@x{#1}{1}{white}{#2}{#3}}
+ {\endb@x\optarg{KITgreen}}
+\newenvironment{boxgreen2}[3][]
+ {\b@x{#1}{2}{white}{#2}{#3}}
+ {\endb@x\optarg{KITgreen}}
+\newenvironment{boxgreen3}[3][]
+ {\b@x{#1}{3}{white}{#2}{#3}}
+ {\endb@x\optarg{KITgreen}}
+\newenvironment{boxgreen4}[3][]
+ {\b@x{#1}{4}{white}{#2}{#3}}
+ {\endb@x\optarg{KITgreen}}
+\columnsep12mm
+\raggedbottom
+\ifx\XeTeXcharclass\@undefined
+  \ifx\directlua\undefined\ifnum\pdfoutput>\z@
+    \IfFileExists{dummy-space.pfb}{\pdfinterwordspaceon}{}
+    \usepackage{cmap}
+  \fi\fi
+  \InputIfFileExists{glyphtounicode.tex}{}{}
+  \pdfgentounicode=1
+\fi
+\usepackage[document]{ragged2e}
+\usepackage{eqparbox}
+\usepackage{amsmath}
+\ifx\directlua\undefined\ifx\XeTeXcharclass\undefined
+  \let\addfontfeature\@gobble
+  \let\addfontfeatures\@gobble
+  \usepackage[T1]{fontenc}
+\fi\fi
+\usepackage{textcomp}
+\def\familydefault{\sfdefault}
+\AtEndOfPackage{\let\rmdefault\sfdefault}
+\ifx\directlua\undefined\ifx\XeTeXcharclass\undefined
+  \else \usepackage{fontspec}[2019/03/15] \let\fontspecl@aded\relax \XeTeXtracingfonts=1\fi
+  \else \usepackage{fontspec}[2019/03/15] \let\fontspecl@aded\relax\fi
+\ifx\fontspecl@aded\relax
+  \ifx\XeTeXcharclass\undefined
+    \usepackage{lualatex-math}[2022/01/01]%loading before unicode-math in order to require bug-free version 1.12
+  \fi
+  \usepackage[math-style=ISO]{unicode-math}[2019/03/04 v0.8o]
+\fi
+\ifx\fontspecl@aded\@undefined
+  \ifx\@heros\@undefined
+    \IfFileExists{helvet.sty}
+     {\usepackage{helvet}}
+     {\usepackage{tgheros}}
+  \else
+    \usepackage{tgheros}
+  \fi
+\else
+  \ifx\@heros\@undefined
+    \ifx\@helvet\@undefined
+      \IfFontExistsTF{Arial}
+       {\typeout{(Arial found)}}
+       {\IfFontExistsTF{./fonts/arial.ttf}%XeTeX on Overleaf only
+         {\typeout{(Arial found by file name)}
+          \global\let\@arialbyfile\relax}
+         {\global\let\@helvet\relax}}
+    \fi
+    \ifx\@helvet\@undefined
+      \ifx\@arialbyfile\@undefined
+        \setmainfont{Arial}
+        \setsansfont{Arial}
+      \else
+        \setmainfont{arial}%
+          [Extension = .ttf, Path=./fonts/,
+           UprightFont = *,
+           ItalicFont = *i,
+           BoldFont = *bd,
+           BoldItalicFont = *bi ]
+        \setsansfont{arial}%
+          [Extension = .ttf, Path=./fonts/,
+           UprightFont = *,
+           ItalicFont = *i,
+           BoldFont = *bd,
+           BoldItalicFont = *bi ]
+      \fi
+    \else
+      \IfFontExistsTF{Helvetica}
+       {\typeout{(Helvetica found)}}
+       {\IfFontExistsTF{./fonts/14459.ttf}%XeTeX on Overleaf only
+         {\typeout{(Helvetica found by file name)}
+          \global\let\@helvetbyfile\relax}
+         {\global\let\@heros\relax}}
+    \fi
+  \fi
+  \ifx\@heros\@undefined
+    \ifx\@helvet\relax
+      \ifx\@helvetbyfile\@undefined
+        \setmainfont{Helvetica}
+        \setsansfont{Helvetica}
+      \else
+        \setmainfont{14459}%
+          [Extension = .ttf, Path=./fonts/,
+           UprightFont = 14459,
+           ItalicFont = 14460,
+           BoldFont = 14461,
+           BoldItalicFont = 14462 ]
+        \setsansfont{14459}%
+          [Extension = .ttf, Path=./fonts/,
+           UprightFont = 14459,
+           ItalicFont = 14460,
+           BoldFont = 14461,
+           BoldItalicFont = 14462 ]
+      \fi
+    \fi
+  \else
+    \IfFontExistsTF{TeX Gyre Heros}
+     {}
+     {\global\let\@herosbyfile\relax}%XeTeX on MAC only
+    \ifx\@herosbyfile\@undefined
+      \setmainfont{TeX Gyre Heros}
+      \setsansfont{TeX Gyre Heros}
+    \else
+      \setmainfont{texgyreheros}[ Extension = .otf ,
+        UprightFont = *-regular ,
+        ItalicFont = *-italic ,
+        BoldFont = *-bold ,
+        BoldItalicFont = *-bolditalic ]
+      \setsansfont{texgyreheros}[ Extension = .otf ,
+        UprightFont = *-regular ,
+        ItalicFont = *-italic ,
+        BoldFont = *-bold ,
+        BoldItalicFont = *-bolditalic ]
+    \fi
+  \fi
+\fi
+\ifx\fontspecl@aded\@undefined
+  \ifx\@cursor\@undefined
+    \IfFileExists{courier.sty}
+     {\usepackage{courier}}
+     {\usepackage{tgcursor}}
+  \else
+    \usepackage{tgcursor}
+  \fi
+\else
+  \ifx\@cursor\@undefined
+    \IfFontExistsTF{Courier}
+     {\typeout{(Courier found)}}
+     {\IfFontExistsTF{./fonts/4483.ttf}%XeTeX on Overleaf only
+       {\typeout{(Courier found by file name)}
+        \global\let\@courierbyfile\relax}
+       {\global\let\@cursor\relax}}
+  \fi
+  \ifx\@cursor\@undefined
+    \ifx\@courierbyfile\@undefined
+      \setmonofont{Courier}
+    \else
+      \setmonofont{4483}%
+        [Extension = .ttf, Path=./fonts/,
+         UprightFont = 4483,
+         ItalicFont = 4484,
+         BoldFont = 4486,
+         BoldItalicFont = 4487 ]
+    \fi
+  \else
+    \IfFontExistsTF{TeX Gyre Cursor}
+     {}
+     {\global\let\@cursorbyfile\relax}%XeTeX on MAC only
+    \ifx\@cursorbyfile\@undefined
+      \setmonofont{TeX Gyre Cursor}
+    \else
+      \setmonofont{texgyrecursor}[ Extension = .otf ,
+        UprightFont = *-regular ,
+        ItalicFont = *-italic ,
+        BoldFont = *-bold ,
+        BoldItalicFont = *-bolditalic ]
+    \fi
+  \fi
+\fi
+\ifx\fontspecl@aded\@undefined
+  \usepackage{amssymb}
+  \let\old@sfdefault\sfdefault
+  \let\old@f@encoding\f@encoding\def\f@encoding{OT1}%avoid questionable package warning
+  \usepackage{sansmathfonts}
+  \let\sfdefault\old@sfdefault
+  \let\f@encoding\old@f@encoding
+  \usepackage[italic,itgreek,defaultmathsizes,mathaccents]{mathastext}
+  \DeclareMathDelimiter{\mst@varfam@backslash}{\mathalpha}{symbols}{"6E}{largesymbols}{"0F}
+  \let\upGamma\Gamma
+  \let\upDelta\Delta
+  \let\upTheta\Theta
+  \let\upLambda\Lambda
+  \let\upXi\Xi
+  \let\upPi\Pi
+  \let\upSigma\Sigma
+  \let\upUpsilon\Upsilon
+  \let\upPhi\Phi
+  \let\upPsi\Psi
+  \let\upOmega\Omega
+  \DeclareMathSymbol{\Gamma}{\mathalpha}{letters}{"00}
+  \DeclareMathSymbol{\Delta}{\mathalpha}{letters}{"01}
+  \DeclareMathSymbol{\Theta}{\mathalpha}{letters}{"02}
+  \DeclareMathSymbol{\Lambda}{\mathalpha}{letters}{"03}
+  \DeclareMathSymbol{\Xi}{\mathalpha}{letters}{"04}
+  \DeclareMathSymbol{\Pi}{\mathalpha}{letters}{"05}
+  \DeclareMathSymbol{\Sigma}{\mathalpha}{letters}{"06}
+  \DeclareMathSymbol{\Upsilon}{\mathalpha}{letters}{"07}
+  \DeclareMathSymbol{\Phi}{\mathalpha}{letters}{"08}
+  \DeclareMathSymbol{\Psi}{\mathalpha}{letters}{"09}
+  \DeclareMathSymbol{\Omega}{\mathalpha}{letters}{"0A}
+  \let\varGamma\Gamma
+  \let\varDelta\Delta
+  \let\varTheta\Theta
+  \let\varLambda\Lambda
+  \let\varXi\Xi
+  \let\varPi\Pi
+  \let\varSigma\Sigma
+  \let\varUpsilon\Upsilon
+  \let\varPhi\Phi
+  \let\varPsi\Psi
+  \let\varOmega\Omega
+\else
+  \IfFontExistsTF{FiraMath-Regular.otf}
+    {\setmathfont{FiraMath-Regular.otf}[
+       Scale=1,
+       %Numbers={Lining,Monospaced},%still (2022-04) not available
+       %BoldFont=FiraMath-Medium.otf%still (2022-04) not available
+       ]}
+    {\setmathfont{latinmodern-math.otf}}
+    \setmathfontface\mathrm{texgyreheros-bold.otf}[version=bold]
+    \setmathfontface\mathit{texgyreheros-bolditalic.otf}[version=bold]
+    \setmathfontface\mathsf{texgyreheros-bold.otf}[version=bold]
+    \setmathfontface\mathbf{texgyreheros-bold.otf}[version=bold]
+\fi
+\usepackage{textcase}
+\usepackage[babel,expansion=false]{microtype}
+\ifx\directlua\undefined\ifx\XeTeXcharclass\undefined
+  \@ifpackagewith{inputenc}{utf8}
+    {\DeclareUnicodeCharacter{2007}{\leavevmode\hphantom{0}}}
+    {\ifx\inputencoding\@undefined
+       \@ifl@t@r\fmtversion{2018-11-30}{\DeclareUnicodeCharacter{2007}{\leavevmode\hphantom{0}}}{}%
+     \fi}
+\fi\fi
+\let\old@classoptionslist\@classoptionslist
+\edef\@classoptionslist{ngerman,\old@classoptionslist}
+\ifdefined\@raw@classoptionslist
+  \let\old@raw@classoptionslist\@raw@classoptionslist
+  \edef\@raw@classoptionslist{ngerman,\old@raw@classoptionslist}
+\fi
+\usepackage{babel}
+\addto\captionsngerman{%
+  \def\contentsname{Inhalt}}
+\AtEndOfPackage{%
+\iflanguage{ngerman}
+  {\babelprovide[hyphenrules=ngerman-x-latest]{ngerman}%
+   \@ifpackagelater{babel}{2023/01/01}{}
+    {\ifx\bbl@KVP@hyphenrules\@nnil\else\ifnum\bbl@savelocaleid=\localeid
+          \language\@nameuse{l@\languagename}%
+     \fi\fi}}
+  {}}
+ \def\datengerman{\def\today{\two@digits{\number\day}.\,\two@digits{\number\month}.\,\number\year}}
+\usepackage{xcolor}
+\definecolor{KITgreen}     {RGB}{0,150,130}%(dunkel)blaugruen
+\definecolor{KITblue}      {RGB}{70,100,170}
+\definecolor{KITgray}      {gray}{0.3}% is not {RGB}{64,64,64}!?
+\definecolor{KITlightgray} {gray}{0.84}
+\definecolor{KITcyan}      {RGB}{35,161,224}%blau
+\definecolor{KITlightgreen}{RGB}{140,182,60}%gelbgrün
+\definecolor{KITforestgreen}     {RGB}{39,103,56}%dunkelgrün
+\definecolor{KITblack}     {RGB}{0,0,0}%schwarz
+\definecolor{KITpurple}    {RGB}{163,16,124}%pink
+\definecolor{KITorange}    {RGB}{223,155,27}%orange
+\definecolor{KITyellow}    {RGB}{252,229,0}%gelb
+\definecolor{KITred}       {RGB}{162,34,35}
+\definecolor{KITbrown}     {RGB}{167,130,46}%braun
+\RequirePackage{array}
+\newcolumntype{e}{!{\extracolsep{\fill}}}
+\RequirePackage{multirow}
+\RequirePackage{bigstrut}
+\RequirePackage{tabularx}
+\RequirePackage{booktabs}
+\RequirePackage{colortbl}
+\def\tabularrulewidth{0.8bp}
+\def\extratabularrowheight{1bp}
+\def\tabularstretch{1.2}
+\def\tabularrulecolor{gray}
+\def\tablefont{}
+\def\tableheadfont{\color{KITgreen}\bfseries}
+\def\@KITarray[#1]#2{%
+  \@tempdima \ht \strutbox
+  \advance \@tempdima by\extrarowheight
+  \setbox \@arstrutbox \hbox{\vrule
+             \@height \arraystretch \@tempdima
+             \@depth \arraystretch \dp \strutbox
+             \@width \z@}%
+  \begingroup
+  \@mkpream{#2}%
+  \xdef\@preamble{\noexpand \ialign \@halignto
+                  \bgroup \@arstrut \@preamble
+                          \tabskip \z@ \cr}%
+  \expandafter\ifx\d@llarbegin\begingroup
+    \gdef\@tablefont{\leavevmode\tableheadfont}%
+  \fi
+  \endgroup
+  \@arrayleft
+  \if #1t\vtop \else \if#1b\vbox \else \vcenter \fi \fi
+  \bgroup
+  \let \@sharp ##\let \protect \relax
+  \lineskip \z@
+  \baselineskip \z@
+  \m@th
+  \let\\\@arraycr \let\tabularnewline\\\let\par\@empty \@preamble}
+\def\@KITclassz{%orig from colortbl.sty
+  \expandafter\ifx\d@llarbegin\begingroup%KIT
+    \toks \count@ =%KIT
+    \expandafter{\expandafter\@tablefont\the\toks\count@}%%KIT
+  \fi%KIT
+  \@classx
+   \@tempcnta \count@
+   \prepnext@tok
+\expandafter\CT@extract\the\toks\@tempcnta\columncolor!\@nil
+   \@addtopreamble{%
+     \expandafter\ifx\d@llarbegin\begingroup%KIT
+       \ifx\first@passed\@undefined\else%KIT
+         \hskip-\col@sep{\color[gray]{1}\vline}\hskip\col@sep%KIT
+       \fi%KIT
+     \fi%KIT
+    \setbox\z@\hbox\bgroup\bgroup
+      \CT@everycr{}%
+      \ifcase \@chnum
+      \hskip\stretch{.5}\kern\z@
+      \d@llarbegin
+      \insert@column
+      \d@llarend\do@row@strut\hskip\stretch{.5}\or
+      \d@llarbegin \insert@column \d@llarend\do@row@strut \hfill \or
+      \hfill\kern\z@ \d@llarbegin \insert@column \d@llarend\do@row@strut \or
+      \ifx\ar@align@mcell\@undefined
+        $\vcenter
+         \@startpbox{\@nextchar}\insert@column \@endpbox $
+      \else
+        \setbox\ar@mcellbox\vbox
+          \@startpbox{\@nextchar}\insert@column \@endpbox
+        \ar@align@mcell
+        \do@row@strut
+      \fi
+   \or
+   \vtop \@startpbox{\@nextchar}\insert@column \@endpbox\do@row@strut \or
+   \vbox \@startpbox{\@nextchar}\insert@column \@endpbox\do@row@strut
+  \fi
+ \egroup\egroup
+\begingroup
+  \CT@setup
+  \CT@column@color
+  \CT@row@color
+  \CT@cell@color
+  \CT@do@color
+\endgroup
+        \@tempdima\ht\z@
+        \advance\@tempdima\minrowclearance
+        \vrule\@height\@tempdima\@width\z@
+        \unhbox\z@}%
+  \let\first@passed\relax%KIT
+  \prepnext@tok}
+\def\KITmidrule{\noalign{\ifnum0=`}\fi
+  \@aboverulesep=\z@
+  \global\@belowrulesep=\belowrulesep
+  \global\@thisruleclass=\@ne
+  \@ifnextchar[{\@BTrule}{\@BTrule[\lightrulewidth]}}
+\newbox\tgroupbox
+\newbox\theadbox
+\def\tableheadbgcolor#1#{\tableheadbgc@lor{#1}}
+\def\tableheadbgc@lor#1#2{\def\tableheadbgc@l@r{\color#1{#2}}}
+\tableheadbgcolor{KITlightgray}
+\long\def\tablecolor@b@x{%
+  \leavevmode
+  \setbox\z@\hbox{{\set@color\box\tgroupbox}}%
+  \ifdim\ht\theadbox>4bp
+    \dp\theadbox\dimexpr\dp\theadbox+\ht\theadbox-\ht\z@\relax
+    \ht\theadbox\dimexpr\ht\z@\relax
+    \ht\theadbox\dimexpr\ht\theadbox-0.03bp\relax%avoid hairline flash
+  \else
+    \dp\theadbox\z@
+    \ht\theadbox\z@
+  \fi
+  \ht\z@\dimexpr\ht\z@-0.03bp\relax%avoid hairline flash
+  {\fboxrule\z@\fboxsep\z@
+   \fcolorbox{KITlightgray}{white}{%
+     \tableheadbgc@l@r\color@block{\wd\z@}{\ht\theadbox}{\dp\theadbox}%
+     \box\z@}}}
+\def\KITtabular{\@ifnextchar[{\@@KITtabular}{\@@KITtabular[]}}
+\def\@@KITtabular[#1]#2#3\midrule{%
+  \expandafter\arrayrulewidth\tabularrulewidth
+  \expandafter\extrarowheight\extratabularrowheight
+  \let\arraystretch\tabularstretch
+  \arrayrulecolor{\tabularrulecolor}%
+  \gdef\@tablefont{\leavevmode\tableheadfont}%
+  \let\@classz\@KITclassz
+  \tablefont
+  \measuring@true
+  \setbox\theadbox\hbox{\begin{tabular}[#1]{#2}#3\end{tabular}}%
+  \measuring@false
+  \setbox\tgroupbox\hbox\bgroup\tabular[#1]{#2}#3\noalign{\global\let\@tablefont\relax}\KITmidrule}
+\gdef\endKITtabular{\endtabular\egroup\tablecolor@b@x}
+\def\KITtabularx#1{\@ifnextchar[{\@@KITtabularx{#1}}{\@@KITtabularx{#1}[]}}
+\def\@@KITtabularx#1[#2]#3#4\midrule{%
+  \advance\linewidth-2\arrayrulewidth
+  \expandafter\arrayrulewidth\tabularrulewidth
+  \expandafter\extrarowheight\extratabularrowheight
+  \let\arraystretch\tabularstretch
+  \arrayrulecolor{\tabularrulecolor}%
+  \let\@@array\@KITarray
+  \let\@classz\@KITclassz
+  \tablefont
+  \measuring@true
+  \setbox\theadbox\hbox{\begin{tabularx}{#1}[#2]{#3}#4\if!#4!\space\fi\end{tabularx}}%
+  \measuring@false
+  \setbox\tgroupbox\hbox\bgroup\tabularx{#1}[#2]{#3}#4\noalign{\global\let\@tablefont\relax}\KITmidrule}
+\def\endKITtabularx{\endtabularx\egroup\tablecolor@b@x}
+\usepackage{graphicx}
+\usepackage{pgfcore}
+\protected\def\KITincludegraphics{%
+  \@ifnextchar({\KIT@includegraphics}{\KIT@includegraphics()}}
+\def\KIT@includegraphics(#1){%
+  \def\KIT@trim{#1}%
+  \leavevmode
+  \@ifstar
+    {\Gin@cliptrue\KIT@Gin@i}%
+    {\Gin@clipfalse\KIT@Gin@i}}
+\def\KIT@Gin@i{%
+ \def\Gin@req@sizes{%
+   \Gin@req@height\Gin@nat@height
+   \Gin@req@width\Gin@nat@width}%
+ \@ifnextchar[\KIT@Gin@ii{\KIT@Gin@ii[]}}
+\def\KIT@Gin@ii[#1]#2{%
+    \def\@tempa{[}\def\@tempb{#2}%
+    \ifx\@tempa\@tempb
+      \def\@tempa{\KIT@Gin@iii[#1][}%
+      \expandafter\@tempa
+    \else
+     \begingroup
+       \@tempswafalse
+       \toks@{\KIT@Ginclude@graphics{#2}}%
+       \setkeys{Gin}{#1}%
+       \Gin@esetsize
+       \the\toks@
+     \endgroup
+     \fi}
+\def\KIT@Gin@iii[#1,#2][#3,#4]#5{%
+  \begingroup
+  \Gin@bboxtrue
+  \Gin@defaultbp\Gin@llx{#1}%
+  \Gin@defaultbp\Gin@lly{#2}%
+  \Gin@defaultbp\Gin@urx{#3}%
+  \Gin@defaultbp\Gin@ury{#4}%
+  \KIT@Ginclude@graphics{#5}%
+  \endgroup}
+\def\Gread@parse@KIT@trim#1 #2 #3 #4\\{%
+  \Gin@defaultbp\Gin@KIT@llx{#1}\edef\KIT@llx{\Gin@KIT@llx bp}%
+  \Gin@defaultbp\Gin@KIT@lly{#2}\edef\KIT@lly{\Gin@KIT@lly bp}%
+  \Gin@defaultbp\Gin@KIT@urx{#3}\edef\KIT@urx{\dimexpr\wd\z@-\Gin@KIT@urx bp}%
+  \Gin@defaultbp\Gin@KIT@ury{#4}\edef\KIT@ury{\dimexpr\ht\z@-\Gin@KIT@ury bp}}%
+\def\KIT@radius{20mm}
+\def\KIT@framewidth{2bp}
+\def\KIT@Ginclude@graphics#1{%
+  \setbox\z@\hbox{\Ginclude@graphics{#1}}%
+  \def\KIT@llx{\z@}%
+  \def\KIT@lly{\z@}%
+  \def\KIT@urx{\wd\z@}%
+  \def\KIT@ury{\ht\z@}%
+  \ifx\KIT@trim\@empty\else
+    \expandafter\Gread@parse@KIT@trim\KIT@trim\\%
+  \fi
+  \pgfpicture{\KIT@llx}{\KIT@lly}{\KIT@urx}{\KIT@ury}
+    \pgfsetstrokecolor{gray}%
+    \pgfsetlinewidth{\KIT@framewidth}%
+    \pgfsetcornersarced{\pgfpoint{\KIT@radius}{\KIT@radius}}%
+    \pgfpathmoveto{\pgfpoint{\KIT@urx}{0mm}}%
+    \pgfpathlineto{\pgfpoint{\KIT@urx}{\KIT@ury}}%
+    \pgfsetcornersarced{\pgfpointorigin}%
+    \pgfpathlineto{\pgfpoint{0mm}{\KIT@ury}}%
+    \pgfsetcornersarced{\pgfpoint{\KIT@radius}{\KIT@radius}}%
+    \pgfpathlineto{\pgfpointorigin}%
+    \pgfsetcornersarced{\pgfpointorigin}%
+    \pgfpathclose
+    \pgfusepath{stroke,clip}%
+    \pgftext[left,bottom]{\unhbox\z@}%
+  \endpgfpicture}
+\RequirePackage{xkeyval}
+\RequirePackage{media9}
+\RequirePackage{zref-abspage}
+\define@boolkey{simplemedia}{autoplay}{\def\simplemediaautoplay{#1}}
+\define@boolkey{simplemedia}{showGUI}{\def\simplemediashowGUI{#1}}
+\presetkeys{simplemedia}{autoplay=false,showGUI=false}{}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% \simplemedia[<options>]{<poster or text>}{<media file>}{MIME type}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\ExplSyntaxOn
+\newcommand\simplemedia[4][]{%
+  \setkeys{simplemedia}{#1}%
+  \leavevmode
+  \pbs_pdfobj:nnn{}{fstream}{{}{#3}}
+  \pbs_pdfobj:nnn{}{dict}{
+    /Type/Filespec/F~(#3)/UF~(#3)
+    /EF~<</F~\pbs_pdflastobj:>>
+  }
+  %
+  \pbs_pdfobj:nnn{}{dict}{
+      /CT~(#4)% content type, page 764, table 9.9
+      /D~\pbs_pdflastobj:% full file specification, page 764, table 9.9
+      /N~(Media~clip~from~#3)% name of media clip, page 764, table 9.8
+      /P~<</TF (TEMPACCESS)>>% media permissions, page 764, table 9.9
+      /S~/MCD% subtype media-clip-data, page 764, table 9.8
+  }
+  %
+  \pbs_pdfobj:nnn{}{dict}{
+      /C~\pbs_pdflastobj:% media clip dictionary, page 762, table 9.6
+      /N~(RenditionFrom#3)% name of rendition, page 759, table 9.1
+      /P~<<% media play parameters dictionary, page 762, table 9.6
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+        /BE~<</C~\simplemediashowGUI~%C: display a player-specific controller user interface, page 769, table 9.15
+        /A~true>>~%A: automatically play when activated, page 770, table 9.15
+        % select player (not used here)
+%%        <</PID~<</U~(vnd.adobe.swname:ADBE_MCI)~>>~>>~% PID: software identifier object, page 779
+      ~>>
+      /S~/MR% subtype of rendition, page 759, table 9.1
+  }
+  %
+  \tl_set:Nx\mediarendition{\pbs_pdflastobj:}
+  %
+  \pbs_pdfobj:nnn{}{dict}{}% obj-number created for later use
+  \tl_set:Nx\renditionactionplay{\pbs_pdflastobj:}%
+  %
+  \pbs_pdfobj:nnn{}{dict}{}% obj-number created for later use
+  \tl_set:Nx\renditionactionstop{\pbs_pdflastobj:}%
+  %
+  \hbox_set:Nn\l_tmpa_box{#2}% size of annotation
+  \tl_set:Nx\l_box_wd_tl{\dim_use:N\box_wd:N\l_tmpa_box}
+  \tl_set:Nx\l_box_ht_tl{\dim_use:N\box_ht:N\l_tmpa_box}
+  \tl_set:Nx\l_box_dp_tl{\dim_use:N\box_dp:N\l_tmpa_box}
+  \pbs_pdfxform:nnnnn{1}{1}{}{}{\l_tmpa_box}
+  %
+  \tl_set:Nx\l_simplem_current_page_tl{\zref@extract{simplem@\int_use:N\g_simplem_id_int}{abspage}}
+  \pbs_pdfannot:nnnn{\l_box_wd_tl}{\l_box_ht_tl}{\l_box_dp_tl}{
+      /T~(AnnotationFrom#3)~% title of screen annotation, page 640, table 8.38
+      /Subtype~/Screen~% Subtype Screen, page 616, table 8.20 and page 640, table 8.38
+      /BS~<</W~1/S/S>>% Borderstyle
+      /C~[0.039216~0.039216~0.039216]% color used background, title bar, border, page 607, table 8.15
+      /Contents~(EmbeddedAudiofile#3)% Text to be displayed, page 606, table 8.15
+      /NM~(audioscreenannot:#3)% annotation name, page 606, table 8.15
+      /AP~<</N~\pbs_pdflastxform:>>% appearance dictionary, page 606, table 8.15
+      /F~4~%Annotation flag, page 606, table 8.15 and page 608, table 8.16
+      /A~\renditionactionplay~% Action to be performed, page 640
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+      % autoplay is realised by "additional action" (page 640),
+      % PageOpen (PO) -> play "Play Rendition"
+      % PageClose (PC) -> play "Stop Rendition" (see page 650)
+      /AA~<<\ifKV@simplemedia@autoplay~/PO~\renditionactionplay~\fi~/PC~\renditionactionstop~>>~%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+      \int_compare:nT{\l_simplem_current_page_tl>0}{
+        /P~\exp_args:Ne\pdf_pageobject_ref:n{\l_simplem_current_page_tl}
+      }
+      /CA~1%constant opacity value, page 618
+  }
+  % Rendition Action: "Play Rendition"
+  \pbs_pdfobj:nnn{\renditionactionplay}{dict}{%
+      /R~\mediarendition%
+      /S~/Rendition
+      /OP~4%operation to perform (page 669): 4 = play rendition specified by R
+      /AN~\pbs_pdflastann:%
+  }
+  % Rendition Action: "Stop Rendition"
+  \pbs_pdfobj:nnn{\renditionactionstop}{dict}{%
+      /R~\mediarendition%
+      /S~/Rendition
+      /OP~1%operation to perform (page 669): 1 = stop rendition specified by R
+      /AN~\pbs_pdflastann:%
+  }
+  %
+  \phantom{#2}
+  \zref@labelbyprops{simplem@\int_use:N\g_simplem_id_int}{abspage}
+  \int_gincr:N\g_simplem_id_int
+}%
+\int_new:N\g_simplem_id_int
+\ExplSyntaxOff
+\newcounter{video}
+\renewcommand \thevideo
+     {\ifnum \c@chapter>\z@ \thechapter.\fi \@arabic\c@video}
+\def\fps@video{tbp}
+\def\ftype@video{1}
+\def\ext@video{lof}
+\def\videoname{Video}
+\def\fnum@video{\videoname\nobreakspace\thevideo}
+\newenvironment{video}
+               {\@float{video}}
+               {\end@float}
+\newenvironment{video*}
+               {\@dblfloat{video}}
+               {\end@dblfloat}
+\usepackage{caption}
+\DeclareCaptionLabelSeparator{KIT}{\enskip}
+\captionsetup{%
+  format=hang
+  ,labelseparator=KIT
+  ,labelfont={color=KITgreen,bf}%
+  ,justification=RaggedRight
+  ,singlelinecheck=false
+  ,tableposition=above}
+\usepackage{sidecap}
+\captionsetup[SCfigure]{format=plain}
+\captionsetup[SCtable]{format=plain}
+\advance\voffset-1in
+\advance\hoffset-1in
+\ifx\w@rk\relax
+  \usepackage{crop}
+  \let\CROP@horigin\z@
+  \@tempdima\dimexpr\textheight-\topskip+\baselineskip\relax
+  \divide\@tempdima by\baselineskip
+  \multiply\@tempdima by65536\relax
+  \edef\cnt@baselines{\strip@pt\@tempdima}%
+  \def\rls{%
+    \@tempcnta\z@
+    \loop\advance\@tempcnta\@ne
+      \vrule\@width1.2em\@height0.2\p@\@depth0.02\p@
+      \llap{\smash{\vrule\@width0.165\marginparsep\@height9.375\p@\@depth-9.275\p@}}%
+      \llap{\smash{\textcolor[rgb]{0.5,0,0}{\the\@tempcnta\,}}}%
+      \rlap{%
+        \vrule\@width\columnwidth\@height0.00005\p@\@depth0\p@
+        \if@twocolumn
+          \kern\columnsep\vrule\@width\columnwidth\@height0.00005\p@\@depth0\p@
+        \fi}%
+      \\
+      \ifnum\@tempcnta<\cnt@baselines
+    \repeat}
+  \renewcommand*\CROP@@frame{%
+    \vskip1in%
+    \color[rgb]{0.7,1,0.7}%
+    \let\@themargin\oddsidemargin
+    \if@twoside\ifodd\count\z@\else\let\@themargin\evensidemargin\fi\fi
+    \moveright\@themargin
+    \vbox to\z@{\baselineskip\z@skip\lineskip\z@skip\lineskiplimit\z@
+    \vskip\topmargin\vbox to\z@{\vss\hrule width\textwidth}%
+    \vskip\headheight\vbox to\z@{\vss\hrule width\textwidth}%
+    \vskip\headsep\vbox to\z@{\vss\hrule width\textwidth}%
+    \hbox to\textwidth{\leftskip\z@
+      \llap{\vbox to\textheight{\tiny\let\@tempa\f@size\normalsize\let\f@size\@tempa\selectfont
+                                \hsize1.2em\relax
+                                \vskip\topskip\rls\null\vss}}%
+      \llap{\vrule height\textheight}%
+      \if@twocolumn
+        \hskip\columnwidth\rlap{\vrule height\textheight}%
+        \hskip\columnsep\rlap{\vrule height\textheight}%
+      \fi
+      \hfil\vrule height\textheight}%
+    \vbox to\z@{\vss\hrule width\textwidth}%
+    \vskip\footskip\vbox to\z@{\vss\hrule width\textwidth}%
+    \vss}%
+    \vbox to\z@{\baselineskip\z@skip\lineskip\z@skip\lineskiplimit\z@
+    \vskip-0in\rlap{%
+    \vbox to\z@{\vbox to\z@{\vss\hrule width\paperwidth}%
+    \hbox to \paperwidth{\llap{\vrule height\paperheight}\hfil
+    \vrule height\paperheight}%
+    \vbox to\z@{\vss\hrule width\paperwidth}%
+    \vss}}\vss}}
+  \crop[frame,noinfo]
+\fi
+\usepackage[hyphens]{url}
+\urlstyle{same}
+\usepackage[%
+  breaklinks,unicode
+  ,bookmarks=false
+  ,pdfborder={0 0 0},colorlinks
+  ,linkcolor=KITblue
+  ,citecolor=KITgreen
+  ,urlcolor=KITgreen
+ ]{hyperref}
+\ifHy@draft
+  \Hy@AtBeginDocument{\let\hyper@anchorstart\@gobble}%confronting a hyperref problem
+\else
+  \iflanguage{ngerman}{\hypersetup{pdflang={de-DE-1996}}}{}%
+   \AtBeginDocument{\hypersetup{%
+     pdftitle={\@title},
+     pdfauthor={\@author}}}%
+\fi
+\ifx\XeTeXcharclass\@undefined\ifnum\pdfoutput=\z@
+  \usepackage[hyphenbreaks]{breakurl}
+  \bgroup
+    \catcode`\&=12\relax
+    \hyper@normalise\burl@addtocharlistafter{=}
+  \egroup
+  \burl@defifstructure
+\fi\fi
+\IfFileExists{doi.sty}
+  {\usepackage{doi}%
+   \renewcommand*{\doitext}{}}
+  {\def\doi##1{\href{http://dx.doi.org/##1}{##1}}}
+\endinput
+%%
+%% End of file `KITposter.sty'.
