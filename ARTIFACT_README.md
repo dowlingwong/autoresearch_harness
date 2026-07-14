@@ -4,7 +4,7 @@
 and Failure Metrics"  
 **Venue:** KDD 2026 ETAAI Workshop  
 **Commit:** `ff3717b729652d4ba1de50848d8533078ccbcdfa`  
-**Repository:** withheld during anonymous review; to be released after review
+**Repository:** https://github.com/dowlingwong/autoresearch_harness
 
 ---
 
@@ -98,8 +98,8 @@ python3 scripts/run_memory_ablation.py \
 **Hardware:** NVIDIA GPU with ≥ 8 GB VRAM (paper used NVIDIA L40S)  
 **Data:** `nodes/ResNet_trigger/noise_traces_4000x8000.h5` and
           `nodes/ResNet_trigger/signal_vacuum_sum_crop_4000x8000.h5`
-          are not included in the anonymous review ZIP. They are not needed for
-          ledger-based governance verification and can be released after review
+          are not included in the public artifact bundle. They are not needed for
+          ledger-based governance verification and can be shared separately
           if policy permits.  
 **Manager:** `deepseek-v4-flash` via OpenAI-compatible API  
 **Worker:** `qwen2.5-coder:7b` via Ollama at `http://localhost:11434`
@@ -248,7 +248,7 @@ Set `OLLAMA_HOST` if Ollama is not on `http://localhost:11434`.
 ## Ledger provenance
 
 Every trial in `experiments/ledgers/` is an append-only JSONL record. Path-like
-fields in the anonymous artifact are sanitized to relative artifact paths.
+fields in the public artifact are sanitized to relative artifact paths.
 Each record contains:
 
 - `trial_id`, `campaign_id`, `budget_index` — identity
