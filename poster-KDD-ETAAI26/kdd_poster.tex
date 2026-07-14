@@ -101,12 +101,12 @@
 }
 \newcommand{\decisionchart}{%
 \begin{tikzpicture}[x=1mm,y=1mm]
-  \decisionrow{36.5}{ResNet}{43}{54}{}
-  \decisionrow{29.2}{LR}{8}{46}{}
-  \decisionrow{21.9}{Credit}{14}{60}{}
-  \decisionrow{14.6}{Bank}{13}{55}{}
-  \decisionrow{7.3}{MLAgent}{28}{24}{}
-  \decisionrow{0}{LM}{6}{24}{}
+  \decisionrow{36.5}{ResNet}{46.7}{52.9}{}
+  \decisionrow{29.2}{LR}{8.4}{45.3}{}
+  \decisionrow{21.9}{Credit}{13.5}{60.4}{}
+  \decisionrow{14.6}{Bank}{13.0}{54.8}{}
+  \decisionrow{7.3}{MLAgent}{28.0}{24.0}{}
+  \decisionrow{0}{LM}{5.8}{23.8}{}
   \draw[very thick] (2,-6) -- (192,-6);
   \foreach \x/\l in {2/0,97/50,192/100}{
     \draw[very thick] (\x,-8) -- (\x,-4);
@@ -131,22 +131,26 @@
   \node[rotate=90,font=\fontsize{26bp}{30bp}\selectfont] at (-22,58)
     {Ledger completeness (\%)};
   % OpenML Bank pair
-  \filldraw[fill=KITgreen,draw=black,very thick]  (25,0)  rectangle (65,100);
-  \filldraw[fill=PosterRed,draw=black,very thick] (72,0)  rectangle (112,35);
+  \filldraw[fill=PosterBlue,draw=black,very thick]   (25,0)  rectangle (65,100);
+  \filldraw[fill=PosterOrange,draw=black,very thick] (72,0)  rectangle (112,35);
   % LM training pair
-  \filldraw[fill=KITgreen,draw=black,very thick]  (145,0) rectangle (185,100);
-  \filldraw[fill=PosterRed,draw=black,very thick] (192,0) rectangle (232,2);
+  \filldraw[fill=PosterBlue,draw=black,very thick]   (145,0) rectangle (185,100);
+  \filldraw[fill=PosterOrange,draw=black,very thick] (192,0) rectangle (232,2);
   \node[above,font=\bfseries\fontsize{28bp}{32bp}\selectfont] at (45,100) {100};
   \node[above,font=\bfseries\fontsize{28bp}{32bp}\selectfont] at (92,35) {35};
   \node[above,font=\bfseries\fontsize{28bp}{32bp}\selectfont] at (165,100) {100};
   \node[above,font=\bfseries\fontsize{28bp}{32bp}\selectfont] at (212,2) {0};
-  \node[above,font=\fontsize{24bp}{28bp}\selectfont,PosterRed] at (92,95)
+  \node[above,font=\fontsize{24bp}{28bp}\selectfont,PosterOrange] at (92,95)
     {13\,/\,20 absent};
-  \node[above,font=\fontsize{24bp}{28bp}\selectfont,PosterRed] at (212,60)
+  \node[above,font=\fontsize{24bp}{28bp}\selectfont,PosterOrange] at (212,60)
     {30\,/\,30 absent};
-  \node[below,align=center,font=\bfseries\fontsize{26bp}{30bp}\selectfont] at (68,-26)
+  \node[below,font=\bfseries\fontsize{24bp}{28bp}\selectfont] at (45,-8) {Gov.};
+  \node[below,font=\bfseries\fontsize{24bp}{28bp}\selectfont] at (92,-8) {Ungov.};
+  \node[below,font=\bfseries\fontsize{24bp}{28bp}\selectfont] at (165,-8) {Gov.};
+  \node[below,font=\bfseries\fontsize{24bp}{28bp}\selectfont] at (212,-8) {Ungov.};
+  \node[below,align=center,font=\bfseries\fontsize{26bp}{30bp}\selectfont] at (68,-40)
     {OpenML Bank};
-  \node[below,align=center,font=\bfseries\fontsize{26bp}{30bp}\selectfont] at (188,-26)
+  \node[below,align=center,font=\bfseries\fontsize{26bp}{30bp}\selectfont] at (188,-40)
     {LM training};
 \end{tikzpicture}}
 
@@ -188,9 +192,9 @@
     KDD ETAAI'26 \textbar{} August 9, 2026 \textbar{} ICC Jeju}%
   \hfill
   \parbox[b]{0.60\hsize}{\raggedleft
-    \textbf{Refs:} [1] Trivedy \textit{et al.}, Anatomy of an Agent (2026);
+    \textbf{Refs:} [1] Trivedy, \textit{The Anatomy of an Agent Harness} (2026);
     [2] Zaharia \textit{et al.}, Compound AI Systems (2024).\\
-    \textbf{Paper $+$ code $+$ ledgers:} QR in panel 3 --- all governance
+    \textbf{Code $+$ ledgers $+$ reproduction guide:} QR in panel 3 --- all governance
     metrics recomputable without a GPU.}}
 
 \begin{document}
@@ -244,10 +248,11 @@
 
   \par\smallskip\centerline{\decisionchart}
   \cpt{\textbf{Lifecycle outcomes per node} --- provenance complete on every
-  node, including the 120-trial total-failure arm (LM, no-memory).}
+  node. ResNet is the verified 225-trial L40S replication; LM includes the
+  120-trial total-failure arm.}
 
   \par\centerline{\pairchart}\par
-  \cpt{\textbf{Matched pairs} (green $=$ governed, red $=$ ungoverned);
+  \cpt{\textbf{Matched pairs} (blue $=$ governed, orange $=$ ungoverned);
   removed: pending guard, failure appends, blocking scope checks.}
 
   \callout{Without the control plane, \textbf{43 of 50} matched trials left
@@ -257,7 +262,8 @@
     \includegraphics[width=\linewidth]{qr_artifact.png}
   \end{minipage}\hfill
   \begin{minipage}[c]{0.82\hsize}
-    \cpt{\textbf{Paper $+$ code $+$ ledgers} --- recomputable without a GPU.
+    \cpt{\textbf{Code $+$ ledgers $+$ reproduction guide} --- all governance
+    metrics are recomputable without a GPU.
     All 150 LM-training crashes classified and traceable.}
   \end{minipage}\par
 \end{panelthree}
