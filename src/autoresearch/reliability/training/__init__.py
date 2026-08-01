@@ -132,3 +132,93 @@ class TrainingViewBuilder:
             process_label=transition.get("process_label", ""),
             outcome=transition.get("outcome", {}),
         )
+
+
+@dataclass(frozen=True)
+class ComputeLedgerRow:
+    """One row of the matched-data/compute accounting ledger."""
+
+    arm_id: str
+    source_trajectories: int
+    effective_tokens: int
+    optimizer_steps: int
+    evaluation_budget: int
+    verification_cost: float
+    match_notes: str = ""
+
+
+@dataclass(frozen=True)
+class ComputeLedger:
+    """Matched data/compute ledger across training arms.
+
+    Supports the R2-T requirement that all trainable arms be matched on
+    source trajectories, effective tokens, optimizer steps, and evaluation
+    budget; unavoidable mismatches must be reported, never hidden.
+    """
+
+    arms: dict[str, ComputeLedgerRow] = field(default_factory=dict)
+
+    def add_row(self, row: ComputeLedgerRow) -> None:
+        self.arms[row.arm_id] = row
+
+    def report_mismatches(self) -> list[str]:
+        """Return declared mismatches across arms."""
+        mismatches: list[str] = []
+        if not self.arms:
+            return mismatches
+        keys = ["source_trajectories", "effective_tokens", "optimizer_steps", "evaluation_budget"]
+        base = next(iter(self.arms.values()))
+        for key in keys:
+            values = {aid: getattr(row, key) for aid, row in self.arms.items()}
+            if len(set(values.values())) > 1:
+                mismatches.append(
+                    f"{key} not matched across arms: {values}"
+                )
+        return mismatches
+
+    @property
+    def matched(self) -> bool:
+        return len(self.report_mismatches()) == 0
+
+
+@dataclass(frozen=True)
+class RegressionGateResult:
+    """Outcome of the clean-task non-inferiority regression gate."""
+
+    arm_id: str
+    clean_task_success: float
+    base_model_success: float
+    margin: float
+    lower_confidence_bound: float
+
+    @property
+    def passed(self) -> bool:
+        return self.lower_confidence_bound >= self.base_model_success - self.margin
+
+    @property
+    def regression(self) -> float:
+        return self.base_model_success - self.clean_task_success
+
+
+def run_clean_task_regression_gate(
+    *,
+    arm_id: str,
+    clean_task_success: float,
+    base_model_success: float,
+    margin: float = 0.02,
+    confidence_interval_half_width: float = 0.005,
+) -> RegressionGateResult:
+    """Apply the predeclared clean-task non-inferiority gate (R2-T).
+
+    The gate passes when the lower confidence bound of the clean-task success
+    is above ``base_model_success - margin``. Default margin is the
+    preregistered 0.02 (two percentage points).
+    """
+    lower_bound = clean_task_success - confidence_interval_half_width
+    return RegressionGateResult(
+        arm_id=arm_id,
+        clean_task_success=clean_task_success,
+        base_model_success=base_model_success,
+        margin=margin,
+        lower_confidence_bound=lower_bound,
+    )

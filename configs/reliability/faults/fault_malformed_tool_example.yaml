@@ -1,0 +1,28 @@
+# Example sealed fault manifest (synthetic)
+# Version 1.0 · 2026-08-01
+# Demonstrates the fault-manifest structure. Real injectors are specified
+# only after pilot instrumentation is authorized.
+
+fault_id: fault-malformed-tool-example-001
+fault_family: action_and_tool
+mechanism: malformed_argument
+causal_parent: tool_call_step
+affected_component: tool_executor
+injection_trigger: step_index
+deterministic_seed: "REPLACE_WITH_SEED"
+severity: high
+persistence: persistent
+observability_class: observable
+
+policy_visible_fields:
+  - fault_id
+  - observability_class
+
+hidden_fields:
+  - mechanism
+  - severity
+  - persistence
+  - causal_parent
+  - injection_trigger
+
+injector_implementation_hash: "REPLACE_WITH_INJECTOR_SHA256"

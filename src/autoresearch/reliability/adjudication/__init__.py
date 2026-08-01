@@ -77,3 +77,62 @@ def separate_channels(
 ) -> bool:
     """Verify that training and evaluation adjudicators are distinct."""
     return training_adjudicator != evaluation_adjudicator
+
+
+@dataclass(frozen=True)
+class RewardChannelAudit:
+    """Audit of reward-channel independence (R2 safety gate)."""
+
+    training_verifier: str
+    evaluation_verifier: str
+    reward_leakage_detected: bool
+    self_confirmation_detected: bool
+    shared_implementation_bug_detected: bool
+    notes: str = ""
+
+    @property
+    def independent(self) -> bool:
+        return not (
+            self.reward_leakage_detected
+            or self.self_confirmation_detected
+            or self.shared_implementation_bug_detected
+        )
+
+
+def audit_reward_channel(
+    *,
+    training_verifier: str,
+    evaluation_verifier: str,
+    reward_to_evidence_agreement: float,
+    self_confidence_source: bool = False,
+) -> RewardChannelAudit:
+    """Audit whether the training reward channel leaks into evaluation."""
+    shared_impl = training_verifier == evaluation_verifier
+    self_confirmation = self_confidence_source
+    leakage = reward_to_evidence_agreement > 0.99 and not self_confirmation
+    return RewardChannelAudit(
+        training_verifier=training_verifier,
+        evaluation_verifier=evaluation_verifier,
+        reward_leakage_detected=leakage,
+        self_confirmation_detected=self_confirmation,
+        shared_implementation_bug_detected=shared_impl,
+        notes=(
+            "evaluation verifier shared with training verifier"
+            if shared_impl
+            else "evaluation verifier independent of training verifier"
+        ),
+    )
+
+
+def verifier_substitution_audit(
+    *,
+    primary_verifier_success: float,
+    substitute_verifier_success: float,
+    tolerance: float = 0.05,
+) -> bool:
+    """Audit that results survive verifier substitution within tolerance.
+
+    The R2 robustness requirement is that an improvement must survive a
+    different verifier implementation evaluating the same trajectories.
+    """
+    return abs(primary_verifier_success - substitute_verifier_success) <= tolerance

@@ -11,7 +11,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from .events import ReliabilityEvent, SCHEMA_VERSION
+from .events import (
+    ReliabilityEvent,
+    SCHEMA_VERSION,
+    EventVisibility,
+    _compute_integrity_hash,
+)
 from .manifest import RunManifest
 
 
@@ -89,6 +94,63 @@ def validate_event_stream(events: list[ReliabilityEvent]) -> ValidationResult:
                 errors.append(
                     f"event {e.event_id} references missing parent {pid}"
                 )
+
+    for e in events:
+        recomputed = _compute_integrity_hash(
+            e.payload, list(e.parent_event_ids)
+        )
+        if e.integrity_hash and e.integrity_hash != recomputed:
+            errors.append(
+                f"event {e.event_id} integrity hash mismatch: "
+                f"recorded {e.integrity_hash} != recomputed {recomputed}"
+            )
+
+    for e in events:
+        vis_value = (
+            e.visibility_class.value
+            if isinstance(e.visibility_class, EventVisibility)
+            else e.visibility_class
+        )
+        try:
+            EventVisibility(vis_value)
+        except (ValueError, TypeError):
+            errors.append(
+                f"event {e.event_id} unknown visibility class: {e.visibility_class}"
+            )
+
+    hidden_visible = [
+        e.event_id
+        for e in events
+        if e.event_type.value == "fault_injection"
+        and (
+            e.visibility_class.value
+            if isinstance(e.visibility_class, EventVisibility)
+            else e.visibility_class
+        )
+        != EventVisibility.HIDDEN_FAULT_TRUTH.value
+    ]
+    if hidden_visible:
+        errors.append(
+            "fault_injection events must use HIDDEN_FAULT_TRUTH visibility: "
+            f"{hidden_visible}"
+        )
+
+    adjudication_visible = [
+        e.event_id
+        for e in events
+        if e.event_type.value == "adjudication"
+        and (
+            e.visibility_class.value
+            if isinstance(e.visibility_class, EventVisibility)
+            else e.visibility_class
+        )
+        != EventVisibility.ADJUDICATION_ONLY.value
+    ]
+    if adjudication_visible:
+        errors.append(
+            "adjudication events must use ADJUDICATION_ONLY visibility: "
+            f"{adjudication_visible}"
+        )
 
     step_seen: set[int] = set()
     for e in events:

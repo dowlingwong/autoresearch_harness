@@ -1,0 +1,26 @@
+# Example split manifest (synthetic)
+# Version 1.0 · 2026-08-01
+# Illustrates group-isolated split construction. Real split assignments are
+# frozen only after pilot leakage audits.
+
+split_id: split-development-example-001
+split_regime: development
+description: Development split using pilot-only task templates and injectors.
+
+task_template_ids:
+  - task-template-dev-001
+  - task-template-dev-002
+
+task_instance_ids:
+  - dev-instance-001
+  - dev-instance-002
+  - dev-instance-003
+
+fault_family_ids:
+  - action_and_tool
+
+grouping_rules:
+  - task_templates_grouped_before_split
+  - near_duplicate_solutions_same_group
+
+leakage_audit_hash: "REPLACE_WITH_AUDIT_SHA256"

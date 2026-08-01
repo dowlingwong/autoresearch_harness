@@ -1,0 +1,39 @@
+# Example R1-P synthetic experiment configuration
+# Version 1.0 · 2026-08-01
+# Used by scripts/run_r1_synthetic_readiness.py to exercise the scaffold.
+
+experiment_id: R1-P-synthetic
+protocol: R1-P
+status: synthetic_fixture
+
+task:
+  config_ref: configs/reliability/tasks/task_repo_repair_example.yaml
+  task_id: synthetic-task-repo-001
+  task_family: repository_repair
+
+fault:
+  config_ref: configs/reliability/faults/fault_malformed_tool_example.yaml
+  sealed: true
+
+split:
+  config_ref: configs/reliability/splits/split_development_example.yaml
+  name: development
+
+model:
+  provider: synthetic-policy
+  model_id: synthetic-model-v0
+  revision: "v0"
+  scaffold_version: "synthetic-v1"
+
+resources:
+  wall_clock_budget_seconds: 0
+  token_budget: 0
+  tool_call_budget: 0
+  compute_class: synthetic
+
+trajectories:
+  no_fault_control: 1
+  injected_fault_counterfactual: 1
+  total: 2
+
+seed: synthetic-seed-001

@@ -40,6 +40,15 @@ from .validation import (
     validate_referential_integrity,
     ValidationResult,
 )
+from .adapter import (
+    ReliabilityEventStoreAdapter,
+    ReliabilityEventStoreAdapterError,
+)
+from .export import (
+    export_scalar_macro,
+    export_latex_table,
+    ExportError,
+)
 
 __all__ = [
     "ReliabilityEvent",
@@ -69,4 +78,9 @@ __all__ = [
     "validate_event_stream",
     "validate_referential_integrity",
     "ValidationResult",
+    "ReliabilityEventStoreAdapter",
+    "ReliabilityEventStoreAdapterError",
+    "export_scalar_macro",
+    "export_latex_table",
+    "ExportError",
 ]

@@ -1,0 +1,27 @@
+# Example R1 pilot task manifest (synthetic)
+# Version 1.0 · 2026-08-01
+# Real task identifiers are specified after pilot budget authorization.
+
+manifest_id: task-repo-repair-example-001
+task_family: repository_repair
+workload_level: L0
+description: >
+  Synthetic repository-repair task used to exercise the reliability
+  scaffold. Real tasks are selected only after pilot authorization.
+
+generator_hash: "REPLACE_WITH_GENERATOR_SHA256"
+repository_url: ""
+dataset_hash: ""
+
+fault_eligibility:
+  - action_and_tool
+  - runtime_and_environment
+  - memory_and_context
+
+split_assignments:
+  development: true
+  unseen_task: false
+  unseen_injector: false
+  unseen_fault_family: false
+  unseen_composition: false
+  external_L4: false
