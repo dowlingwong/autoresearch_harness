@@ -1,0 +1,375 @@
+\documentclass[UKenglish]{article}
+
+% A printed poster needs no interactive PDF widgets or link annotations.
+\PassOptionsToPackage{draft}{hyperref}
+
+% Portrait: omit the "horizontal" option so KITposter uses its 3-column
+% vertical grid.
+\usepackage[
+ print,
+ heros
+ ]{KITposter}
+
+% KDD 2026 allocates 3 ft x 3.5 ft (914 x 1067 mm, portrait) per workshop
+% poster. Override KITposter's A0-portrait canvas to that exact size and
+% recompute the derived text block, so the sheet fills the board allocation
+% without any pgfpages rescaling (normal text stays at 32 bp).
+\paperwidth 914mm
+\paperheight 1067mm
+\textwidth\dimexpr\paperwidth-\oddsidemargin-\evensidemargin\relax
+\headsep 20mm
+\footskip 35mm
+\textheight\dimexpr\paperheight-\topmargin-\headheight-\headsep-\footskip-\gridwidth\relax
+\hsize\textwidth \linewidth\textwidth \columnwidth\textwidth
+
+\graphicspath{{figs/}}
+
+% The sandbox/system "Courier" fallback is unavailable; use TeX Gyre Cursor
+% for \texttt so xdvipdfmx does not abort on an unresolved mono font.
+\setmonofont{texgyrecursor}[ Extension = .otf ,
+  UprightFont = *-regular , ItalicFont = *-italic ,
+  BoldFont = *-bold , BoldItalicFont = *-bolditalic ]
+
+\usepackage{amsmath}
+\usepackage{pagecolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit}
+
+\definecolor{PosterBG}{RGB}{248,247,242}
+\definecolor{PosterPanel}{RGB}{235,239,236}
+% Muted mid-chroma paper palette (tensor-formula-viz house style).
+% One semantic colour per role, reused across every chart and diagram:
+%   VizTeal   = kept / governed / control-plane authority
+%   VizGray   = discarded (valid but not selected) / optional secondary path
+%   VizOrange = failed-invalid / ungoverned (failure and absence)
+%   VizCoral  = reserved for a single emphasised contrast
+\definecolor{VizTeal}{HTML}{4F8FA5}
+\definecolor{VizOrange}{HTML}{EE995B}
+\definecolor{VizCoral}{HTML}{C95B5B}
+\definecolor{VizGray}{HTML}{85898F}
+\definecolor{InkDark}{RGB}{40,40,40}
+% Back-compatible aliases so existing role names keep working.
+\colorlet{PosterBlue}{VizTeal}
+\colorlet{PosterOrange}{VizOrange}
+\colorlet{PosterRed}{VizCoral}
+
+\newcommand{\cpt}[1]{{\fontsize{26bp}{31bp}\selectfont #1\par}}
+\newcommand{\callout}[1]{%
+  \par\medskip
+  \colorbox{white}{\parbox{\dimexpr\hsize-2\fboxsep}{\centering\bfseries #1}}%
+  \par\medskip}
+% compact labelled entry used by the desiderata / workshop-map / node lists
+\newcommand{\entry}[2]{%
+  \par\smallskip
+  {\bfseries #1}\\[0.5mm]{\fontsize{26bp}{30bp}\selectfont #2\par}}
+
+%==================== Architecture (vertical, poster-scale) ====================
+\newcommand{\archdiagram}{%
+\begin{tikzpicture}[
+  >={Latex[length=7mm,width=5mm]},
+  bx/.style={draw=black!60, very thick, rounded corners=3mm, fill=white,
+    minimum width=104mm, minimum height=30mm,
+    font=\bfseries\fontsize{27bp}{31bp}\selectfont, align=center},
+  alab/.style={font=\fontsize{24bp}{28bp}\selectfont, align=left}]
+  \node[bx] (mgr) at (0,0) {Manager (LLM)\\[-1mm]
+    {\normalfont\fontsize{22bp}{26bp}\selectfont propose $\cdot$ review $\cdot$ comment}};
+  \node[bx, draw=VizTeal, line width=2.2mm, minimum width=150mm,
+    minimum height=76mm, below=11mm of mgr, align=center] (cp) {};
+  \node[font=\bfseries\fontsize{27bp}{31bp}\selectfont, anchor=north]
+    at ([yshift=-5mm]cp.north) {CONTROL PLANE};
+  \node[font=\fontsize{23bp}{27bp}\selectfont, align=left, anchor=north]
+    at ([yshift=-17mm]cp.north)
+    {scope validation $\cdot$ pending guard\\
+     lifecycle state machine\\
+     metric parsing $\cdot$ keep/discard};
+  \node[bx, below=11mm of cp] (wrk) {Worker (edit $+$ run)};
+  \node[bx, draw=VizTeal, line width=1.8mm, fill=VizTeal!12,
+    minimum width=132mm, below=11mm of wrk] (led) {Append-only ledger};
+  \draw[->, very thick] (mgr) --
+    node[alab,right=2mm]{proposal $+$ rationale} (cp);
+  \draw[->, very thick] (cp) -- node[alab,right=2mm]{bounded edit} (wrk);
+  \draw[->, very thick] (wrk) -- node[alab,right=2mm]{one record per trial} (led);
+  \draw[->, very thick, dashed, VizGray]
+    (led.west) -- ++(-24mm,0) |- node[alab,left=2mm,pos=0.25]
+    {review:\\prior outcomes\\$+$ rationales} (mgr.west);
+\end{tikzpicture}}
+
+%==================== Lifecycle (central visual) ====================
+\newcommand{\lifecyclediagram}{%
+\begin{tikzpicture}[
+  >={Latex[length=8mm,width=6mm]},
+  stp/.style={draw=black!60, very thick, rounded corners=3mm, fill=white,
+    minimum width=168mm, minimum height=21mm,
+    font=\bfseries\fontsize{26bp}{30bp}\selectfont, align=center},
+  note/.style={font=\fontsize{22bp}{26bp}\selectfont, text=InkDark, align=left},
+  term/.style={draw=black!60, very thick, rounded corners=3mm,
+    minimum width=76mm, minimum height=24mm,
+    font=\bfseries\fontsize{25bp}{29bp}\selectfont, text=InkDark, align=center}]
+  \node[stp] (s1) at (0,0) {PROPOSE};
+  \node[stp, below=5mm of s1] (s2) {VALIDATE SCOPE};
+  \node[stp, below=5mm of s2] (s3) {WRITE PENDING GUARD};
+  \node[stp, below=5mm of s3] (s4) {EXECUTE};
+  \node[stp, below=5mm of s4] (s5) {PARSE $+$ ADJUDICATE};
+  \node[stp, below=5mm of s5] (s6) {APPEND EXACTLY ONE RECORD};
+  \foreach \a/\b in {s1/s2,s2/s3,s3/s4,s4/s5,s5/s6}
+    \draw[->, very thick] (\a.south) -- (\b.north);
+  \node[note, right=3mm of s2] {frozen file\\$\rightarrow$ rejected};
+  \node[note, right=3mm of s4] {crash $\rightarrow$ stale guard\\$\rightarrow$ classified};
+  \node[term, fill=VizGray!45, below=8mm of s6] (t2) {DISCARDED};
+  \node[term, fill=VizTeal!45, left=5mm of t2] (t1) {KEPT};
+  \node[term, fill=VizOrange!55, right=5mm of t2, minimum width=88mm]
+    (t3) {FAILED-INVALID};
+  \draw[->, very thick] (s6.south) -- (t1.north);
+  \draw[->, very thick] (s6.south) -- (t2.north);
+  \draw[->, very thick] (s6.south) -- (t3.north);
+\end{tikzpicture}}
+
+%==================== Six-node decision distribution ====================
+\newcommand{\decisionrow}[4]{% y, label, kept%, disc% (rest = failed-invalid)
+  \node[left,font=\fontsize{24bp}{28bp}\selectfont] at (0,#1) {#2};
+  \fill[VizTeal!80, rounded corners=0.6mm]
+    (2,#1-3.0) rectangle ({2+1.62*#3-0.7},#1+3.0);
+  \fill[VizGray!55, rounded corners=0.6mm]
+    ({2+1.62*#3},#1-3.0) rectangle ({2+1.62*#3+1.62*#4-0.7},#1+3.0);
+  \fill[VizOrange!75, rounded corners=0.6mm]
+    ({2+1.62*#3+1.62*#4},#1-3.0) rectangle ({2+162},#1+3.0);
+}
+\newcommand{\decisionchart}{%
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \decisionrow{36.5}{ResNet}{46.7}{52.9}
+  \decisionrow{29.2}{LR}{8.4}{45.3}
+  \decisionrow{21.9}{Credit}{13.5}{60.4}
+  \decisionrow{14.6}{Bank}{13.0}{54.8}
+  \decisionrow{7.3}{MLAgent}{28.0}{24.0}
+  \decisionrow{0}{LM}{5.8}{23.8}
+  \draw[very thick] (2,-6) -- (164,-6);
+  \foreach \x/\l in {2/0,83/50,164/100}{
+    \draw[very thick] (\x,-8) -- (\x,-4);
+    \node[below,font=\fontsize{23bp}{27bp}\selectfont] at (\x,-9) {\l\%};}
+  \fill[VizTeal!80, rounded corners=0.5mm] (172,32) rectangle (179,39);
+  \node[right,font=\fontsize{23bp}{27bp}\selectfont] at (180,35.5) {kept};
+  \fill[VizGray!55, rounded corners=0.5mm] (172,18) rectangle (179,25);
+  \node[right,font=\fontsize{23bp}{27bp}\selectfont] at (180,21.5) {discarded};
+  \fill[VizOrange!75, rounded corners=0.5mm] (172,4) rectangle (179,11);
+  \node[right,align=left,font=\fontsize{23bp}{27bp}\selectfont] at (180,7.5)
+    {failed-\\invalid};
+\end{tikzpicture}}
+
+%==================== Matched governed vs ungoverned pairs ====================
+\newcommand{\pairchart}{%
+\begin{tikzpicture}[x=1mm,y=0.22mm]
+  \draw[very thick,->] (0,0) -- (0,116);
+  \draw[very thick] (0,0) -- (212,0);
+  \foreach \y in {0,50,100}{
+    \draw[gray!55] (0,\y) -- (212,\y);
+    \node[left,font=\fontsize{24bp}{28bp}\selectfont] at (0,\y) {\y};}
+  \node[rotate=90,font=\fontsize{24bp}{28bp}\selectfont] at (-24,58)
+    {Ledger completeness (\%)};
+  % Governed bars: full ledger completeness.
+  \filldraw[fill=VizTeal!80,draw=black!60,very thick,rounded corners=0.8mm]
+    (20,0)  rectangle (55,100);
+  \filldraw[fill=VizTeal!80,draw=black!60,very thick,rounded corners=0.8mm]
+    (124,0) rectangle (159,100);
+  % Ungoverned bars: dashed outline shows the records that should have existed;
+  % only the surviving fraction is filled, and a true zero stays unfilled.
+  \draw[black!35,dashed,thick] (61,0)  rectangle (96,100);
+  \draw[black!35,dashed,thick] (165,0) rectangle (200,100);
+  \filldraw[fill=VizOrange!75,draw=black!60,very thick,rounded corners=0.8mm]
+    (61,0)  rectangle (96,35);
+  \node[above,font=\bfseries\fontsize{26bp}{30bp}\selectfont] at (37,100) {100};
+  \node[above,font=\bfseries\fontsize{26bp}{30bp}\selectfont] at (78,35) {35};
+  \node[above,font=\bfseries\fontsize{26bp}{30bp}\selectfont] at (141,100) {100};
+  \node[above,font=\bfseries\fontsize{26bp}{30bp}\selectfont] at (182,2) {0};
+  \node[below,font=\bfseries\fontsize{23bp}{27bp}\selectfont] at (37,-26) {Gov.};
+  \node[below,font=\bfseries\fontsize{23bp}{27bp}\selectfont] at (78,-26) {Ungov.};
+  \node[below,font=\bfseries\fontsize{23bp}{27bp}\selectfont] at (141,-26) {Gov.};
+  \node[below,font=\bfseries\fontsize{23bp}{27bp}\selectfont] at (182,-26) {Ungov.};
+  \node[below,align=center,font=\bfseries\fontsize{25bp}{29bp}\selectfont]
+    at (58,-80) {OpenML Bank\\[0.5mm]
+    {\normalfont\fontsize{22bp}{26bp}\selectfont
+     \textcolor{VizOrange!85!black}{13 of 20 absent}}};
+  \node[below,align=center,font=\bfseries\fontsize{25bp}{29bp}\selectfont]
+    at (162,-80) {LM training\\[0.5mm]
+    {\normalfont\fontsize{22bp}{26bp}\selectfont
+     \textcolor{VizOrange!85!black}{30 of 30 absent}}};
+\end{tikzpicture}}
+
+%==================== Roadmap: this work -> R1 -> R2 ====================
+\newcommand{\roadmapstrip}{%
+\begin{tikzpicture}[x=1mm,y=1mm,>={Latex[length=6mm,width=4mm]}]
+  \draw[VizTeal, line width=1.4mm, fill=VizTeal!14, rounded corners=2.5mm]
+    (0,0) rectangle (68,25);
+  \draw[black!60, line width=1mm, rounded corners=2.5mm] (75,0) rectangle (143,25);
+  \draw[black!60, line width=1mm, rounded corners=2.5mm] (150,0) rectangle (218,25);
+  \node[font=\bfseries\fontsize{22bp}{25bp}\selectfont] at (34,18.5) {THIS WORK};
+  \node[font=\bfseries\fontsize{22bp}{25bp}\selectfont] at (109,18.5) {R1};
+  \node[font=\bfseries\fontsize{22bp}{25bp}\selectfont] at (184,18.5) {R2};
+  \node[font=\fontsize{19bp}{22bp}\selectfont, align=center] at (34,7.5)
+    {governed trial\\audit};
+  \node[font=\fontsize{19bp}{22bp}\selectfont, align=center] at (109,7.5)
+    {predict failure\\before it lands};
+  \node[font=\fontsize{19bp}{22bp}\selectfont, align=center] at (184,7.5)
+    {act on the\\warning};
+  \draw[->, very thick] (68.5,12.5) -- (74.5,12.5);
+  \draw[->, very thick] (143.5,12.5) -- (149.5,12.5);
+\end{tikzpicture}}
+
+\setlength{\textfloatsep}{6mm}
+\setlength{\floatsep}{6mm}
+\setlength{\intextsep}{6mm}
+\fboxsep8mm
+\setlength\emergencystretch{2em}
+\hyphenpenalty=10000
+\exhyphenpenalty=10000
+
+% Portrait KITposter already uses a three-column grid, so \b@x with span 1
+% gives one panel per column; span 3 gives a full-width strip.
+\makeatletter
+\newenvironment{panel}[3][]
+ {\begingroup\b@x{#1}{1}{KITgreen}{#2}{#3}}
+ {\endb@x\optarg{PosterPanel}\endgroup}
+\makeatother
+
+\renewcommand\topfraction{1.0}
+\renewcommand\bottomfraction{1.0}
+\renewcommand\textfraction{0.0}
+\renewcommand\floatpagefraction{0.0}
+\setcounter{totalnumber}{20}
+\setcounter{bottomnumber}{6}
+\setcounter{topnumber}{6}
+
+%======================== header meta ========================
+\title{\textcolor{KITgreen}{Governed LLM-driven ML experimentation}}
+\subtitle{The LLM proposes; the control plane validates and adjudicates;
+  the ledger makes every trial auditable.}
+\author{\textcolor{KITgray}{Dowling Wong \textbar{} Karlsruhe Institute of Technology (KIT)}}
+\institute{\textbf{KIT} Karlsruhe Institute of Technology}
+\instadd{KDD Workshop on Evaluation and Trustworthiness\\
+  of Agentic AI (ETAAI'26) \textbar{} Jeju, Korea}
+
+%======================== foot line ========================
+\footline{\fontsize{25bp}{29bp}\selectfont
+  \parbox[c]{34mm}{\includegraphics[width=34mm]{qr_artifact.png}}%
+  \hspace{6mm}%
+  \parbox[c]{0.40\hsize}
+   {\textbf{Paper $+$ code $+$ archived ledgers}\\
+    \textbf{Dowling Wong} \textbar{} \url{dowling.wong@kit.edu}}%
+  \hfill
+  \parbox[c]{0.46\hsize}{\raggedleft
+    \textbf{Refs:} [1] Trivedy \textit{et al.} (2026);
+    [2] Zaharia \textit{et al.} (2024).\\
+    All governance metrics recomputable from the ledgers --- no GPU required.}}
+
+\begin{document}
+\pagecolor{PosterBG}
+\maketitle
+
+%======================== Row 1 ========================
+\begin{panel}[315mm]
+  {1. Task scores evaluate results,\\not experimental conduct}
+  {What must hold $\rightarrow$ what we measure}
+  \color{black}\raggedright
+  A higher AUC never shows whether the agent stayed in scope or who decided
+  acceptance. Each condition becomes a reported metric.
+
+  \entry{D1 \, Bounded edit scope $\rightarrow$ invalid-action rate}{No
+  protected benchmark, data or evaluation file changes.}
+  \entry{D2 \, Complete attempt accounting $\rightarrow$ failure taxonomy}{Every
+  attempt recorded --- invalid proposals and crashes.}
+  \entry{D3 \, Independent adjudication $\rightarrow$ acceptance rate}{Fixed
+  control-plane rules decide, never the agent.}
+  \entry{D4 \, Provenance linkage $\rightarrow$ provenance completeness}{Each
+  attempt links to patch, config, run, metric, decision.}
+  \entry{D5 \, Recomputability $\rightarrow$ artifact manifest}{Claims
+  recompute from the ledger; no training rerun.}
+
+  \par\medskip
+  {\bfseries Governance metrics are primary; task AUC is secondary.\par}
+\end{panel}
+\begin{panel}[315mm]
+  {2. The governed control plane}
+  {Agent $=$ Model $+$ Harness}
+  \color{black}\raggedright
+
+  \par\smallskip\centerline{\archdiagram}\par\medskip
+  \cpt{\textbf{Memory is an optional review channel; the ledger is the
+  authoritative audit record} --- owned by the control plane. Managers and
+  workers are swappable; the contract is fixed.}
+\end{panel}
+\begin{panel}[315mm]
+  {3. The governed trial contract}
+  {Exactly one immutable record per trial}
+  \color{black}\raggedright
+
+  \par\smallskip\centerline{\lifecyclediagram}\par\medskip
+
+  \callout{Every opened budget slot appends \textbf{exactly one} terminal
+  record before the next may open.}
+
+  \cpt{\textbf{Structural, not empirical:} the invariant holds by
+  construction. 100\% provenance over 1{,}445 trials is its certificate.\\[1.5mm]
+  \textbf{Not claimed:} any AUC gain --- it sits within seed noise.\\[1.5mm]
+  \textbf{Label check:} $\kappa = 0.830$ on 50 failed-invalid trials.}
+\end{panel}
+\par
+
+%======================== Row 2 ========================
+\begin{panel}[315mm]
+  {4. What the evidence shows}
+  {6 nodes $\cdot$ 1{,}445 trials $\cdot$ 100\% provenance}
+  \color{black}\raggedright
+  One contract; only the NodeSpec YAML differs between nodes.
+
+  \par\smallskip\centerline{\decisionchart}\par\smallskip
+  \cpt{Acceptance 0--47\%, invalid 0.4--100\%.}
+
+  \par\centerline{\pairchart}\par\smallskip
+  \callout{\textbf{43 of 50} ungoverned trials left \textbf{no ledger
+  record}; 0 of 50 governed.}
+
+\end{panel}
+\begin{panel}[315mm]
+  {5. Next: predicting failure}
+  {R1 --- failure-dynamics benchmark}
+  \color{black}\raggedright
+
+  \par\smallskip\centerline{\roadmapstrip}\par\medskip
+
+  \cpt{The audit record shows \emph{that} a trial failed --- not \emph{when}
+  the trajectory started to go wrong.}
+
+  \entry{Step-granular contract}{Typed per-step events: state differences,
+  evidence provenance, memory reads.}
+  \entry{Causal fault injection}{Seven mechanism families, deterministic
+  injectors, a clean counterfactual per fault.}
+  \entry{Calibrated early warning}{$q_t = P(\text{terminal failure} \mid
+  H_t)$ and a cause distribution. Reported: hazard, propagation, lead time,
+  recoverability window.}
+
+  \par\medskip
+  {\bfseries No replicated failure law and no warning gain $\Rightarrow$
+  released as benchmark plus negative result.\par}
+\end{panel}
+\begin{panel}[315mm]
+  {6. Next: acting on the warning}
+  {R2 --- cost-sensitive verified recovery}
+  \color{black}\raggedright
+
+  \cpt{A warning still does not say whether evidence is worth buying, or
+  which recovery is safe.}
+
+  \entry{Belief in, action out}{From frozen R1: failure hazard, cause,
+  evidence freshness, reversibility, damage.}
+  \entry{Action space}{continue $\cdot$ verify $\cdot$ recover (retry /
+  repair / rollback / re-plan) $\cdot$ escalate $\cdot$ abstain}
+  \entry{Matched-budget comparison}{Against never, always, periodic, random
+  and confidence-threshold verification.}
+  \entry{Process supervision}{Train only on independently adjudicated
+  recovery transitions.}
+
+  \callout{Same rule throughout: nothing enters the record unless an
+  authority other than the agent verified it.}
+\end{panel}
+\par
+
+\end{document}

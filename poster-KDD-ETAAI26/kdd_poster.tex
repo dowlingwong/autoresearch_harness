@@ -1,9 +1,26 @@
 \documentclass[UKenglish]{article}
 
+% A printed poster needs no interactive PDF widgets or link annotations. In
+% particular, disabling them prevents unscaled annotations from the logical
+% A0 canvas falling outside the resized physical page.
+\PassOptionsToPackage{draft}{hyperref}
+
 \usepackage[
  horizontal,
+ print,
  heros
  ]{KITposter}
+
+% The ETAAI'26 workshop allocates 36 x 42 in per poster. KITposter lays out
+% content on an A0 landscape canvas, so retain that carefully tuned logical
+% layout and scale it onto a 900 x 636 mm physical sheet. This preserves the
+% A0 aspect ratio, fits comfortably within the board allocation, and keeps the
+% effective normal text at approximately 24 pt.
+\usepackage{pgfpages}
+\pgfpagesuselayout{resize to}[
+  physical paper width=900mm,
+  physical paper height=636mm
+]
 
 \graphicspath{{figs/}}
 
@@ -264,7 +281,7 @@
   \begin{minipage}[c]{0.82\hsize}
     \cpt{\textbf{Code $+$ ledgers $+$ reproduction guide} --- all governance
     metrics are recomputable without a GPU.
-    All 150 LM-training crashes classified and traceable.}
+    All 151 LM-training crashes classified and traceable.}
   \end{minipage}\par
 \end{panelthree}
 \par

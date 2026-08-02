@@ -90,6 +90,7 @@
      {You are not using the document class 'article'.\MessageBreak
       See package documentation}}
 \DeclareOption{horizontal}{\let\@horizontal\relax}
+\DeclareOption{print}{\let\@printonly\relax}
 \DeclareOption{work}{\let\w@rk\relax}
 \DeclareOption{helvet}{\let\@helvet\relax}
 \DeclareOption{heros}{\let\@heros\relax}
@@ -819,14 +820,17 @@
     \pgftext[left,bottom]{\unhbox\z@}%
   \endpgfpicture}
 \RequirePackage{xkeyval}
-\RequirePackage{media9}
-\RequirePackage{zref-abspage}
+\ifx\@printonly\@undefined
+  \RequirePackage{media9}
+  \RequirePackage{zref-abspage}
+\fi
 \define@boolkey{simplemedia}{autoplay}{\def\simplemediaautoplay{#1}}
 \define@boolkey{simplemedia}{showGUI}{\def\simplemediashowGUI{#1}}
 \presetkeys{simplemedia}{autoplay=false,showGUI=false}{}
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% \simplemedia[<options>]{<poster or text>}{<media file>}{MIME type}
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\ifx\@printonly\@undefined
 \ExplSyntaxOn
 \newcommand\simplemedia[4][]{%
   \setkeys{simplemedia}{#1}%
@@ -918,6 +922,11 @@
 }%
 \int_new:N\g_simplem_id_int
 \ExplSyntaxOff
+\else
+  % Print-only fallback: show the supplied poster frame without embedding a
+  % media widget. Interactive annotations are inappropriate for print PDFs.
+  \newcommand\simplemedia[4][]{#2}
+\fi
 \newcounter{video}
 \renewcommand \thevideo
      {\ifnum \c@chapter>\z@ \thechapter.\fi \@arabic\c@video}
