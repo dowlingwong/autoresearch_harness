@@ -483,7 +483,7 @@ def run_real_campaign(
     store = TrialAppendStore(records_path)
     existing_records = store.read_all()
     budget_state = BudgetState(total_trials=budget, consumed_trials=len(existing_records))
-    current_best = _current_best(existing_records, node_spec.metric_name)
+    current_best = _current_best(existing_records, node_spec.metric_name, node_spec.metric_direction)
 
     records: list[TrialRecord] = []
     campaign_started = time.perf_counter()
@@ -765,7 +765,7 @@ def run_dry_campaign(
     store = TrialAppendStore(records_path)
     existing_records = store.read_all()
     budget_state = BudgetState(total_trials=budget, consumed_trials=len(existing_records))
-    current_best = _current_best(existing_records, node_spec.metric_name)
+    current_best = _current_best(existing_records, node_spec.metric_name, node_spec.metric_direction)
 
     records: list[TrialRecord] = []
     campaign_started = time.perf_counter()
@@ -1133,6 +1133,22 @@ def _proposal_with_campaign_metadata(proposal: ManagerProposal, *, node_spec: No
     return replace(proposal, extra=extra)
 
 
-def _current_best(records: list[TrialRecord], metric_name: str) -> float | None:
-    values = [record.parsed_metrics[metric_name] for record in records if metric_name in record.parsed_metrics]
-    return max(values) if values else None
+def _current_best(
+    records: list[TrialRecord],
+    metric_name: str,
+    metric_direction: str = "maximize",
+) -> float | None:
+    """Best metric over *kept* records, respecting the node's direction.
+
+    Only records with ``decision == KEPT`` count: invalid records may still
+    carry a parsed metric (for audit) but never define the incumbent.  On
+    minimise nodes the best value is the minimum.
+    """
+    values = [
+        record.parsed_metrics[metric_name]
+        for record in records
+        if record.decision == TrialDecision.KEPT and metric_name in record.parsed_metrics
+    ]
+    if not values:
+        return None
+    return max(values) if metric_direction == "maximize" else min(values)
