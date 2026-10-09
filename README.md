@@ -214,6 +214,24 @@ python3 scripts/run_campaign.py \
     --dry-run --llm-stub
 ```
 
+### Controllers and compute budgets (R1)
+
+Decision hooks run at epochs E0 (pre-proposal), E1 (post-proposal) and E2
+(post-metric, pre-commit). The default controller is `ContinueController`,
+which reproduces the pre-hook records exactly. All flags are optional:
+
+| Flag | Meaning |
+|---|---|
+| `--controller module:Class` | Load and instantiate a controller (default `ContinueController`). It must implement `decide(view, mask) -> ControlDecision`. |
+| `--max-worker-runs N` | Stop the campaign once N worker runs (including verify re-runs) have been spent. |
+| `--max-worker-seconds S` | Stop the campaign once S worker-seconds have been spent. |
+| `--max-llm-calls K` | Stop the campaign once K manager/LLM calls have been spent. |
+
+With only `--budget N` and no compute caps, behaviour is unchanged. Every
+non-default controller call (and every call when `log_default_decisions=True`)
+writes a `control_decision` event carrying the epoch, action, scores, mask,
+controller version and input hash.
+
 ### Model provider syntax
 
 Campaign scripts accept either the legacy pair:

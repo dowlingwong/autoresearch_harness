@@ -248,6 +248,7 @@ class LangGraphManager:
     """
 
     mode = "langgraph_manager"
+    deterministic = False
 
     def __init__(
         self,

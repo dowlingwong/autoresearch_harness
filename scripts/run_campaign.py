@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import sys
 from pathlib import Path
@@ -11,6 +12,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from autoresearch.control_plane.budget import ComputeBudget
 from autoresearch.control_plane.campaign import run_dry_campaign, run_real_campaign
 from autoresearch.evaluation.campaign_summary import load_campaign_summary
 from autoresearch.llm.langchain_client import LangChainProposalBackend
@@ -86,9 +88,21 @@ Optionally supply a packet-defaults file to override timeout/log_path/syntax_che
         help="Inject a FakeListChatModel into langgraph_manager instead of calling Ollama. "
              "For smoke-testing the LangGraph pipeline without a running LLM.",
     )
+    parser.add_argument(
+        "--controller",
+        help="Controller as module:Class (default: ContinueController). Optional.",
+    )
+    parser.add_argument("--max-worker-runs", type=int, default=None,
+                        help="Compute budget: stop after this many worker runs. Optional.")
+    parser.add_argument("--max-worker-seconds", type=float, default=None,
+                        help="Compute budget: stop after this many worker seconds. Optional.")
+    parser.add_argument("--max-llm-calls", type=int, default=None,
+                        help="Compute budget: stop after this many LLM calls. Optional.")
     args = parser.parse_args()
 
     node_spec = load_registered_node(args.node, repo_root=ROOT)
+    controller = _load_controller(args.controller)
+    compute_budget = _build_compute_budget(args)
     records_path = (
         Path(args.records)
         if args.records
@@ -147,6 +161,8 @@ Optionally supply a packet-defaults file to override timeout/log_path/syntax_che
             manager_llm=manager_llm,
             proposal_backend=proposal_backend,
             event_store=event_store,
+            controller=controller,
+            compute_budget=compute_budget,
         )
     else:
         if not args.node_root:
@@ -189,6 +205,8 @@ Optionally supply a packet-defaults file to override timeout/log_path/syntax_che
             proposal_backend=proposal_backend,
             event_store=event_store,
             manager_temperature=args.temperature,
+            controller=controller,
+            compute_budget=compute_budget,
         )
 
     summary = load_campaign_summary(
@@ -215,6 +233,28 @@ Optionally supply a packet-defaults file to override timeout/log_path/syntax_che
 def _default_events_path(records_path: Path, campaign_id: str) -> Path:
     root = records_path.parent.parent if records_path.parent.name == "ledgers" else records_path.parent
     return root / "events" / f"{campaign_id}_events.jsonl"
+
+
+def _load_controller(spec: str | None):
+    """Load ``module:Class`` and instantiate it, or return None for the default."""
+    if not spec:
+        return None
+    module_name, _, class_name = spec.partition(":")
+    if not module_name or not class_name:
+        raise SystemExit(f"--controller must be module:Class, got {spec!r}")
+    module = importlib.import_module(module_name)
+    return getattr(module, class_name)()
+
+
+def _build_compute_budget(args) -> ComputeBudget | None:
+    """Return a ComputeBudget only when at least one cap was given."""
+    if args.max_worker_runs is None and args.max_worker_seconds is None and args.max_llm_calls is None:
+        return None
+    return ComputeBudget(
+        max_worker_runs=args.max_worker_runs,
+        max_worker_seconds=args.max_worker_seconds,
+        max_llm_calls=args.max_llm_calls,
+    )
 
 
 def _default_worker_model(manager_model: str) -> str:

@@ -51,7 +51,14 @@ def _patch_is_empty(patch_ref: str) -> bool:
             return False
     return True
 
-from autoresearch.control_plane.budget import BudgetState
+from autoresearch.control_plane.budget import BudgetState, ComputeBudget
+from autoresearch.control_plane.controller import (
+    ContinueController,
+    ControlDecision,
+    Controller,
+    build_control_view,
+    compute_mask,
+)
 from autoresearch.control_plane.decision import decide_trial
 from autoresearch.control_plane.events import emit
 from autoresearch.control_plane.permissions import validate_edit_scope
@@ -194,6 +201,70 @@ def _manager_status(
         current_constants=constants,
         effective_config=effective_config,
     )
+
+
+def _budget_view(budget_state: BudgetState, compute_budget: ComputeBudget) -> dict[str, object]:
+    return {
+        "trials_remaining": max(budget_state.total_trials - budget_state.consumed_trials, 0),
+        "trials_total": budget_state.total_trials,
+        **compute_budget.remaining(),
+    }
+
+
+def _controller_hook(
+    *,
+    controller: Controller,
+    log_default_decisions: bool,
+    event_store: object | None,
+    campaign_id: str,
+    trial_id: str,
+    epoch: str,
+    budget_index: int,
+    ledger_prefix: list[TrialRecord],
+    current_best: float | None,
+    incumbent_stack_depth: int,
+    proposal: ManagerProposal | None,
+    provisional: TrialRecord | None,
+    budget_state: BudgetState,
+    compute_budget: ComputeBudget,
+    node_spec: NodeSpec,
+    **feasibility: object,
+) -> tuple[ControlDecision, dict[str, bool]]:
+    """Build the view, compute the mask, ask the controller, and log the call.
+
+    A non-default controller (or ``log_default_decisions``) emits one
+    ``control_decision`` event.  The default ``ContinueController`` emits
+    nothing, which keeps the pre-hook record and event streams identical.
+    """
+    view = build_control_view(
+        epoch=epoch,  # type: ignore[arg-type]
+        budget_index=budget_index,
+        ledger_prefix=ledger_prefix,
+        current_best=current_best,
+        incumbent_stack_depth=incumbent_stack_depth,
+        proposal=proposal,
+        provisional=provisional,
+        budget=_budget_view(budget_state, compute_budget),
+        node=node_spec,
+    )
+    mask = compute_mask(view, **feasibility)  # type: ignore[arg-type]
+    decision = controller.decide(view, mask)
+    if (not isinstance(controller, ContinueController)) or log_default_decisions:
+        emit(
+            event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            event_type="control_decision",
+            payload={
+                "epoch": epoch,
+                "action": decision.action,
+                "scores": dict(decision.scores),
+                "mask": dict(mask),
+                "controller_version": decision.controller_version,
+                "input_hash": decision.input_hash,
+            },
+        )
+    return decision, mask
 
 
 def _editable_path(root: Path, path_str: str) -> Path:
@@ -439,6 +510,9 @@ def run_real_campaign(
     event_store: object | None = None,
     rationale_max_tokens: int | None = None,
     ungoverned: bool = False,
+    controller: Controller | None = None,
+    log_default_decisions: bool = False,
+    compute_budget: ComputeBudget | None = None,
 ) -> CampaignRunResult:
     """Run a fixed-budget campaign with a real worker.
 
@@ -480,6 +554,8 @@ def run_real_campaign(
         obs_path = records_path.parent / f"{cid_stem}_ungoverned_obs.jsonl"
 
     manager = proposal_backend or _manager(manager_mode, llm=manager_llm, temperature=manager_temperature)
+    controller = controller or ContinueController()
+    compute_budget = compute_budget or ComputeBudget()
     store = TrialAppendStore(records_path)
     existing_records = store.read_all()
     budget_state = BudgetState(total_trials=budget, consumed_trials=len(existing_records))
@@ -499,7 +575,7 @@ def run_real_campaign(
             "node_id": node_spec.name,
         },
     )
-    while not budget_state.exhausted:
+    while not budget_state.exhausted and not compute_budget.exhausted:
         budget_index = budget_state.next_budget_index
         trial_id = f"{campaign_id}-trial-{budget_index:03d}"
         emit(
@@ -509,6 +585,29 @@ def run_real_campaign(
             event_type="trial_started",
             payload={"trial_id": trial_id, "budget_index": budget_index},
         )
+
+        e0_decision, _e0_mask = _controller_hook(
+            controller=controller,
+            log_default_decisions=log_default_decisions,
+            event_store=event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            epoch="E0",
+            budget_index=budget_index,
+            ledger_prefix=existing_records + records,
+            current_best=current_best,
+            incumbent_stack_depth=0,
+            proposal=None,
+            provisional=None,
+            budget_state=budget_state,
+            compute_budget=compute_budget,
+            node_spec=node_spec,
+            unverified_keep_on_stack=False,
+        )
+        if e0_decision.action != "continue":
+            raise NotImplementedError(
+                f"E0 action {e0_decision.action!r} is not wired yet (L6)"
+            )
 
         memory_context = build_memory_context(
             existing_records + records, MemoryMode(memory_mode), node_spec, budget_index,
@@ -546,6 +645,7 @@ def run_real_campaign(
             event_type="proposal_created",
             payload={"summary": proposal.proposal_summary, "manager_mode": proposal.manager_mode},
         )
+        compute_budget = compute_budget.consume_llm_call()
 
         if ungoverned:
             # UNGOVERNED: pending guard is not written.
@@ -586,6 +686,35 @@ def run_real_campaign(
         if precondition_result is not None:
             worker_result = precondition_result
         else:
+            e1_decision, _e1_mask = _controller_hook(
+                controller=controller,
+                log_default_decisions=log_default_decisions,
+                event_store=event_store,
+                campaign_id=campaign_id,
+                trial_id=trial_id,
+                epoch="E1",
+                budget_index=budget_index,
+                ledger_prefix=existing_records + records,
+                current_best=current_best,
+                incumbent_stack_depth=0,
+                proposal=proposal,
+                provisional=None,
+                budget_state=budget_state,
+                compute_budget=compute_budget,
+                node_spec=node_spec,
+                proposal_passed_precondition=True,
+                manager_deterministic=bool(getattr(manager, "deterministic", False)),
+                revisions_this_trial=0,
+                llm_cap_reached=(
+                    compute_budget.max_llm_calls is not None
+                    and compute_budget.llm_calls >= compute_budget.max_llm_calls
+                ),
+            )
+            if e1_decision.action != "continue":
+                raise NotImplementedError(
+                    f"E1 action {e1_decision.action!r} is not wired yet (L6)"
+                )
+            worker_run_t0 = time.perf_counter()
             try:
                 worker_result = worker.run_trial(proposal, node_spec, budget_index)
             except Exception as exc:
@@ -601,6 +730,7 @@ def run_real_campaign(
                     failure_message=str(exc),
                     extra={"failure_category": FailureCategory.EDIT_FAILED.value},
                 )
+            compute_budget = compute_budget.consume_worker_run(time.perf_counter() - worker_run_t0)
         ts_end = _iso_now()
         emit(
             event_store,
@@ -665,6 +795,29 @@ def run_real_campaign(
         # and stamp it onto the immutable record before persisting.
         rbs = compute_repeated_bad_stats(existing_records + records + [record])
         record = replace(record, repeated_bad_count=rbs.repeated_bad_count)
+        e2_decision, _e2_mask = _controller_hook(
+            controller=controller,
+            log_default_decisions=log_default_decisions,
+            event_store=event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            epoch="E2",
+            budget_index=budget_index,
+            ledger_prefix=existing_records + records,
+            current_best=current_best,
+            incumbent_stack_depth=0,
+            proposal=proposal,
+            provisional=record,
+            budget_state=budget_state,
+            compute_budget=compute_budget,
+            node_spec=node_spec,
+            seed_injection_supported=True,
+            worker_runs_remaining=compute_budget.remaining()["worker_runs_remaining"],
+        )
+        if e2_decision.action != "continue":
+            raise NotImplementedError(
+                f"E2 action {e2_decision.action!r} is not wired yet (L6)"
+            )
         records.append(record)
 
         if ungoverned:
@@ -759,9 +912,14 @@ def run_dry_campaign(
     dry_run_profile: str = "monotonic",
     proposal_backend: object | None = None,
     event_store: object | None = None,
+    controller: Controller | None = None,
+    log_default_decisions: bool = False,
+    compute_budget: ComputeBudget | None = None,
 ) -> CampaignRunResult:
     manager = proposal_backend or _manager(manager_mode, llm=manager_llm, temperature=manager_temperature)
     worker = DryRunWorker(profile=dry_run_profile)
+    controller = controller or ContinueController()
+    compute_budget = compute_budget or ComputeBudget()
     store = TrialAppendStore(records_path)
     existing_records = store.read_all()
     budget_state = BudgetState(total_trials=budget, consumed_trials=len(existing_records))
@@ -781,7 +939,7 @@ def run_dry_campaign(
             "node_id": node_spec.name,
         },
     )
-    while not budget_state.exhausted:
+    while not budget_state.exhausted and not compute_budget.exhausted:
         budget_index = budget_state.next_budget_index
         trial_id = f"{campaign_id}-trial-{budget_index:03d}"
         emit(
@@ -791,6 +949,28 @@ def run_dry_campaign(
             event_type="trial_started",
             payload={"trial_id": trial_id, "budget_index": budget_index},
         )
+        e0_decision, _e0_mask = _controller_hook(
+            controller=controller,
+            log_default_decisions=log_default_decisions,
+            event_store=event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            epoch="E0",
+            budget_index=budget_index,
+            ledger_prefix=existing_records + records,
+            current_best=current_best,
+            incumbent_stack_depth=0,
+            proposal=None,
+            provisional=None,
+            budget_state=budget_state,
+            compute_budget=compute_budget,
+            node_spec=node_spec,
+            unverified_keep_on_stack=False,
+        )
+        if e0_decision.action != "continue":
+            raise NotImplementedError(
+                f"E0 action {e0_decision.action!r} is not wired yet (L6)"
+            )
         memory_context = build_memory_context(existing_records + records, MemoryMode(memory_mode), node_spec, budget_index)
         emit(
             event_store,
@@ -824,6 +1004,7 @@ def run_dry_campaign(
             event_type="proposal_created",
             payload={"summary": proposal.proposal_summary, "manager_mode": proposal.manager_mode},
         )
+        compute_budget = compute_budget.consume_llm_call()
         emit(
             event_store,
             campaign_id=campaign_id,
@@ -839,7 +1020,37 @@ def run_dry_campaign(
             event_type="worker_started",
             payload={"worker_mode": worker.mode},
         )
+        e1_decision, _e1_mask = _controller_hook(
+            controller=controller,
+            log_default_decisions=log_default_decisions,
+            event_store=event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            epoch="E1",
+            budget_index=budget_index,
+            ledger_prefix=existing_records + records,
+            current_best=current_best,
+            incumbent_stack_depth=0,
+            proposal=proposal,
+            provisional=None,
+            budget_state=budget_state,
+            compute_budget=compute_budget,
+            node_spec=node_spec,
+            proposal_passed_precondition=True,
+            manager_deterministic=bool(getattr(manager, "deterministic", False)),
+            revisions_this_trial=0,
+            llm_cap_reached=(
+                compute_budget.max_llm_calls is not None
+                and compute_budget.llm_calls >= compute_budget.max_llm_calls
+            ),
+        )
+        if e1_decision.action != "continue":
+            raise NotImplementedError(
+                f"E1 action {e1_decision.action!r} is not wired yet (L6)"
+            )
+        worker_run_t0 = time.perf_counter()
         worker_result = worker.run_trial(proposal, node_spec, budget_index)
+        compute_budget = compute_budget.consume_worker_run(time.perf_counter() - worker_run_t0)
         emit(
             event_store,
             campaign_id=campaign_id,
@@ -899,6 +1110,29 @@ def run_dry_campaign(
         # Compute cumulative repeated-bad count for this trial (including itself).
         rbs = compute_repeated_bad_stats(existing_records + records + [record])
         record = replace(record, repeated_bad_count=rbs.repeated_bad_count)
+        e2_decision, _e2_mask = _controller_hook(
+            controller=controller,
+            log_default_decisions=log_default_decisions,
+            event_store=event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            epoch="E2",
+            budget_index=budget_index,
+            ledger_prefix=existing_records + records,
+            current_best=current_best,
+            incumbent_stack_depth=0,
+            proposal=proposal,
+            provisional=record,
+            budget_state=budget_state,
+            compute_budget=compute_budget,
+            node_spec=node_spec,
+            seed_injection_supported=True,
+            worker_runs_remaining=compute_budget.remaining()["worker_runs_remaining"],
+        )
+        if e2_decision.action != "continue":
+            raise NotImplementedError(
+                f"E2 action {e2_decision.action!r} is not wired yet (L6)"
+            )
         records.append(record)
         store.append_many([record])
         emit(
