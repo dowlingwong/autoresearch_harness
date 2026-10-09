@@ -292,9 +292,41 @@ class _IncumbentEntry:
     verified: bool
 
 
-def _require_feasible(decision: ControlDecision, mask: dict[str, bool]) -> None:
-    if not mask.get(decision.action, False):
-        raise ValueError(f"controller chose infeasible action: {decision.action!r}")
+# Actions run_real_campaign implements at each epoch (BUILD_RUNBOOK L6).
+_EPOCH_ACTIONS: dict[str, tuple[str, ...]] = {
+    "E0": ("continue", "stop", "demote"),
+    "E1": ("continue", "skip", "revise"),
+    "E2": ("continue", "verify"),
+}
+
+
+def _resolve_action(
+    decision: ControlDecision,
+    mask: dict[str, bool],
+    *,
+    epoch: str,
+    event_store: object | None,
+    campaign_id: str,
+    trial_id: str,
+) -> str:
+    """Return the action to execute, falling back to ``continue`` if it is not allowed.
+
+    A controller choice that the mask rules out, or that is not implemented at
+    *epoch*, never crashes the campaign (E1/E2 run while the pending guard is
+    held).  It is logged as a ``control_decision_rejected`` event
+    ``{epoch, action, mask}`` and the trial proceeds as ``continue``.
+    """
+    action = decision.action
+    if action in _EPOCH_ACTIONS.get(epoch, ("continue",)) and mask.get(action, False):
+        return action
+    emit(
+        event_store,
+        campaign_id=campaign_id,
+        trial_id=trial_id,
+        event_type="control_decision_rejected",
+        payload={"epoch": epoch, "action": action, "mask": dict(mask)},
+    )
+    return "continue"
 
 
 def _accepts_revision_feedback(manager: object) -> bool:
@@ -891,8 +923,11 @@ def run_real_campaign(
             top_of_stack_unverified=bool(incumbent_stack) and not incumbent_stack[-1].verified,
             t_min=t_min,
         )
-        if e0_decision.action == "stop":
-            _require_feasible(e0_decision, _e0_mask)
+        e0_action = _resolve_action(
+            e0_decision, _e0_mask, epoch="E0", event_store=event_store,
+            campaign_id=campaign_id, trial_id=trial_id,
+        )
+        if e0_action == "stop":
             emit(
                 event_store,
                 campaign_id=campaign_id,
@@ -902,8 +937,7 @@ def run_real_campaign(
             )
             stop_requested = True
             break
-        if e0_decision.action == "demote":
-            _require_feasible(e0_decision, _e0_mask)
+        if e0_action == "demote":
             current_best = _perform_demote(
                 incumbent_stack=incumbent_stack,
                 worker=worker,
@@ -913,8 +947,6 @@ def run_real_campaign(
                 campaign_id=campaign_id,
                 trial_id=trial_id,
             )
-        elif e0_decision.action != "continue":
-            raise ValueError(f"unsupported E0 action: {e0_decision.action!r}")
 
         memory_context = build_memory_context(
             existing_records + records, MemoryMode(memory_mode), node_spec, budget_index,
@@ -1028,13 +1060,15 @@ def run_real_campaign(
                     and compute_budget.llm_calls >= compute_budget.max_llm_calls
                 ),
             )
-            if e1_decision.action == "skip":
-                _require_feasible(e1_decision, e1_mask)
+            e1_action = _resolve_action(
+                e1_decision, e1_mask, epoch="E1", event_store=event_store,
+                campaign_id=campaign_id, trial_id=trial_id,
+            )
+            if e1_action == "skip":
                 skip_trial = True
                 control_meta = {"epoch": "E1", "action": "skip"}
             else:
-                if e1_decision.action == "revise":
-                    _require_feasible(e1_decision, e1_mask)
+                if e1_action == "revise":
                     feedback = _revision_feedback(memory_context)
                     revised = manager.propose_next_trial(
                         status, memory_context, node_spec, revision_feedback=feedback
@@ -1059,8 +1093,6 @@ def run_real_campaign(
                         payload={"summary": revised.proposal_summary, "feedback": feedback},
                     )
                     proposal = revised
-                elif e1_decision.action != "continue":
-                    raise ValueError(f"unsupported E1 action: {e1_decision.action!r}")
                 emit(
                     event_store, campaign_id=campaign_id, trial_id=trial_id,
                     event_type="worker_started",
@@ -1183,8 +1215,11 @@ def run_real_campaign(
                 verify_runs=verify_runs,
                 worker_runs_remaining=compute_budget.remaining()["worker_runs_remaining"],
             )
-            if e2_decision.action == "verify":
-                _require_feasible(e2_decision, e2_mask)
+            e2_action = _resolve_action(
+                e2_decision, e2_mask, epoch="E2", event_store=event_store,
+                campaign_id=campaign_id, trial_id=trial_id,
+            )
+            if e2_action == "verify":
                 record, verify_result = _run_verify(
                     record=record,
                     proposal=proposal,
@@ -1198,8 +1233,6 @@ def run_real_campaign(
                 )
                 compute_budget = verify_result["compute_budget"]
                 control_meta = {**control_meta, "verify": verify_result["verify"]}
-            elif e2_decision.action != "continue":
-                raise ValueError(f"unsupported E2 action: {e2_decision.action!r}")
             if control_meta:
                 record = replace(record, extra={**record.extra, "control": control_meta})
             records.append(record)

@@ -545,5 +545,63 @@ class TestF5DeterministicManagersUseNoLLMCalls(unittest.TestCase):
         self.assertEqual(len(records), 1)
 
 
+# ---------------------------------------------------------------------------
+# F6 — infeasible or unsupported controller choices fall back to continue
+# ---------------------------------------------------------------------------
+
+
+class TestF6RejectedDecisionsFallBackToContinue(unittest.TestCase):
+    def test_campaign_completes_and_logs_rejections(self) -> None:
+        from autoresearch.control_plane.campaign import list_pending_guards
+
+        spec = _spec()
+        script = {
+            (1, "E0"): "demote",   # infeasible: empty incumbent stack
+            (1, "E1"): "revise",   # infeasible: deterministic manager
+            (1, "E2"): "verify",   # infeasible: worker has no seed support
+            (2, "E1"): "verify",   # unsupported at E1
+            (2, "E2"): "stop",     # unsupported at E2
+            (3, "E0"): "skip",     # unsupported at E0
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            worker = ScriptedWorker(_copy_node(Path(tmp)), [
+                {"metric": 0.90, "content": "K1\n"},
+                {"metric": 0.91, "content": "K2\n"},
+                {"metric": 0.92, "content": "K3\n"},
+            ])
+            records_path = Path(tmp) / "trials.jsonl"
+            events_path = Path(tmp) / "events.jsonl"
+            run_real_campaign(
+                node_spec=spec, campaign_id="f6", budget=3, manager_mode="baseline_manager",
+                memory_mode="none", records_path=records_path, worker=worker,
+                proposal_backend=StaticBackend(_proposal(spec)),
+                event_store=CampaignEventStore(events_path),
+                controller=ScriptedController(script),
+            )
+            records = TrialAppendStore(records_path).read_all()
+            events = _events(events_path)
+            guards = list_pending_guards(tmp)
+        self.assertEqual(len(records), 3)
+        self.assertEqual(worker.run_calls, 3)
+        self.assertEqual(guards, [])
+        self.assertTrue(all("control" not in record.extra for record in records))
+        rejected = [
+            (event["trial_id"][-3:], event["payload"]["epoch"], event["payload"]["action"])
+            for event in events if event["event_type"] == "control_decision_rejected"
+        ]
+        self.assertEqual(rejected, [
+            ("001", "E0", "demote"), ("001", "E1", "revise"), ("001", "E2", "verify"),
+            ("002", "E1", "verify"), ("002", "E2", "stop"), ("003", "E0", "skip"),
+        ])
+        first = next(event for event in events if event["event_type"] == "control_decision_rejected")
+        self.assertEqual(set(first["payload"]), {"epoch", "action", "mask"})
+        self.assertFalse(first["payload"]["mask"]["demote"])
+        self.assertEqual(event_types_count(events, "campaign_completed"), 1)
+
+
+def event_types_count(events: list[dict], event_type: str) -> int:
+    return sum(1 for event in events if event["event_type"] == event_type)
+
+
 if __name__ == "__main__":
     unittest.main()
