@@ -288,6 +288,22 @@ def _require_feasible(decision: ControlDecision, mask: dict[str, bool]) -> None:
         raise ValueError(f"controller chose infeasible action: {decision.action!r}")
 
 
+def _accepts_revision_feedback(manager: object) -> bool:
+    """True when ``manager.propose_next_trial`` takes ``revision_feedback``."""
+    import inspect
+
+    method = getattr(manager, "propose_next_trial", None)
+    if method is None:
+        return False
+    try:
+        parameters = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return False
+    return "revision_feedback" in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+    )
+
+
 def _revision_feedback(memory_context: object) -> str:
     stats = getattr(memory_context, "repeated_bad_stats", None)
     if stats is not None and getattr(stats, "repeated_bad_count", 0):
@@ -964,6 +980,7 @@ def run_real_campaign(
                 node_spec=node_spec,
                 proposal_passed_precondition=True,
                 manager_deterministic=bool(getattr(manager, "deterministic", False)),
+                revision_feedback_supported=_accepts_revision_feedback(manager),
                 revisions_this_trial=0,
                 llm_cap_reached=(
                     compute_budget.max_llm_calls is not None
@@ -978,7 +995,9 @@ def run_real_campaign(
                 if e1_decision.action == "revise":
                     _require_feasible(e1_decision, e1_mask)
                     feedback = _revision_feedback(memory_context)
-                    revised = manager.propose_next_trial(status, memory_context, node_spec)
+                    revised = manager.propose_next_trial(
+                        status, memory_context, node_spec, revision_feedback=feedback
+                    )
                     compute_budget = compute_budget.consume_llm_call()
                     revised = _proposal_with_campaign_metadata(
                         _proposal_with_worker_memory(revised, memory_context=memory_context),

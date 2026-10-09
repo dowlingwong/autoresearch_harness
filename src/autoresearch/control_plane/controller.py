@@ -189,6 +189,7 @@ def compute_mask(
     *,
     proposal_passed_precondition: bool = False,
     manager_deterministic: bool = True,
+    revision_feedback_supported: bool = True,
     revisions_this_trial: int = 0,
     llm_cap_reached: bool = False,
     seed_injection_supported: bool = True,
@@ -197,7 +198,12 @@ def compute_mask(
     unverified_keep_on_stack: bool = False,
     t_min: int = DEFAULT_T_MIN,
 ) -> dict[str, bool]:
-    """Feasibility mask, following the problem spec §2.1 rules."""
+    """Feasibility mask, following the problem spec §2.1 rules.
+
+    ``revise`` additionally requires ``revision_feedback_supported``: the
+    manager must accept the ``revision_feedback`` keyword, otherwise a revision
+    would be a plain resample.
+    """
     mask = {action: False for action in ACTIONS}
     mask["continue"] = True
 
@@ -208,6 +214,7 @@ def compute_mask(
         mask["skip"] = bool(proposal_passed_precondition)
         mask["revise"] = (
             (not manager_deterministic)
+            and revision_feedback_supported
             and revisions_this_trial < 1
             and not llm_cap_reached
         )

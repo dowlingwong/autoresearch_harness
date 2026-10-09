@@ -7,6 +7,8 @@ Architecture contract:
 
 Graph: prepare_context -> generate_proposal -> validate_proposal
   - prepare_context: formats status + memory + node spec into a bounded prompt
+    (plus, only when the control plane requests an E1 revision, a feedback
+    block; the default prompt is unchanged)
   - generate_proposal: calls the LLM (real or injected mock)
   - validate_proposal: parses LLM JSON output; falls back to heuristic on failure
   => returns ManagerProposal through the same interface as BaselineManager / PromptManager.
@@ -33,6 +35,7 @@ class _PlanState(TypedDict):
     context_text: str    # formatted prompt built by prepare_context
     raw_proposal: str    # raw LLM text output
     proposal: Any        # ManagerProposal | None, filled by validate_proposal
+    revision_feedback: Any  # str | None — E1 revise feedback from the control plane
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +85,18 @@ def _prepare_context(state: _PlanState) -> _PlanState:
     else:
         lines.append("No prior trial memory available.")
         lines.append("")
+
+    revision_feedback = state.get("revision_feedback")
+    if revision_feedback:
+        # Only present when the control plane asked for an E1 revision; the
+        # default prompt (no feedback) is byte-for-byte unchanged.
+        lines += [
+            "REVISION REQUEST: the control plane did not accept your previous proposal "
+            "for this trial.",
+            f"Feedback: {revision_feedback}",
+            "Propose a different bounded change that addresses this feedback.",
+            "",
+        ]
 
     lines += [
         "Propose exactly one bounded experiment. Respond with ONLY a JSON object "
@@ -213,6 +228,8 @@ def _validate_proposal(state: _PlanState) -> _PlanState:
         "raw_proposal_sha256": sha256(raw.encode("utf-8")).hexdigest(),
         "raw_proposal_chars": len(raw),
     }
+    if state.get("revision_feedback"):
+        extra["revision_feedback"] = state["revision_feedback"]
 
     # Attempt to extract a structured edit so claw_style_worker can apply
     # the proposal via its deterministic patch path (no coding agent required).
@@ -281,7 +298,16 @@ class LangGraphManager:
         status: ManagerStatus,
         memory_context: MemoryContext,
         node_spec: NodeSpec,
+        *,
+        revision_feedback: str | None = None,
     ) -> ManagerProposal:
+        """Generate one proposal.
+
+        ``revision_feedback`` is set only by the control plane's E1 ``revise``
+        action.  It is added to the prompt and recorded as
+        ``extra["revision_feedback"]``; when it is ``None`` (the default) the
+        prompt and the proposal are exactly as before.
+        """
         graph = self._get_graph()
         result = graph.invoke(
             {
@@ -291,6 +317,7 @@ class LangGraphManager:
                 "context_text": "",
                 "raw_proposal": "",
                 "proposal": None,
+                "revision_feedback": revision_feedback,
             }
         )
         return result["proposal"]
