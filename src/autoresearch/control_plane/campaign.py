@@ -310,6 +310,44 @@ class _IncumbentEntry:
     verified: bool
 
 
+@dataclass
+class SnapshotContext:
+    """Live campaign state handed to an optional ``snapshot_hook`` at an epoch.
+
+    The hook is trusted engineering code (L7).  ``incumbent_snapshot`` is the
+    pre-trial editable state; the hook reads the current workspace separately
+    when it needs the candidate bytes (E2).
+    """
+
+    epoch: str
+    budget_index: int
+    campaign_id: str
+    trial_id: str
+    node_spec: NodeSpec
+    worker: Worker
+    proposal: ManagerProposal | None
+    provisional: TrialRecord | None
+    worker_result: WorkerResult | None
+    incumbent_snapshot: _EditableStateSnapshot | None
+    ledger_prefix: list[TrialRecord]
+    current_best: float | None
+    incumbent_stack: list[_IncumbentEntry]
+    budget_state: BudgetState
+    compute_budget: ComputeBudget
+    controller: Controller
+    manager: object
+    memory_mode: str
+    manager_mode: str
+    t_min: int
+    verify_runs: int
+    verify_split_policy: str
+
+
+def _invoke_snapshot_hook(snapshot_hook: object | None, **kwargs: object) -> None:
+    if snapshot_hook is not None:
+        snapshot_hook(SnapshotContext(**kwargs))  # type: ignore[misc]
+
+
 # Actions run_real_campaign implements at each epoch (BUILD_RUNBOOK L6).
 _EPOCH_ACTIONS: dict[str, tuple[str, ...]] = {
     "E0": ("continue", "stop", "demote"),
@@ -847,6 +885,9 @@ def run_real_campaign(
     t_min: int = 3,
     verify_runs: int = 2,
     verify_split_policy: Literal["fixed", "vary"] = "fixed",
+    snapshot_hook: object | None = None,
+    initial_current_best: float | None = None,
+    initial_incumbent_stack: list[_IncumbentEntry] | None = None,
 ) -> CampaignRunResult:
     """Run a fixed-budget campaign with a real worker.
 
@@ -914,8 +955,12 @@ def run_real_campaign(
     store = TrialAppendStore(records_path)
     existing_records = store.read_all()
     budget_state = BudgetState(total_trials=budget, consumed_trials=len(existing_records))
-    current_best = _current_best(existing_records, node_spec.metric_name, node_spec.metric_direction)
-    incumbent_stack: list[_IncumbentEntry] = []
+    current_best = (
+        initial_current_best
+        if initial_current_best is not None
+        else _current_best(existing_records, node_spec.metric_name, node_spec.metric_direction)
+    )
+    incumbent_stack: list[_IncumbentEntry] = list(initial_incumbent_stack or [])
     stop_requested = False
 
     records: list[TrialRecord] = []
@@ -961,6 +1006,15 @@ def run_real_campaign(
             node_spec=node_spec,
             top_of_stack_unverified=bool(incumbent_stack) and not incumbent_stack[-1].verified,
             t_min=t_min,
+        )
+        _invoke_snapshot_hook(
+            snapshot_hook,
+            epoch="E0", budget_index=budget_index, campaign_id=campaign_id, trial_id=trial_id,
+            node_spec=node_spec, worker=worker, proposal=None, provisional=None, worker_result=None,
+            incumbent_snapshot=None, ledger_prefix=existing_records + records, current_best=current_best,
+            incumbent_stack=incumbent_stack, budget_state=budget_state, compute_budget=compute_budget,
+            controller=controller, manager=manager, memory_mode=memory_mode, manager_mode=manager_mode,
+            t_min=t_min, verify_runs=verify_runs, verify_split_policy=verify_split_policy,
         )
         e0_action = _resolve_action(
             e0_decision, _e0_mask, epoch="E0", event_store=event_store,
@@ -1075,6 +1129,17 @@ def run_real_campaign(
                          "elapsed_seconds": max(time.perf_counter() - worker_started, 0.0)},
             )
         else:
+            _invoke_snapshot_hook(
+                snapshot_hook,
+                epoch="E1", budget_index=budget_index, campaign_id=campaign_id, trial_id=trial_id,
+                node_spec=node_spec, worker=worker, proposal=proposal, provisional=None,
+                worker_result=None, incumbent_snapshot=editable_snapshot,
+                ledger_prefix=existing_records + records, current_best=current_best,
+                incumbent_stack=incumbent_stack, budget_state=budget_state,
+                compute_budget=compute_budget, controller=controller, manager=manager,
+                memory_mode=memory_mode, manager_mode=manager_mode, t_min=t_min,
+                verify_runs=verify_runs, verify_split_policy=verify_split_policy,
+            )
             e1_decision, e1_mask = _controller_hook(
                 controller=controller,
                 log_default_decisions=log_default_decisions,
@@ -1236,6 +1301,17 @@ def run_real_campaign(
             # and stamp it onto the immutable record before persisting.
             rbs = compute_repeated_bad_stats(existing_records + records + [record])
             record = replace(record, repeated_bad_count=rbs.repeated_bad_count)
+            _invoke_snapshot_hook(
+                snapshot_hook,
+                epoch="E2", budget_index=budget_index, campaign_id=campaign_id, trial_id=trial_id,
+                node_spec=node_spec, worker=worker, proposal=proposal, provisional=record,
+                worker_result=worker_result, incumbent_snapshot=editable_snapshot,
+                ledger_prefix=existing_records + records, current_best=current_best,
+                incumbent_stack=incumbent_stack, budget_state=budget_state,
+                compute_budget=compute_budget, controller=controller, manager=manager,
+                memory_mode=memory_mode, manager_mode=manager_mode, t_min=t_min,
+                verify_runs=verify_runs, verify_split_policy=verify_split_policy,
+            )
             e2_decision, e2_mask = _controller_hook(
                 controller=controller,
                 log_default_decisions=log_default_decisions,
