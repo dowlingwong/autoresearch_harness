@@ -487,5 +487,63 @@ class TestF4IndependentSeeds(unittest.TestCase):
         self.assertEqual((worker._train_seed, worker._split_seed), (3, 5))
 
 
+# ---------------------------------------------------------------------------
+# F5 — deterministic managers consume no LLM budget
+# ---------------------------------------------------------------------------
+
+
+class TestF5DeterministicManagersUseNoLLMCalls(unittest.TestCase):
+    def test_real_campaign_with_llm_cap_runs_all_trials(self) -> None:
+        spec = _spec()
+        with tempfile.TemporaryDirectory() as tmp:
+            worker = ScriptedWorker(_copy_node(Path(tmp)), [
+                {"metric": 0.90, "content": "K1\n"},
+                {"metric": 0.91, "content": "K2\n"},
+                {"metric": 0.92, "content": "K3\n"},
+            ])
+            records_path = Path(tmp) / "trials.jsonl"
+            run_real_campaign(
+                node_spec=spec, campaign_id="f5real", budget=3, manager_mode="baseline_manager",
+                memory_mode="none", records_path=records_path, worker=worker,
+                proposal_backend=StaticBackend(_proposal(spec)),
+                compute_budget=ComputeBudget(max_llm_calls=1),
+            )
+            records = TrialAppendStore(records_path).read_all()
+        self.assertEqual(len(records), 3)
+
+    def test_dry_campaign_with_llm_cap_runs_all_trials(self) -> None:
+        from autoresearch.control_plane.campaign import run_dry_campaign
+
+        spec = _spec()
+        with tempfile.TemporaryDirectory() as tmp:
+            records_path = Path(tmp) / "trials.jsonl"
+            run_dry_campaign(
+                node_spec=spec, campaign_id="f5dry", budget=3, manager_mode="baseline_manager",
+                memory_mode="none", records_path=records_path,
+                compute_budget=ComputeBudget(max_llm_calls=1),
+            )
+            records = TrialAppendStore(records_path).read_all()
+        self.assertEqual(len(records), 3)
+
+    def test_llm_manager_still_counts_calls(self) -> None:
+        spec = _spec()
+        llm = RecordingLLM([_json(f"s{i}") for i in range(5)])
+        with tempfile.TemporaryDirectory() as tmp:
+            worker = ScriptedWorker(_copy_node(Path(tmp)), [
+                {"metric": 0.90, "content": "K1\n"},
+                {"metric": 0.91, "content": "K2\n"},
+                {"metric": 0.92, "content": "K3\n"},
+            ])
+            records_path = Path(tmp) / "trials.jsonl"
+            run_real_campaign(
+                node_spec=spec, campaign_id="f5llm", budget=3, manager_mode="langgraph_manager",
+                memory_mode="none", records_path=records_path, worker=worker,
+                proposal_backend=LangGraphManager(llm=llm),
+                compute_budget=ComputeBudget(max_llm_calls=1),
+            )
+            records = TrialAppendStore(records_path).read_all()
+        self.assertEqual(len(records), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

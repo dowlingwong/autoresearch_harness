@@ -952,7 +952,10 @@ def run_real_campaign(
             event_type="proposal_created",
             payload={"summary": proposal.proposal_summary, "manager_mode": proposal.manager_mode},
         )
-        compute_budget = compute_budget.consume_llm_call()
+        if not getattr(manager, "deterministic", False):
+            # Only LLM-backed managers make a call; deterministic managers
+            # (baseline, prompt) consume no LLM budget.
+            compute_budget = compute_budget.consume_llm_call()
 
         if ungoverned:
             # UNGOVERNED: pending guard is not written.
@@ -1394,7 +1397,10 @@ def run_dry_campaign(
             event_type="proposal_created",
             payload={"summary": proposal.proposal_summary, "manager_mode": proposal.manager_mode},
         )
-        compute_budget = compute_budget.consume_llm_call()
+        if not getattr(manager, "deterministic", False):
+            # Only LLM-backed managers make a call; deterministic managers
+            # (baseline, prompt) consume no LLM budget.
+            compute_budget = compute_budget.consume_llm_call()
         emit(
             event_store,
             campaign_id=campaign_id,
