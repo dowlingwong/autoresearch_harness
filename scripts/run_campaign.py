@@ -55,6 +55,12 @@ Optionally supply a packet-defaults file to override timeout/log_path/syntax_che
     parser.add_argument("--node-root", help="Path to the node working directory (required for real runs)")
     parser.add_argument("--artifacts-dir", default=str(ROOT / "experiments" / "artifacts"),
                         help="Where generated packets and trial artifacts are written")
+    parser.add_argument(
+        "--worker",
+        choices=("claw", "local"),
+        default="claw",
+        help="Real-campaign worker backend: claw (default) or local (LocalWorker, no claw-code submodule).",
+    )
     parser.add_argument("--packet-defaults",
                         help="Optional JSON file whose timeout_seconds/log_path/results_tsv/syntax_check_command "
                              "override node-spec defaults. objective and description are always from the proposal.")
@@ -168,30 +174,35 @@ Optionally supply a packet-defaults file to override timeout/log_path/syntax_che
         if not args.node_root:
             parser.error("--node-root is required for real (non-dry-run) campaigns")
 
-        from autoresearch.worker.claw_worker import ClawWorker
-        worker_model_id = args.worker_model or _default_worker_model(args.model)
-        worker_host_arg = args.worker_host or args.host
-        worker_model, worker_host = resolve_worker_model_args(worker_model_id, worker_host_arg)
+        if args.worker == "local":
+            from autoresearch.worker.local_worker import LocalWorker
 
-        if args.packet_defaults:
-            worker = ClawWorker.from_packet_defaults_file(
-                repo_root=ROOT,
-                node_root=args.node_root,
-                packet_defaults_path=args.packet_defaults,
-                artifacts_dir=args.artifacts_dir,
-                model=worker_model,
-                host=worker_host,
-                allow_any_branch=args.allow_any_branch,
-            )
+            worker = LocalWorker(node_root=args.node_root, artifact_dir=args.artifacts_dir)
         else:
-            worker = ClawWorker(
-                repo_root=ROOT,
-                node_root=args.node_root,
-                artifacts_dir=args.artifacts_dir,
-                model=worker_model,
-                host=worker_host,
-                allow_any_branch=args.allow_any_branch,
-            )
+            from autoresearch.worker.claw_worker import ClawWorker
+            worker_model_id = args.worker_model or _default_worker_model(args.model)
+            worker_host_arg = args.worker_host or args.host
+            worker_model, worker_host = resolve_worker_model_args(worker_model_id, worker_host_arg)
+
+            if args.packet_defaults:
+                worker = ClawWorker.from_packet_defaults_file(
+                    repo_root=ROOT,
+                    node_root=args.node_root,
+                    packet_defaults_path=args.packet_defaults,
+                    artifacts_dir=args.artifacts_dir,
+                    model=worker_model,
+                    host=worker_host,
+                    allow_any_branch=args.allow_any_branch,
+                )
+            else:
+                worker = ClawWorker(
+                    repo_root=ROOT,
+                    node_root=args.node_root,
+                    artifacts_dir=args.artifacts_dir,
+                    model=worker_model,
+                    host=worker_host,
+                    allow_any_branch=args.allow_any_branch,
+                )
 
         result = run_real_campaign(
             node_spec=node_spec,

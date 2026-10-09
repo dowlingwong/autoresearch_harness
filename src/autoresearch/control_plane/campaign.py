@@ -282,6 +282,24 @@ def _editable_path(root: Path, path_str: str) -> Path:
     return path if path.is_absolute() else root / path
 
 
+def _emit_llm_call(event_store: object | None, *, campaign_id: str, trial_id: str, proposal: ManagerProposal) -> None:
+    """Emit an ``llm_call`` event when a manager reports per-call telemetry.
+
+    Managers that make no LLM call (baseline, prompt) carry no ``llm_call``
+    key, so no event is emitted and the default event stream is unchanged.
+    """
+    meta = (proposal.extra or {}).get("llm_call")
+    if not meta:
+        return
+    emit(
+        event_store,
+        campaign_id=campaign_id,
+        trial_id=trial_id,
+        event_type="llm_call",
+        payload=dict(meta),
+    )
+
+
 @dataclass
 class _IncumbentEntry:
     """One kept incumbent, stored so E0 ``demote`` can revert it."""
@@ -1009,6 +1027,7 @@ def run_real_campaign(
             # Only LLM-backed managers make a call; deterministic managers
             # (baseline, prompt) consume no LLM budget.
             compute_budget = compute_budget.consume_llm_call()
+        _emit_llm_call(event_store, campaign_id=campaign_id, trial_id=trial_id, proposal=proposal)
 
         if ungoverned:
             # UNGOVERNED: pending guard is not written.
@@ -1113,6 +1132,7 @@ def run_real_campaign(
                         event_type="proposal_revised",
                         payload={"summary": revised.proposal_summary, "feedback": feedback},
                     )
+                    _emit_llm_call(event_store, campaign_id=campaign_id, trial_id=trial_id, proposal=revised)
                     proposal = revised
                 emit(
                     event_store, campaign_id=campaign_id, trial_id=trial_id,
@@ -1464,6 +1484,7 @@ def run_dry_campaign(
             # Only LLM-backed managers make a call; deterministic managers
             # (baseline, prompt) consume no LLM budget.
             compute_budget = compute_budget.consume_llm_call()
+        _emit_llm_call(event_store, campaign_id=campaign_id, trial_id=trial_id, proposal=proposal)
         emit(
             event_store,
             campaign_id=campaign_id,

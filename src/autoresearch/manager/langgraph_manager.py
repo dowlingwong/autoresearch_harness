@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from hashlib import sha256
 from typing import Any, TypedDict
 
@@ -36,6 +37,23 @@ class _PlanState(TypedDict):
     raw_proposal: str    # raw LLM text output
     proposal: Any        # ManagerProposal | None, filled by validate_proposal
     revision_feedback: Any  # str | None — E1 revise feedback from the control plane
+    llm_meta: Any        # dict | None — per-call latency/usage telemetry
+
+
+def _usage_from_response(response: Any) -> tuple[int | None, int | None]:
+    """Extract (prompt_tokens, completion_tokens) from a LangChain response.
+
+    Returns ``(None, None)`` when the backend does not report usage.
+    """
+    usage = getattr(response, "usage_metadata", None) or {}
+    prompt_tokens = usage.get("input_tokens")
+    completion_tokens = usage.get("output_tokens")
+    meta = getattr(response, "response_metadata", None) or {}
+    if prompt_tokens is None:
+        prompt_tokens = meta.get("prompt_eval_count")
+    if completion_tokens is None:
+        completion_tokens = meta.get("eval_count")
+    return prompt_tokens, completion_tokens
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +223,7 @@ def _validate_proposal(state: _PlanState) -> _PlanState:
         "Edit only the listed files. Do not run the experiment."
     )
     parsed: dict[str, Any] = {}
+    parse_ok = True
 
     try:
         cleaned = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
@@ -221,6 +240,7 @@ def _validate_proposal(state: _PlanState) -> _PlanState:
         if parsed.get("objective", "").strip():
             objective = str(parsed["objective"]).strip()
     except Exception:
+        parse_ok = False
         rationale = f"parse-failed; raw={raw[:120]!r}"
 
     extra: dict[str, Any] = {
@@ -228,6 +248,9 @@ def _validate_proposal(state: _PlanState) -> _PlanState:
         "raw_proposal_sha256": sha256(raw.encode("utf-8")).hexdigest(),
         "raw_proposal_chars": len(raw),
     }
+    llm_meta = dict(state.get("llm_meta") or {})
+    llm_meta["parse_ok"] = parse_ok
+    extra["llm_call"] = llm_meta
     if state.get("revision_feedback"):
         extra["revision_feedback"] = state["revision_feedback"]
 
@@ -344,8 +367,18 @@ class LangGraphManager:
 
         def _generate_proposal(state: _PlanState) -> _PlanState:
             from langchain_core.messages import HumanMessage
+            started = time.perf_counter()
             response = llm.invoke([HumanMessage(content=state["context_text"])])
-            return {**state, "raw_proposal": response.content}
+            latency_ms = (time.perf_counter() - started) * 1000.0
+            prompt_tokens, completion_tokens = _usage_from_response(response)
+            content = getattr(response, "content", "") or ""
+            llm_meta = {
+                "latency_ms": latency_ms,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "response_chars": len(content),
+            }
+            return {**state, "raw_proposal": content, "llm_meta": llm_meta}
 
         builder = StateGraph(_PlanState)
         builder.add_node("prepare_context", _prepare_context)
