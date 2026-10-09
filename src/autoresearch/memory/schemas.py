@@ -25,6 +25,7 @@ class TrialDecision(StrEnum):
     KEPT = "kept"
     DISCARDED = "discarded"
     FAILED_INVALID = "failed_invalid"
+    SKIPPED = "skipped"
 
 
 class FailureCategory(StrEnum):
@@ -116,6 +117,15 @@ class TrialRecord:
             errors.append("invalid trials require failure_category")
         if self.decision == TrialDecision.FAILED_INVALID and self.validity_status != ValidityStatus.INVALID:
             errors.append("failed_invalid decisions require invalid validity_status")
+        if self.decision == TrialDecision.SKIPPED:
+            # A skipped trial was never executed: no metric, no failure, but it
+            # is a valid (governed) ledger entry carrying extra.control.
+            if self.validity_status != ValidityStatus.VALID:
+                errors.append("skipped decisions require valid validity_status")
+            if self.failure_category is not None:
+                errors.append("skipped decisions must not carry a failure_category")
+            if self.parsed_metrics:
+                errors.append("skipped decisions must not carry parsed metrics")
         if errors:
             raise ValueError("; ".join(errors))
 

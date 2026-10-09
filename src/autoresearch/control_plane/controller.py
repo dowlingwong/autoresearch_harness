@@ -35,7 +35,7 @@ def _enum_value(value: Any) -> Any:
     return getattr(value, "value", value)
 
 
-def _record_digest(record: Any) -> dict[str, Any] | None:
+def record_digest(record: Any) -> dict[str, Any] | None:
     """A stable, leak-safe projection of one ledger record."""
     if record is None:
         return None
@@ -48,7 +48,7 @@ def _record_digest(record: Any) -> dict[str, Any] | None:
     }
 
 
-def _proposal_digest(proposal: Any) -> dict[str, Any] | None:
+def proposal_digest(proposal: Any) -> dict[str, Any] | None:
     if proposal is None:
         return None
     extra = getattr(proposal, "extra", {}) or {}
@@ -87,9 +87,9 @@ class ControlView:
                 "metric_name": getattr(node, "metric_name", None),
                 "metric_direction": getattr(node, "metric_direction", None),
             },
-            "ledger_prefix": [_record_digest(record) for record in self.ledger_prefix],
-            "proposal": _proposal_digest(self.proposal),
-            "provisional": _record_digest(self.provisional),
+            "ledger_prefix": [record_digest(record) for record in self.ledger_prefix],
+            "proposal": proposal_digest(self.proposal),
+            "provisional": record_digest(self.provisional),
         }
 
     def input_hash(self) -> str:

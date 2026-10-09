@@ -49,6 +49,7 @@ def _write_counts(path: Path, records: list[TrialRecord]) -> None:
         "kept": sum(1 for record in records if record.decision == TrialDecision.KEPT),
         "discarded": sum(1 for record in records if record.decision == TrialDecision.DISCARDED),
         "failed_invalid": sum(1 for record in records if record.decision == TrialDecision.FAILED_INVALID),
+        "skipped": sum(1 for record in records if record.decision == TrialDecision.SKIPPED),
     }
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=("decision", "count"))

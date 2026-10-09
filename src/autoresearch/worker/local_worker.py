@@ -225,6 +225,24 @@ class LocalWorker:
     # Private helpers
     # ------------------------------------------------------------------
 
+    def run_trial_at_seed(
+        self,
+        proposal: ManagerProposal,
+        node_spec: NodeSpec,
+        budget_index: int,
+        *,
+        train_seed: int | str | None,
+        split_seed: int | str | None = None,
+    ) -> WorkerResult:
+        """Run a trial with a temporary seed override (used by E2 verify)."""
+        original = (self._train_seed, self._split_seed)
+        self._train_seed = train_seed
+        self._split_seed = split_seed
+        try:
+            return self.run_trial(proposal, node_spec, budget_index)
+        finally:
+            self._train_seed, self._split_seed = original
+
     def _resolve_artifact_dir(self, trial_label: str) -> Path:
         if self._artifact_dir is not None:
             d = self._artifact_dir / trial_label

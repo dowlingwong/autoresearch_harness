@@ -35,6 +35,7 @@ class CampaignMetrics:
     command_failure_rate: float = 0.0
     metric_parsing_failure_rate: float = 0.0
     artifact_capture_completeness: float = 0.0
+    skipped_count: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -78,6 +79,7 @@ def compute_campaign_metrics(
     kept = [record for record in records if record.decision == TrialDecision.KEPT]
     discarded = [record for record in records if record.decision == TrialDecision.DISCARDED]
     invalid = [record for record in records if record.decision == TrialDecision.FAILED_INVALID]
+    skipped = [record for record in records if record.decision == TrialDecision.SKIPPED]
     initial_metric = _initial_metric(records, metric_name)
     best_metric = _best(values, metric_direction)
     final_accepted_metric = _final_accepted_metric(kept, metric_name)
@@ -111,6 +113,7 @@ def compute_campaign_metrics(
         command_failure_rate=_failure_rate(records, FailureCategory.RUNTIME_ERROR),
         metric_parsing_failure_rate=_failure_rate(records, FailureCategory.METRIC_MISSING),
         artifact_capture_completeness=_artifact_capture_completeness(records),
+        skipped_count=len(skipped),
     )
 
 
