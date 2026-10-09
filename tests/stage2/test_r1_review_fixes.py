@@ -241,5 +241,47 @@ class TestF1ReviseFeedbackReachesManager(unittest.TestCase):
         self.assertFalse(mask["revise"])
 
 
+# ---------------------------------------------------------------------------
+# F2 — verify needs real seed injection
+# ---------------------------------------------------------------------------
+
+
+class TestF2VerifyRequiresSeedInjection(unittest.TestCase):
+    def _e2_mask(self, worker_cls) -> dict:
+        spec = _spec()
+        with tempfile.TemporaryDirectory() as tmp:
+            worker = worker_cls(_copy_node(Path(tmp)), [{"metric": 0.9, "content": "K1\n"}])
+            events_path = Path(tmp) / "events.jsonl"
+            run_real_campaign(
+                node_spec=spec, campaign_id="seedmask", budget=1, manager_mode="baseline_manager",
+                memory_mode="none", records_path=Path(tmp) / "trials.jsonl", worker=worker,
+                proposal_backend=StaticBackend(_proposal(spec)),
+                event_store=CampaignEventStore(events_path),
+                controller=ScriptedController({}),
+            )
+            events = _events(events_path)
+        (e2,) = [
+            event for event in events
+            if event["event_type"] == "control_decision" and event["payload"]["epoch"] == "E2"
+        ]
+        return e2["payload"]["mask"]
+
+    def test_verify_masked_out_without_seed_support(self) -> None:
+        self.assertFalse(self._e2_mask(ScriptedWorker)["verify"])
+
+    def test_verify_feasible_with_seed_support(self) -> None:
+        self.assertTrue(self._e2_mask(SeededScriptedWorker)["verify"])
+
+    def test_seeded_run_raises_instead_of_running_unseeded(self) -> None:
+        from autoresearch.control_plane import campaign
+
+        spec = _spec()
+        with tempfile.TemporaryDirectory() as tmp:
+            worker = ScriptedWorker(_copy_node(Path(tmp)), [{"metric": 0.9}])
+            with self.assertRaises(campaign.SeedInjectionUnsupportedError):
+                campaign._run_worker_at_seed(worker, _proposal(spec), spec, 900001, 1000)
+            self.assertEqual(worker.run_calls, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

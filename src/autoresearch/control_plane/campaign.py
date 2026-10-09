@@ -82,6 +82,15 @@ from autoresearch.nodes.spec import NodeSpec
 from autoresearch.worker.base import DryRunWorker, Worker, WorkerResult
 
 
+class SeedInjectionUnsupportedError(RuntimeError):
+    """Raised when a seeded (verify) run is requested from a worker without seed support."""
+
+
+def _supports_seed_injection(worker: object) -> bool:
+    """True when the worker can run a trial at an injected seed (E2 verify)."""
+    return hasattr(worker, "run_trial_at_seed")
+
+
 class PendingTrialError(RuntimeError):
     """Raised when a campaign already has an active pending trial."""
 
@@ -389,11 +398,21 @@ def _run_worker_at_seed(
     budget_index: int,
     seed: int,
 ) -> WorkerResult:
-    if hasattr(worker, "run_trial_at_seed"):
-        return worker.run_trial_at_seed(
-            proposal, node_spec, budget_index, train_seed=seed, split_seed=seed
+    """Run one verify re-run at *seed*.
+
+    Never falls back to an unseeded ``run_trial``: paired re-runs without seed
+    control would be meaningless, so a worker without ``run_trial_at_seed``
+    raises :class:`SeedInjectionUnsupportedError`.  The E2 mask already rules
+    verify out for such workers.
+    """
+    if not _supports_seed_injection(worker):
+        raise SeedInjectionUnsupportedError(
+            f"worker {getattr(worker, 'mode', type(worker).__name__)!r} does not support "
+            "seeded runs (run_trial_at_seed); verify cannot run"
         )
-    return worker.run_trial(proposal, node_spec, budget_index)
+    return worker.run_trial_at_seed(
+        proposal, node_spec, budget_index, train_seed=seed, split_seed=seed
+    )
 
 
 def _run_verify(
@@ -1138,7 +1157,7 @@ def run_real_campaign(
                 budget_state=budget_state,
                 compute_budget=compute_budget,
                 node_spec=node_spec,
-                seed_injection_supported=True,
+                seed_injection_supported=_supports_seed_injection(worker),
                 verify_runs=verify_runs,
                 worker_runs_remaining=compute_budget.remaining()["worker_runs_remaining"],
             )
@@ -1477,7 +1496,7 @@ def run_dry_campaign(
             budget_state=budget_state,
             compute_budget=compute_budget,
             node_spec=node_spec,
-            seed_injection_supported=True,
+            seed_injection_supported=_supports_seed_injection(worker),
             worker_runs_remaining=compute_budget.remaining()["worker_runs_remaining"],
         )
         if e2_decision.action != "continue":

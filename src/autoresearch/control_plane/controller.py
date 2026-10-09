@@ -202,7 +202,8 @@ def compute_mask(
 
     ``revise`` additionally requires ``revision_feedback_supported``: the
     manager must accept the ``revision_feedback`` keyword, otherwise a revision
-    would be a plain resample.
+    would be a plain resample.  ``verify`` requires ``seed_injection_supported``;
+    the campaign loops pass ``hasattr(worker, "run_trial_at_seed")``.
     """
     mask = {action: False for action in ACTIONS}
     mask["continue"] = True
