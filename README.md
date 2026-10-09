@@ -112,7 +112,7 @@ autoresearch_harness/
 │   ├── manager/
 │   │   ├── base.py                 # ManagerProposal / ManagerStatus protocol
 │   │   ├── baseline_manager.py     # deterministic heuristic proposals
-│   │   ├── prompt_manager.py       # memory-aware proposals
+│   │   ├── prompt_manager.py       # memory-aware proposals (deterministic, no LLM)
 │   │   └── langgraph_manager.py    # LangGraph planner (optional backend)
 │   ├── worker/
 │   │   ├── base.py                 # WorkerResult protocol + DryRunWorker

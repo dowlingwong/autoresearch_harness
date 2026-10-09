@@ -138,7 +138,7 @@ Evaluation / Reporting (paper-facing CSVs, figures)
 All managers implement the `Manager` Protocol: `propose_next_trial(status, memory_context, node_spec) → ManagerProposal`.
 
 - `baseline_manager.py` — Template-based, no LLM. Deterministic proposals for dry-run testing.
-- `prompt_manager.py` — LLM-backed via Ollama direct call.
+- `prompt_manager.py` — deterministic, **no LLM call**; wraps `select_bounded_objective` and formats its output. `deterministic = True`. Use `langgraph_manager.py` for LLM-backed proposals.
 - `langgraph_manager.py` — LangGraph graph: `prepare_context → generate_proposal → validate_proposal`. Scoped to proposal generation only; never touches the control plane or ledger. Accepts an injected `llm` for stub testing (`--llm-stub`).
 
 ### Workers (`src/autoresearch/worker/`)
