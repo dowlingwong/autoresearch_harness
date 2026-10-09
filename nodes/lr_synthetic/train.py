@@ -18,6 +18,7 @@ Output format:
     train_loss: 0.XXXXXX  (final training loss, informational)
 """
 import math
+import os
 import random
 
 import numpy as np
@@ -29,7 +30,9 @@ N_EPOCHS = 80
 BATCH_SIZE = 4
 
 # ── fixed settings ───────────────────────────────────────────────────────────
-RANDOM_SEED = 42
+# AR_TRAIN_SEED is injected by the worker; the constant 42 is the default so
+# behaviour is unchanged when the variable is unset.
+RANDOM_SEED = int(os.environ.get("AR_TRAIN_SEED", "42"))
 N_TRAIN = 1600
 N_VAL = 400
 N_FEATURES = 10

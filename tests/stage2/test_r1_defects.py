@@ -18,6 +18,7 @@ from autoresearch.memory.schemas import TrialDecision
 from autoresearch.nodes.registry import load_registered_node
 from autoresearch.worker.base import WorkerResult
 from autoresearch.worker.claw_worker import _extract_worker_result
+from autoresearch.worker.local_worker import LocalWorker
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -178,6 +179,42 @@ class TestCurrentBestOnResume(unittest.TestCase):
         self.assertEqual(records[0].decision, TrialDecision.FAILED_INVALID)
         self.assertEqual(records[0].parsed_metrics[spec.metric_name], 0.99)
         self.assertEqual(records[2].current_best_before, 0.5)
+
+
+class TestSeedInjection(unittest.TestCase):
+    """L3.4: AR_TRAIN_SEED / AR_SPLIT_SEED reach the node with unchanged defaults."""
+
+    def _run_lr_synthetic(self, *, train_seed=None) -> float:
+        spec = load_registered_node("lr_synthetic", repo_root=ROOT)
+        with tempfile.TemporaryDirectory() as tmp:
+            worker = LocalWorker(
+                node_root=ROOT / "nodes" / "lr_synthetic",
+                artifact_dir=Path(tmp),
+                train_seed=train_seed,
+            )
+            proposal = ManagerProposal(
+                manager_mode="test",
+                proposal_summary="baseline",
+                proposal_rationale="no edit",
+                target_files=("train.py",),
+                objective="Run the baseline; make no change.",
+            )
+            result = worker.run_trial(proposal, spec, 1)
+        self.assertTrue(result.success, result.failure_message)
+        return result.parsed_metrics["val_score"]
+
+    def test_same_seed_reproduces_and_different_seed_changes(self) -> None:
+        first = self._run_lr_synthetic(train_seed=7)
+        second = self._run_lr_synthetic(train_seed=7)
+        other = self._run_lr_synthetic(train_seed=8)
+        self.assertEqual(first, second)
+        self.assertNotEqual(first, other)
+
+    def test_seed_vars_are_never_editable_symbols(self) -> None:
+        for name in ("lr_synthetic", "openml_credit_g", "openml_bank_marketing"):
+            spec = load_registered_node(name, repo_root=ROOT)
+            self.assertNotIn("AR_TRAIN_SEED", spec.editable_symbols)
+            self.assertNotIn("AR_SPLIT_SEED", spec.editable_symbols)
 
 
 if __name__ == "__main__":
