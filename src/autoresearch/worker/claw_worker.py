@@ -274,7 +274,16 @@ def _extract_worker_result(
     val_bpb = experiment.get("val_bpb")
     metrics: dict[str, float] = {}
     if val_bpb is not None:
-        metrics[node_spec.metric_name] = 1.0 - float(val_bpb)
+        raw_val_bpb = float(val_bpb)
+        if node_spec.metric_name == "val_bpb":
+            # The node's own metric *is* bits-per-byte (minimise).  The legacy
+            # payload already reports it, so store it unmodified.  Writing
+            # ``1 - val_bpb`` under the ``val_bpb`` key would invert the sign.
+            metrics[node_spec.metric_name] = raw_val_bpb
+        else:
+            # Nodes whose metric is an AUC-style score log val_bpb in the
+            # legacy payload; convert once, here, at the parse boundary.
+            metrics[node_spec.metric_name] = 1.0 - raw_val_bpb
 
     changed_files: tuple[str, ...]
     if isinstance(last_result, dict) and last_result.get("changed_files"):
