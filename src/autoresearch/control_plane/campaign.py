@@ -401,20 +401,22 @@ def _run_verify(
 
     candidate_metrics: list[float | None] = []
     for index, seed in enumerate(seeds):
+        run_t0 = time.perf_counter()
         result = _run_worker_at_seed(
             worker, noedit, node_spec, 900000 + base_budget_index * 10 + index, seed
         )
-        compute_budget = compute_budget.consume_worker_run(0.0)
+        compute_budget = compute_budget.consume_worker_run(time.perf_counter() - run_t0)
         candidate_metrics.append(result.parsed_metrics.get(metric_name) if result.success else None)
 
     _restore_editable_state(incumbent_snapshot)
     incumbent_hash = _editable_state_hash(worker, node_spec)
     incumbent_metrics: list[float | None] = []
     for index, seed in enumerate(seeds):
+        run_t0 = time.perf_counter()
         result = _run_worker_at_seed(
             worker, noedit, node_spec, 950000 + base_budget_index * 10 + index, seed
         )
-        compute_budget = compute_budget.consume_worker_run(0.0)
+        compute_budget = compute_budget.consume_worker_run(time.perf_counter() - run_t0)
         incumbent_metrics.append(result.parsed_metrics.get(metric_name) if result.success else None)
 
     _restore_editable_state(candidate_snapshot)
