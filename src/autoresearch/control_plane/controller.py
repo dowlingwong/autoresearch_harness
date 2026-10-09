@@ -195,7 +195,7 @@ def compute_mask(
     seed_injection_supported: bool = True,
     verify_runs: int = DEFAULT_VERIFY_RUNS,
     worker_runs_remaining: int | None = None,
-    unverified_keep_on_stack: bool = False,
+    top_of_stack_unverified: bool = False,
     t_min: int = DEFAULT_T_MIN,
 ) -> dict[str, bool]:
     """Feasibility mask, following the problem spec §2.1 rules.
@@ -210,7 +210,9 @@ def compute_mask(
 
     if view.epoch == "E0":
         mask["stop"] = view.budget_index >= t_min
-        mask["demote"] = bool(unverified_keep_on_stack)
+        # demote pops exactly the top incumbent, so it is feasible only when
+        # that top entry is an unverified keep (never reverts a verified keep).
+        mask["demote"] = bool(top_of_stack_unverified)
     elif view.epoch == "E1":
         mask["skip"] = bool(proposal_passed_precondition)
         mask["revise"] = (

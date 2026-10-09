@@ -513,16 +513,18 @@ def _perform_demote(
     campaign_id: str,
     trial_id: str,
 ) -> float | None:
-    """Revert the most recent unverified keep; return the restored current_best."""
-    target_index = next(
-        (index for index in range(len(incumbent_stack) - 1, -1, -1) if not incumbent_stack[index].verified),
-        None,
-    )
-    if target_index is None:
-        raise ValueError("demote requested with no unverified keep on the stack")
+    """Pop the top incumbent if it is an unverified keep; return the restored current_best.
+
+    Demote never reaches below the top of the stack, so a verified keep is
+    never reverted (directly or by deleting the stack above an older entry).
+    The E0 mask enforces the same rule.
+    """
+    if not incumbent_stack:
+        raise ValueError("demote requested with an empty incumbent stack")
+    if incumbent_stack[-1].verified:
+        raise ValueError("demote requested but the top incumbent is a verified keep")
     hash_before = _editable_state_hash(worker, node_spec)
-    entry = incumbent_stack[target_index]
-    del incumbent_stack[target_index:]
+    entry = incumbent_stack.pop()
     _restore_editable_state(entry.snapshot)
     hash_after = _editable_state_hash(worker, node_spec)
     emit(
@@ -869,7 +871,7 @@ def run_real_campaign(
             budget_state=budget_state,
             compute_budget=compute_budget,
             node_spec=node_spec,
-            unverified_keep_on_stack=any(not entry.verified for entry in incumbent_stack),
+            top_of_stack_unverified=bool(incumbent_stack) and not incumbent_stack[-1].verified,
             t_min=t_min,
         )
         if e0_decision.action == "stop":
@@ -1335,7 +1337,7 @@ def run_dry_campaign(
             budget_state=budget_state,
             compute_budget=compute_budget,
             node_spec=node_spec,
-            unverified_keep_on_stack=False,
+            top_of_stack_unverified=False,
         )
         if e0_decision.action != "continue":
             raise NotImplementedError(

@@ -278,10 +278,10 @@ class TestMasks(unittest.TestCase):
         )
 
     def test_e0_stop_and_demote_masks(self) -> None:
-        mask = compute_mask(self._view("E0"), t_min=3, unverified_keep_on_stack=False)
+        mask = compute_mask(self._view("E0"), t_min=3, top_of_stack_unverified=False)
         self.assertTrue(mask["stop"])
         self.assertFalse(mask["demote"])
-        mask = compute_mask(self._view("E0"), t_min=5, unverified_keep_on_stack=True)
+        mask = compute_mask(self._view("E0"), t_min=5, top_of_stack_unverified=True)
         self.assertFalse(mask["stop"])
         self.assertTrue(mask["demote"])
 
@@ -333,8 +333,8 @@ class TestScriptedControllerCampaign(unittest.TestCase):
             worker = ScriptedWorker(_copy_node(Path(tmp)), [
                 {"metric": 0.90, "content": "BASE1\n"},
                 {"metric": 0.92, "content": "BASE3\n"},
-                {"metric": 0.91, "content": "CANDIDATE4\n"},
-                {"metric": 0.93, "content": "BASE5\n"},
+                {"metric": 0.93, "content": "BASE4\n"},
+                {"metric": 0.91, "content": "CANDIDATE5\n"},
             ])
             records_path = Path(tmp) / "trials.jsonl"
             events_path = Path(tmp) / "events.jsonl"
@@ -345,8 +345,8 @@ class TestScriptedControllerCampaign(unittest.TestCase):
                 controller=ScriptedController({
                     (2, "E1"): "skip",
                     (3, "E1"): "revise",
-                    (4, "E2"): "verify",
-                    (5, "E0"): "demote",
+                    (4, "E0"): "demote",
+                    (5, "E2"): "verify",
                     (6, "E0"): "stop",
                 }),
             )
@@ -358,11 +358,11 @@ class TestScriptedControllerCampaign(unittest.TestCase):
         self.assertIn("incumbent_demoted", event_types)
         self.assertEqual(records[1].decision, TrialDecision.SKIPPED)
         self.assertEqual(records[2].extra["control"]["action"], "revise")
-        self.assertEqual(records[3].extra["control"]["verify"]["response"], "keep")
+        self.assertEqual(records[4].extra["control"]["verify"]["response"], "keep")
         seen = {
             records[1].extra["control"]["action"],
             records[2].extra["control"]["action"],
-            "verify" if "verify" in records[3].extra["control"] else None,
+            "verify" if "verify" in records[4].extra["control"] else None,
         }
         self.assertEqual(seen, {"skip", "revise", "verify"})
 

@@ -283,5 +283,96 @@ class TestF2VerifyRequiresSeedInjection(unittest.TestCase):
             self.assertEqual(worker.run_calls, 0)
 
 
+# ---------------------------------------------------------------------------
+# F3 — demote only pops an unverified top-of-stack keep
+# ---------------------------------------------------------------------------
+
+
+class TestF3DemoteTopOfStackOnly(unittest.TestCase):
+    def test_mask_false_when_top_keep_is_verified(self) -> None:
+        # Stack after trial 2: [unverified keep K1, verified keep CANDIDATE2].
+        spec = _spec()
+        with tempfile.TemporaryDirectory() as tmp:
+            worker = SeededScriptedWorker(_copy_node(Path(tmp)), [
+                {"metric": 0.90, "content": "K1\n"},
+                {"metric": 0.95, "content": "CANDIDATE2\n"},
+                {"metric": 0.10, "content": "K3\n"},
+            ])
+            events_path = Path(tmp) / "events.jsonl"
+            records_path = Path(tmp) / "trials.jsonl"
+            run_real_campaign(
+                node_spec=spec, campaign_id="f3mask", budget=3, manager_mode="baseline_manager",
+                memory_mode="none", records_path=records_path, worker=worker,
+                proposal_backend=StaticBackend(_proposal(spec)),
+                event_store=CampaignEventStore(events_path),
+                controller=ScriptedController({(2, "E2"): "verify"}),
+            )
+            records = TrialAppendStore(records_path).read_all()
+            events = _events(events_path)
+        self.assertEqual(records[1].extra["control"]["verify"]["response"], "keep")
+        e0_trial3 = [
+            event for event in events
+            if event["event_type"] == "control_decision"
+            and event["payload"]["epoch"] == "E0"
+            and event["trial_id"].endswith("trial-003")
+        ]
+        self.assertEqual(len(e0_trial3), 1)
+        self.assertFalse(e0_trial3[0]["payload"]["mask"]["demote"])
+
+    def test_perform_demote_refuses_verified_top_and_keeps_stack(self) -> None:
+        from autoresearch.control_plane import campaign
+
+        spec = _spec()
+        with tempfile.TemporaryDirectory() as tmp:
+            node_root = _copy_node(Path(tmp))
+            worker = ScriptedWorker(node_root, [])
+            (node_root / "train.py").write_text("V2\n", encoding="utf-8")
+            stack = [
+                campaign._IncumbentEntry(
+                    snapshot=None, current_best_before=None, metric=0.90, verified=False
+                ),
+                campaign._IncumbentEntry(
+                    snapshot=None, current_best_before=0.90, metric=0.95, verified=True
+                ),
+            ]
+            with self.assertRaises(ValueError):
+                campaign._perform_demote(
+                    incumbent_stack=stack, worker=worker, node_spec=spec, current_best=0.95,
+                    event_store=None, campaign_id="c", trial_id="t",
+                )
+            self.assertEqual(len(stack), 2)
+            self.assertEqual((node_root / "train.py").read_text(encoding="utf-8"), "V2\n")
+
+    def test_demote_reverts_only_unverified_top_above_verified_keep(self) -> None:
+        # Stack after trial 2: [verified keep CANDIDATE1, unverified keep K2].
+        spec = _spec()
+        with tempfile.TemporaryDirectory() as tmp:
+            node_root = _copy_node(Path(tmp))
+            worker = SeededScriptedWorker(node_root, [
+                {"metric": 0.80, "content": "CANDIDATE1\n"},
+                {"metric": 0.85, "content": "K2\n"},
+                {"metric": 0.10, "content": "K3\n"},
+            ])
+            events_path = Path(tmp) / "events.jsonl"
+            records_path = Path(tmp) / "trials.jsonl"
+            run_real_campaign(
+                node_spec=spec, campaign_id="f3pop", budget=3, manager_mode="baseline_manager",
+                memory_mode="none", records_path=records_path, worker=worker,
+                proposal_backend=StaticBackend(_proposal(spec)),
+                event_store=CampaignEventStore(events_path),
+                controller=ScriptedController({(1, "E2"): "verify", (3, "E0"): "demote"}),
+            )
+            records = TrialAppendStore(records_path).read_all()
+            events = _events(events_path)
+            final_content = (node_root / "train.py").read_text(encoding="utf-8")
+        self.assertEqual(records[0].extra["control"]["verify"]["response"], "keep")
+        self.assertEqual(
+            [event["event_type"] for event in events].count("incumbent_demoted"), 1
+        )
+        # Only K2 was reverted: the verified CANDIDATE1 incumbent and its metric remain.
+        self.assertEqual(records[2].current_best_before, 0.80)
+        self.assertEqual(final_content, "CANDIDATE1\n")
+
+
 if __name__ == "__main__":
     unittest.main()
