@@ -857,6 +857,27 @@ def run_real_campaign(
     alongside the ledger so that we can compare the two and show exactly
     what the governed ledger would have captured versus what the ungoverned
     regime left behind.
+
+    **Controller (R1, BUILD_RUNBOOK L5/L6).**  *controller* is asked at E0
+    (``continue``/``stop``/``demote``), E1 (``continue``/``skip``/``revise``)
+    and E2 (``continue``/``verify``).  The default ``ContinueController``
+    reproduces the pre-hook records exactly.
+
+    - A choice the feasibility mask rules out, or one not implemented at that
+      epoch, is logged as ``control_decision_rejected`` ``{epoch, action,
+      mask}`` and the trial proceeds as ``continue``; it never raises.
+    - ``revise`` re-calls the manager with ``revision_feedback=<text>``; it is
+      feasible only for non-deterministic managers that accept that keyword.
+    - ``verify`` runs *verify_runs* paired seeded re-runs; it is feasible only
+      when the worker has ``run_trial_at_seed``.  *verify_split_policy*
+      ``"fixed"`` (default) varies only the training seed; ``"vary"`` moves the
+      split seed with it.  The policy is recorded in ``extra.control.verify``.
+    - ``demote`` pops the top of the incumbent stack and is feasible only when
+      that top entry is an unverified keep; verified keeps are never reverted.
+
+    *compute_budget* counts every worker run (including verify re-runs),
+    worker seconds, and LLM calls; proposals from deterministic managers
+    (``deterministic = True``) are not counted as LLM calls.
     """
     records_path = Path(records_path)
     records_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1342,6 +1363,14 @@ def run_dry_campaign(
     log_default_decisions: bool = False,
     compute_budget: ComputeBudget | None = None,
 ) -> CampaignRunResult:
+    """Run a fixed-budget campaign with the synthetic ``DryRunWorker``.
+
+    The controller hooks run at E0/E1/E2 as in :func:`run_real_campaign`, but
+    the dry campaign supports only the ``continue`` action.  Any other action
+    raises ``NotImplementedError`` by design: skip, revise, verify, demote and
+    stop are implemented in :func:`run_real_campaign` only.  LLM calls are
+    counted only for non-deterministic managers.
+    """
     manager = proposal_backend or _manager(manager_mode, llm=manager_llm, temperature=manager_temperature)
     worker = DryRunWorker(profile=dry_run_profile)
     controller = controller or ContinueController()
@@ -1395,7 +1424,8 @@ def run_dry_campaign(
         )
         if e0_decision.action != "continue":
             raise NotImplementedError(
-                f"E0 action {e0_decision.action!r} is not wired yet (L6)"
+                f"E0 action {e0_decision.action!r}: run_dry_campaign supports only "
+                "'continue' (by design); use run_real_campaign"
             )
         memory_context = build_memory_context(existing_records + records, MemoryMode(memory_mode), node_spec, budget_index)
         emit(
@@ -1475,7 +1505,8 @@ def run_dry_campaign(
         )
         if e1_decision.action != "continue":
             raise NotImplementedError(
-                f"E1 action {e1_decision.action!r} is not wired yet (L6)"
+                f"E1 action {e1_decision.action!r}: run_dry_campaign supports only "
+                "'continue' (by design); use run_real_campaign"
             )
         worker_run_t0 = time.perf_counter()
         worker_result = worker.run_trial(proposal, node_spec, budget_index)
@@ -1560,7 +1591,8 @@ def run_dry_campaign(
         )
         if e2_decision.action != "continue":
             raise NotImplementedError(
-                f"E2 action {e2_decision.action!r} is not wired yet (L6)"
+                f"E2 action {e2_decision.action!r}: run_dry_campaign supports only "
+                "'continue' (by design); use run_real_campaign"
             )
         records.append(record)
         store.append_many([record])

@@ -48,6 +48,11 @@ class ComputeBudget:
     what a plain ``--budget N`` campaign uses) the budget is never exhausted
     and behaviour is unchanged.  Counters are always maintained so that the
     controller view can report remaining headroom.
+
+    The campaign loops count every worker run (verify re-runs included), the
+    worker seconds, and every LLM call: proposals and revisions from
+    non-deterministic managers.  Deterministic managers (``deterministic =
+    True``, e.g. baseline and prompt) make no LLM call and consume none.
     """
 
     max_worker_runs: int | None = None

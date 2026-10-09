@@ -12,6 +12,20 @@ Epochs inside one trial:
 
 ``ContinueController`` (the default) always returns ``"continue"`` and is the
 only way the unmodified trial records are reproduced exactly.
+
+Feasibility (:func:`compute_mask`):
+
+* E0 ``stop`` needs ``t >= t_min``; ``demote`` needs the *top* of the
+  incumbent stack to be an unverified keep (it pops only that entry).
+* E1 ``skip`` needs the proposal to have passed its precondition; ``revise``
+  needs a non-deterministic manager that accepts ``revision_feedback``, no
+  earlier revision this trial, and LLM budget left.
+* E2 ``verify`` needs a valid provisional record, a worker with seed injection
+  (``run_trial_at_seed``) and compute for ``2r`` runs.
+
+``run_real_campaign`` never executes an infeasible choice: it logs a
+``control_decision_rejected`` event and continues.  ``run_dry_campaign``
+supports only ``continue``.
 """
 from __future__ import annotations
 

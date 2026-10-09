@@ -139,7 +139,7 @@ All managers implement the `Manager` Protocol: `propose_next_trial(status, memor
 
 - `baseline_manager.py` — Template-based, no LLM. Deterministic proposals for dry-run testing.
 - `prompt_manager.py` — deterministic, **no LLM call**; wraps `select_bounded_objective` and formats its output. `deterministic = True`. Use `langgraph_manager.py` for LLM-backed proposals.
-- `langgraph_manager.py` — LangGraph graph: `prepare_context → generate_proposal → validate_proposal`. Scoped to proposal generation only; never touches the control plane or ledger. Accepts an injected `llm` for stub testing (`--llm-stub`).
+- `langgraph_manager.py` — LangGraph graph: `prepare_context → generate_proposal → validate_proposal`. Scoped to proposal generation only; never touches the control plane or ledger. Accepts an injected `llm` for stub testing (`--llm-stub`). `propose_next_trial(..., revision_feedback=None)`: the R1 E1 `revise` action passes feedback, which is added to the prompt and recorded as `extra.revision_feedback`; without it the prompt is unchanged.
 
 ### Workers (`src/autoresearch/worker/`)
 

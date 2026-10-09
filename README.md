@@ -232,6 +232,26 @@ non-default controller call (and every call when `log_default_decisions=True`)
 writes a `control_decision` event carrying the epoch, action, scores, mask,
 controller version and input hash.
 
+Actions in `run_real_campaign` (feasibility is recorded in each event's mask):
+
+| Epoch | Action | Notes |
+|---|---|---|
+| E0 | `stop` | Ends the campaign once `t >= t_min` (default 3). |
+| E0 | `demote` | Pops the top incumbent; feasible only when that top keep is unverified, so a verified keep is never reverted. |
+| E1 | `skip` | Records a `skipped` trial without running the worker. |
+| E1 | `revise` | Re-calls the manager with `revision_feedback`; only for LLM managers that accept it (`langgraph_manager`). |
+| E2 | `verify` | Paired seeded re-runs of candidate and incumbent; only for workers with `run_trial_at_seed` (`LocalWorker`). `verify_split_policy="fixed"` (default) varies only `AR_TRAIN_SEED`; `"vary"` also moves `AR_SPLIT_SEED`. |
+
+A controller choice that is masked out or not implemented at that epoch never
+crashes the campaign: it is logged as `control_decision_rejected`
+`{epoch, action, mask}` and the trial continues. `--max-llm-calls` counts only
+calls made by non-deterministic managers; `baseline_manager` and
+`prompt_manager` use none. `run_dry_campaign` supports only `continue`; any
+other action raises `NotImplementedError` there by design.
+
+Nodes read `AR_TRAIN_SEED` (training) and `AR_SPLIT_SEED` (data / split)
+independently; each defaults to 42.
+
 ### Model provider syntax
 
 Campaign scripts accept either the legacy pair:

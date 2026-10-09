@@ -603,5 +603,25 @@ def event_types_count(events: list[dict], event_type: str) -> int:
     return sum(1 for event in events if event["event_type"] == event_type)
 
 
+# ---------------------------------------------------------------------------
+# F7 — documentation: run_dry_campaign supports only continue
+# ---------------------------------------------------------------------------
+
+
+class TestF7DryCampaignContinueOnly(unittest.TestCase):
+    def test_dry_campaign_documents_and_enforces_continue_only(self) -> None:
+        from autoresearch.control_plane.campaign import run_dry_campaign
+
+        self.assertIn("supports only the ``continue`` action", run_dry_campaign.__doc__ or "")
+        spec = _spec()
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(NotImplementedError, "supports only 'continue'"):
+                run_dry_campaign(
+                    node_spec=spec, campaign_id="f7", budget=4, manager_mode="baseline_manager",
+                    memory_mode="none", records_path=Path(tmp) / "trials.jsonl",
+                    controller=ScriptedController({(1, "E1"): "skip"}),
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
