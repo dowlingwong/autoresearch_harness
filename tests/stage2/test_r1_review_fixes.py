@@ -374,5 +374,118 @@ class TestF3DemoteTopOfStackOnly(unittest.TestCase):
         self.assertEqual(final_content, "CANDIDATE1\n")
 
 
+# ---------------------------------------------------------------------------
+# F4 — training and split seeds are independent
+# ---------------------------------------------------------------------------
+
+
+def _load_node_module(path: Path, env: dict[str, str]):
+    """Import a node script fresh with exactly *env*'s AR_* seed variables set."""
+    import importlib.util
+    import os
+    from unittest import mock
+
+    clean = {key: value for key, value in os.environ.items() if not key.startswith("AR_")}
+    clean.update(env)
+    with mock.patch.dict(os.environ, clean, clear=True):
+        module_spec = importlib.util.spec_from_file_location(f"_node_{path.parent.name}", path)
+        module = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(module)
+    return module
+
+
+def _lr_synthetic_seeds(env: dict[str, str]) -> tuple[int, int, str]:
+    """Run lr_synthetic's main() with training stubbed; return (dataset seed, train seed, data hash)."""
+    import contextlib
+    import io
+
+    module = _load_node_module(ROOT / "nodes" / "lr_synthetic" / "train.py", env)
+    seen: dict[str, object] = {}
+    original_make = module._make_dataset
+
+    def recording_make(*args, **kwargs):
+        seen["dataset_seed"] = kwargs["seed"]
+        X, y = original_make(*args, **kwargs)
+        seen["hash"] = hashlib.sha256(X.tobytes() + y.tobytes()).hexdigest()
+        return X, y
+
+    def stub_train(*args, **kwargs):
+        seen["train_seed"] = kwargs["seed"]
+        return 0.5, 0.1
+
+    module._make_dataset = recording_make
+    module.train = stub_train
+    with contextlib.redirect_stdout(io.StringIO()):
+        module.main()
+    return seen["dataset_seed"], seen["train_seed"], seen["hash"]
+
+
+class TestF4IndependentSeeds(unittest.TestCase):
+    def test_lr_synthetic_train_seed_does_not_move_dataset(self) -> None:
+        default_split, default_train, default_hash = _lr_synthetic_seeds({})
+        self.assertEqual((default_split, default_train), (42, 42))
+        split, train, data_hash = _lr_synthetic_seeds({"AR_TRAIN_SEED": "7"})
+        self.assertEqual((split, train), (42, 7))
+        self.assertEqual(data_hash, default_hash)
+
+    def test_lr_synthetic_split_seed_moves_only_dataset(self) -> None:
+        _, _, default_hash = _lr_synthetic_seeds({})
+        split, train, data_hash = _lr_synthetic_seeds({"AR_SPLIT_SEED": "9"})
+        self.assertEqual((split, train), (9, 42))
+        self.assertNotEqual(data_hash, default_hash)
+
+    def test_openml_split_seed_defaults_independently(self) -> None:
+        for node in ("openml_bank_marketing", "openml_credit_g"):
+            path = ROOT / "nodes" / node / "benchmark.py"
+            with self.subTest(node=node):
+                default = _load_node_module(path, {})
+                self.assertEqual((default.TRAIN_SEED, default.SPLIT_SEED, default.SEED), (42, 42, 42))
+                train_only = _load_node_module(path, {"AR_TRAIN_SEED": "7"})
+                self.assertEqual((train_only.TRAIN_SEED, train_only.SPLIT_SEED), (7, 42))
+                split_only = _load_node_module(path, {"AR_SPLIT_SEED": "9"})
+                self.assertEqual((split_only.TRAIN_SEED, split_only.SPLIT_SEED), (42, 9))
+
+    def _verify_campaign(self, **kwargs):
+        spec = _spec()
+        with tempfile.TemporaryDirectory() as tmp:
+            worker = SeededScriptedWorker(_copy_node(Path(tmp)), [
+                {"metric": 0.80, "content": "CANDIDATE1\n"},
+            ])
+            records_path = Path(tmp) / "trials.jsonl"
+            run_real_campaign(
+                node_spec=spec, campaign_id="f4verify", budget=1, manager_mode="baseline_manager",
+                memory_mode="none", records_path=records_path, worker=worker,
+                proposal_backend=StaticBackend(_proposal(spec)),
+                controller=ScriptedController({(1, "E2"): "verify"}),
+                **kwargs,
+            )
+            record = TrialAppendStore(records_path).read_all()[0]
+        return record.extra["control"]["verify"], worker.seed_calls
+
+    def test_verify_default_policy_is_fixed_and_varies_only_training_seed(self) -> None:
+        verify, calls = self._verify_campaign()
+        self.assertEqual(verify["split_policy"], "fixed")
+        self.assertEqual(len(calls), 4)
+        self.assertTrue(all(split is None for _, split in calls))
+
+    def test_verify_vary_policy_moves_split_with_training_seed(self) -> None:
+        verify, calls = self._verify_campaign(verify_split_policy="vary")
+        self.assertEqual(verify["split_policy"], "vary")
+        self.assertTrue(all(split == train for train, split in calls))
+
+    def test_local_worker_keeps_configured_split_seed_when_none(self) -> None:
+        from autoresearch.worker.local_worker import LocalWorker
+
+        spec = _spec()
+        with tempfile.TemporaryDirectory() as tmp:
+            worker = LocalWorker(node_root=_copy_node(Path(tmp)), train_seed=3, split_seed=5)
+            seen: list[tuple[object, object]] = []
+            worker.run_trial = lambda *args: seen.append((worker._train_seed, worker._split_seed))
+            worker.run_trial_at_seed(_proposal(spec), spec, 1, train_seed=11, split_seed=None)
+            worker.run_trial_at_seed(_proposal(spec), spec, 2, train_seed=12, split_seed=13)
+        self.assertEqual(seen, [(11, 5), (12, 13)])
+        self.assertEqual((worker._train_seed, worker._split_seed), (3, 5))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -234,10 +234,15 @@ class LocalWorker:
         train_seed: int | str | None,
         split_seed: int | str | None = None,
     ) -> WorkerResult:
-        """Run a trial with a temporary seed override (used by E2 verify)."""
+        """Run a trial with a temporary seed override (used by E2 verify).
+
+        ``split_seed=None`` keeps the worker's configured split seed, so a
+        ``"fixed"`` verify split policy re-runs on the campaign's data split.
+        """
         original = (self._train_seed, self._split_seed)
         self._train_seed = train_seed
-        self._split_seed = split_seed
+        if split_seed is not None:
+            self._split_seed = split_seed
         try:
             return self.run_trial(proposal, node_spec, budget_index)
         finally:

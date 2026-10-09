@@ -5,7 +5,7 @@ import time
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 
 def _sha256_file(path_str: str) -> str | None:
@@ -397,8 +397,12 @@ def _run_worker_at_seed(
     node_spec: NodeSpec,
     budget_index: int,
     seed: int,
+    split_seed: int | None = None,
 ) -> WorkerResult:
-    """Run one verify re-run at *seed*.
+    """Run one verify re-run at training seed *seed*.
+
+    *split_seed* ``None`` leaves the worker's data split where it is (the
+    ``"fixed"`` verify split policy); an int moves the split as well.
 
     Never falls back to an unseeded ``run_trial``: paired re-runs without seed
     control would be meaningless, so a worker without ``run_trial_at_seed``
@@ -411,7 +415,7 @@ def _run_worker_at_seed(
             "seeded runs (run_trial_at_seed); verify cannot run"
         )
     return worker.run_trial_at_seed(
-        proposal, node_spec, budget_index, train_seed=seed, split_seed=seed
+        proposal, node_spec, budget_index, train_seed=seed, split_seed=split_seed
     )
 
 
@@ -425,8 +429,17 @@ def _run_verify(
     base_budget_index: int,
     verify_runs: int,
     compute_budget: ComputeBudget,
+    verify_split_policy: Literal["fixed", "vary"] = "fixed",
 ) -> tuple[TrialRecord, dict[str, Any]]:
-    """Paired fresh-seed verification with a frozen response rule (E2)."""
+    """Paired fresh-seed verification with a frozen response rule (E2).
+
+    ``verify_split_policy="fixed"`` (default) varies only the training seed and
+    passes ``split_seed=None``, so every re-run sees the campaign's data split.
+    ``"vary"`` sets the split seed equal to the training seed for each pair.
+    The policy is recorded as ``extra.control.verify.split_policy``.
+    """
+    if verify_split_policy not in ("fixed", "vary"):
+        raise ValueError(f"unknown verify_split_policy: {verify_split_policy!r}")
     metric_name = node_spec.metric_name
     direction = node_spec.metric_direction
     candidate_snapshot = _snapshot_editable_state(worker, node_spec)
@@ -438,7 +451,8 @@ def _run_verify(
     for index, seed in enumerate(seeds):
         run_t0 = time.perf_counter()
         result = _run_worker_at_seed(
-            worker, noedit, node_spec, 900000 + base_budget_index * 10 + index, seed
+            worker, noedit, node_spec, 900000 + base_budget_index * 10 + index, seed,
+            split_seed=seed if verify_split_policy == "vary" else None,
         )
         compute_budget = compute_budget.consume_worker_run(time.perf_counter() - run_t0)
         candidate_metrics.append(result.parsed_metrics.get(metric_name) if result.success else None)
@@ -449,7 +463,8 @@ def _run_verify(
     for index, seed in enumerate(seeds):
         run_t0 = time.perf_counter()
         result = _run_worker_at_seed(
-            worker, noedit, node_spec, 950000 + base_budget_index * 10 + index, seed
+            worker, noedit, node_spec, 950000 + base_budget_index * 10 + index, seed,
+            split_seed=seed if verify_split_policy == "vary" else None,
         )
         compute_budget = compute_budget.consume_worker_run(time.perf_counter() - run_t0)
         incumbent_metrics.append(result.parsed_metrics.get(metric_name) if result.success else None)
@@ -488,6 +503,7 @@ def _run_verify(
     verify_meta = {
         "r": verify_runs,
         "seeds": seeds,
+        "split_policy": verify_split_policy,
         "candidate_metrics": candidate_metrics,
         "incumbent_metrics": incumbent_metrics,
         "mean_delta": mean_delta,
@@ -780,6 +796,7 @@ def run_real_campaign(
     compute_budget: ComputeBudget | None = None,
     t_min: int = 3,
     verify_runs: int = 2,
+    verify_split_policy: Literal["fixed", "vary"] = "fixed",
 ) -> CampaignRunResult:
     """Run a fixed-budget campaign with a real worker.
 
@@ -1174,6 +1191,7 @@ def run_real_campaign(
                     base_budget_index=budget_index,
                     verify_runs=verify_runs,
                     compute_budget=compute_budget,
+                    verify_split_policy=verify_split_policy,
                 )
                 compute_budget = verify_result["compute_budget"]
                 control_meta = {**control_meta, "verify": verify_result["verify"]}

@@ -30,9 +30,12 @@ N_EPOCHS = 80
 BATCH_SIZE = 4
 
 # ── fixed settings ───────────────────────────────────────────────────────────
-# AR_TRAIN_SEED is injected by the worker; the constant 42 is the default so
-# behaviour is unchanged when the variable is unset.
+# AR_TRAIN_SEED / AR_SPLIT_SEED are injected by the worker; both default to
+# 42 so behaviour is unchanged when they are unset.  AR_SPLIT_SEED fixes the
+# synthetic dataset (and therefore the train/val split); AR_TRAIN_SEED fixes
+# training only.  They are independent.
 RANDOM_SEED = int(os.environ.get("AR_TRAIN_SEED", "42"))
+SPLIT_SEED = int(os.environ.get("AR_SPLIT_SEED", "42"))
 N_TRAIN = 1600
 N_VAL = 400
 N_FEATURES = 10
@@ -129,7 +132,7 @@ def train(X_train, y_train, X_val, y_val, lr, reg, n_epochs, batch_size, seed):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main():
-    rng_state = RANDOM_SEED
+    rng_state = SPLIT_SEED
     X_all, y_all = _make_dataset(
         n_samples=N_TRAIN + N_VAL,
         n_features=N_FEATURES,

@@ -184,13 +184,14 @@ class TestCurrentBestOnResume(unittest.TestCase):
 class TestSeedInjection(unittest.TestCase):
     """L3.4: AR_TRAIN_SEED / AR_SPLIT_SEED reach the node with unchanged defaults."""
 
-    def _run_lr_synthetic(self, *, train_seed=None) -> float:
+    def _run_lr_synthetic(self, *, train_seed=None, split_seed=None) -> float:
         spec = load_registered_node("lr_synthetic", repo_root=ROOT)
         with tempfile.TemporaryDirectory() as tmp:
             worker = LocalWorker(
                 node_root=ROOT / "nodes" / "lr_synthetic",
                 artifact_dir=Path(tmp),
                 train_seed=train_seed,
+                split_seed=split_seed,
             )
             proposal = ManagerProposal(
                 manager_mode="test",
@@ -204,11 +205,17 @@ class TestSeedInjection(unittest.TestCase):
         return result.parsed_metrics["val_score"]
 
     def test_same_seed_reproduces_and_different_seed_changes(self) -> None:
+        # Since review fix F4 the training seed no longer moves the synthetic
+        # dataset, and its effect on val_score is small (often zero at 6 dp:
+        # seeds 7 and 8 both give 0.921357), so the training-seed check uses
+        # seeds whose scores differ, and the split seed is checked separately.
         first = self._run_lr_synthetic(train_seed=7)
         second = self._run_lr_synthetic(train_seed=7)
-        other = self._run_lr_synthetic(train_seed=8)
+        other_train = self._run_lr_synthetic(train_seed=100)
+        other_split = self._run_lr_synthetic(train_seed=7, split_seed=8)
         self.assertEqual(first, second)
-        self.assertNotEqual(first, other)
+        self.assertNotEqual(first, other_train)
+        self.assertNotEqual(first, other_split)
 
     def test_seed_vars_are_never_editable_symbols(self) -> None:
         for name in ("lr_synthetic", "openml_credit_g", "openml_bank_marketing"):
