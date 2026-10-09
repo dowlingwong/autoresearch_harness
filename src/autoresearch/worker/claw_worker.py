@@ -21,6 +21,7 @@ from autoresearch.manager.hyperparam_edits import (
 from autoresearch.memory.schemas import FailureCategory
 from autoresearch.nodes.spec import NodeSpec
 from autoresearch.worker.base import WorkerResult
+from autoresearch.worker.seeds import seed_environment
 
 
 def _packet_from_proposal(
@@ -104,6 +105,8 @@ class ClawWorker:
         model: str = "qwen2.5-coder:7b",
         host: str = "http://localhost:11434",
         allow_any_branch: bool = False,
+        train_seed: int | str | None = None,
+        split_seed: int | str | None = None,
     ) -> None:
         self.repo_root = Path(repo_root).resolve()
         self.node_root = Path(node_root).resolve()
@@ -116,6 +119,8 @@ class ClawWorker:
         self.model = model
         self.host = host
         self.allow_any_branch = allow_any_branch
+        self.train_seed = train_seed
+        self.split_seed = split_seed
         self.adapter = ClawCodeAutoresearchAdapter(self.repo_root)
 
     @classmethod
@@ -154,6 +159,7 @@ class ClawWorker:
         pre_trial_diff = _git_diff_text(self.node_root)
         node_state_hash = _hash_editable_state(self.node_root, node_spec.editable_paths)
         training_seed = _extract_training_seed(self.node_root / "train.py")
+        seed_env = seed_environment(self.train_seed, self.split_seed)
 
         # Generate packet driven by the Stage 2 manager proposal
         packet = _packet_from_proposal(proposal, node_spec, budget_index, self.packet_defaults)
@@ -172,6 +178,7 @@ class ClawWorker:
                 log_path=str(packet["log_path"]),
                 syntax_check_command=str(packet["syntax_check_command"]),
                 pre_trial_diff=pre_trial_diff,
+                seed_env=seed_env,
                 reproducibility={
                     "node_state_hash": node_state_hash,
                     "fast_config_hash": fast_config_hash,
@@ -198,6 +205,7 @@ class ClawWorker:
             fallback_command=str(packet["train_command"]),
             fallback_log_path=str(packet["log_path"]),
             pre_trial_diff=pre_trial_diff,
+            seed_env=seed_env,
             reproducibility={
                 "node_state_hash": node_state_hash,
                 "fast_config_hash": fast_config_hash,
@@ -247,6 +255,7 @@ def _extract_worker_result(
     fallback_log_path: str | None = None,
     pre_trial_diff: str = "",
     reproducibility: dict[str, str | None] | None = None,
+    seed_env: dict[str, str] | None = None,
 ) -> WorkerResult:
     """Parse a raw loop_autoresearch() return dict into a typed WorkerResult."""
     artifact_path = Path(artifact_dir).resolve() if artifact_dir is not None else None
@@ -274,7 +283,16 @@ def _extract_worker_result(
     val_bpb = experiment.get("val_bpb")
     metrics: dict[str, float] = {}
     if val_bpb is not None:
-        metrics[node_spec.metric_name] = 1.0 - float(val_bpb)
+        raw_val_bpb = float(val_bpb)
+        if node_spec.metric_name == "val_bpb":
+            # The node's own metric *is* bits-per-byte (minimise).  The legacy
+            # payload already reports it, so store it unmodified.  Writing
+            # ``1 - val_bpb`` under the ``val_bpb`` key would invert the sign.
+            metrics[node_spec.metric_name] = raw_val_bpb
+        else:
+            # Nodes whose metric is an AUC-style score log val_bpb in the
+            # legacy payload; convert once, here, at the parse boundary.
+            metrics[node_spec.metric_name] = 1.0 - raw_val_bpb
 
     changed_files: tuple[str, ...]
     if isinstance(last_result, dict) and last_result.get("changed_files"):
@@ -289,6 +307,7 @@ def _extract_worker_result(
             node_root=Path(node_root),
             command=fallback_command,
             log_path=fallback_log_path or "run.log",
+            env=seed_env,
         )
         if fallback_run.get("success"):
             metrics[node_spec.metric_name] = float(fallback_run["metric"])
@@ -364,6 +383,7 @@ def _run_deterministic_constant_trial(
     syntax_check_command: str,
     pre_trial_diff: str,
     reproducibility: dict[str, str | None] | None = None,
+    seed_env: dict[str, str] | None = None,
 ) -> WorkerResult:
     edit = dict(proposal.extra.get("structured_edit") or {})
     path = str(edit.get("path") or "train.py")
@@ -439,6 +459,7 @@ def _run_deterministic_constant_trial(
         capture_output=True,
         text=True,
         check=False,
+        env=seed_env,
     )
     if syntax.returncode != 0:
         syntax_log = artifact_dir / "syntax.log"
@@ -465,6 +486,7 @@ def _run_deterministic_constant_trial(
         node_root=node_root,
         command=command,
         log_path=log_path,
+        env=seed_env,
     )
     raw_log_artifact = _capture_raw_log(str(fallback_run.get("log_path") or log_path), artifact_dir, node_root)
     metrics: dict[str, float] = {}
@@ -739,6 +761,7 @@ def _run_fallback_experiment(
     node_root: Path,
     command: str,
     log_path: str,
+    env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     run = subprocess.run(
         ["/bin/zsh", "-lc", command],
@@ -749,6 +772,7 @@ def _run_fallback_experiment(
         if node_spec.default_budget.max_wall_clock_hours
         else None,
         check=False,
+        env=env,
     )
     target_log = Path(log_path)
     if not target_log.is_absolute():

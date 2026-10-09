@@ -112,7 +112,7 @@ autoresearch_harness/
 │   ├── manager/
 │   │   ├── base.py                 # ManagerProposal / ManagerStatus protocol
 │   │   ├── baseline_manager.py     # deterministic heuristic proposals
-│   │   ├── prompt_manager.py       # memory-aware proposals
+│   │   ├── prompt_manager.py       # memory-aware proposals (deterministic, no LLM)
 │   │   └── langgraph_manager.py    # LangGraph planner (optional backend)
 │   ├── worker/
 │   │   ├── base.py                 # WorkerResult protocol + DryRunWorker
@@ -213,6 +213,44 @@ python3 scripts/run_campaign.py \
     --memory-mode append_only_summary_with_rationale \
     --dry-run --llm-stub
 ```
+
+### Controllers and compute budgets (R1)
+
+Decision hooks run at epochs E0 (pre-proposal), E1 (post-proposal) and E2
+(post-metric, pre-commit). The default controller is `ContinueController`,
+which reproduces the pre-hook records exactly. All flags are optional:
+
+| Flag | Meaning |
+|---|---|
+| `--controller module:Class` | Load and instantiate a controller (default `ContinueController`). It must implement `decide(view, mask) -> ControlDecision`. |
+| `--max-worker-runs N` | Stop the campaign once N worker runs (including verify re-runs) have been spent. |
+| `--max-worker-seconds S` | Stop the campaign once S worker-seconds have been spent. |
+| `--max-llm-calls K` | Stop the campaign once K manager/LLM calls have been spent. |
+
+With only `--budget N` and no compute caps, behaviour is unchanged. Every
+non-default controller call (and every call when `log_default_decisions=True`)
+writes a `control_decision` event carrying the epoch, action, scores, mask,
+controller version and input hash.
+
+Actions in `run_real_campaign` (feasibility is recorded in each event's mask):
+
+| Epoch | Action | Notes |
+|---|---|---|
+| E0 | `stop` | Ends the campaign once `t >= t_min` (default 3). |
+| E0 | `demote` | Pops the top incumbent; feasible only when that top keep is unverified, so a verified keep is never reverted. |
+| E1 | `skip` | Records a `skipped` trial without running the worker. |
+| E1 | `revise` | Re-calls the manager with `revision_feedback`; only for LLM managers that accept it (`langgraph_manager`). |
+| E2 | `verify` | Paired seeded re-runs of candidate and incumbent; only for workers with `run_trial_at_seed` (`LocalWorker`). `verify_split_policy="fixed"` (default) varies only `AR_TRAIN_SEED`; `"vary"` also moves `AR_SPLIT_SEED`. |
+
+A controller choice that is masked out or not implemented at that epoch never
+crashes the campaign: it is logged as `control_decision_rejected`
+`{epoch, action, mask}` and the trial continues. `--max-llm-calls` counts only
+calls made by non-deterministic managers; `baseline_manager` and
+`prompt_manager` use none. `run_dry_campaign` supports only `continue`; any
+other action raises `NotImplementedError` there by design.
+
+Nodes read `AR_TRAIN_SEED` (training) and `AR_SPLIT_SEED` (data / split)
+independently; each defaults to 42.
 
 ### Model provider syntax
 

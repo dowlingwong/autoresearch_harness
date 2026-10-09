@@ -17,6 +17,7 @@ class TrialState(StrEnum):
     KEPT = "kept"
     DISCARDED = "discarded"
     FAILED_INVALID = "failed_invalid"
+    SKIPPED = "skipped"
 
 
 TERMINAL_STATES = frozenset(
@@ -24,12 +25,15 @@ TERMINAL_STATES = frozenset(
         TrialState.KEPT,
         TrialState.DISCARDED,
         TrialState.FAILED_INVALID,
+        TrialState.SKIPPED,
     }
 )
 
 ALLOWED_TRANSITIONS: dict[TrialState, frozenset[TrialState]] = {
     TrialState.INITIALIZED: frozenset({TrialState.PROPOSED}),
-    TrialState.PROPOSED: frozenset({TrialState.PATCH_GENERATED, TrialState.FAILED_INVALID}),
+    TrialState.PROPOSED: frozenset(
+        {TrialState.PATCH_GENERATED, TrialState.FAILED_INVALID, TrialState.SKIPPED}
+    ),
     TrialState.PATCH_GENERATED: frozenset({TrialState.SCOPE_VALIDATED, TrialState.FAILED_INVALID}),
     TrialState.SCOPE_VALIDATED: frozenset({TrialState.EXECUTED, TrialState.FAILED_INVALID}),
     TrialState.EXECUTED: frozenset({TrialState.METRIC_PARSED, TrialState.FAILED_INVALID}),
@@ -40,6 +44,7 @@ ALLOWED_TRANSITIONS: dict[TrialState, frozenset[TrialState]] = {
     TrialState.KEPT: frozenset(),
     TrialState.DISCARDED: frozenset(),
     TrialState.FAILED_INVALID: frozenset(),
+    TrialState.SKIPPED: frozenset(),
 }
 
 

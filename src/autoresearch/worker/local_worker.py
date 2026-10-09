@@ -46,6 +46,7 @@ from autoresearch.common.logging import get_logger
 from autoresearch.manager.base import ManagerProposal
 from autoresearch.nodes.spec import NodeSpec
 from autoresearch.worker.base import WorkerResult
+from autoresearch.worker.seeds import seed_environment
 
 _log = get_logger(__name__)
 
@@ -94,10 +95,14 @@ class LocalWorker:
         node_root: str | Path,
         artifact_dir: Optional[str | Path] = None,
         timeout_seconds: float = 3600.0,
+        train_seed: int | str | None = None,
+        split_seed: int | str | None = None,
     ) -> None:
         self._node_root = Path(node_root).resolve()
         self._artifact_dir: Optional[Path] = Path(artifact_dir).resolve() if artifact_dir else None
         self._timeout = timeout_seconds
+        self._train_seed = train_seed
+        self._split_seed = split_seed
 
     # ------------------------------------------------------------------
     # Public Worker interface
@@ -220,6 +225,29 @@ class LocalWorker:
     # Private helpers
     # ------------------------------------------------------------------
 
+    def run_trial_at_seed(
+        self,
+        proposal: ManagerProposal,
+        node_spec: NodeSpec,
+        budget_index: int,
+        *,
+        train_seed: int | str | None,
+        split_seed: int | str | None = None,
+    ) -> WorkerResult:
+        """Run a trial with a temporary seed override (used by E2 verify).
+
+        ``split_seed=None`` keeps the worker's configured split seed, so a
+        ``"fixed"`` verify split policy re-runs on the campaign's data split.
+        """
+        original = (self._train_seed, self._split_seed)
+        self._train_seed = train_seed
+        if split_seed is not None:
+            self._split_seed = split_seed
+        try:
+            return self.run_trial(proposal, node_spec, budget_index)
+        finally:
+            self._train_seed, self._split_seed = original
+
     def _resolve_artifact_dir(self, trial_label: str) -> Path:
         if self._artifact_dir is not None:
             d = self._artifact_dir / trial_label
@@ -259,6 +287,7 @@ class LocalWorker:
         log_path = artifact_dir / "run.log"
         cmd = node_spec.run_command
         _log.info("%s: running: %s", trial_label, cmd)
+        env = seed_environment(self._train_seed, self._split_seed)
         try:
             result = subprocess.run(
                 cmd,
@@ -267,6 +296,7 @@ class LocalWorker:
                 capture_output=True,
                 text=True,
                 timeout=self._timeout,
+                env=env,
             )
             combined = result.stdout + "\n" + result.stderr
             log_path.write_text(combined, encoding="utf-8")

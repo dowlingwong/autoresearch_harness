@@ -14,6 +14,7 @@ class RepeatedBadStats:
     repeated_invalid_count: int
     repeated_degraded_count: int
     flagged_trial_ids: tuple[str, ...]
+    skipped_count: int = 0
 
     def to_dict(self) -> dict[str, object]:
         payload = asdict(self)
@@ -49,12 +50,14 @@ def compute_repeated_bad_stats(records: list[TrialRecord], text_threshold: float
     total = len(records)
     repeated_invalid = sum(1 for record in flagged if record.decision == TrialDecision.FAILED_INVALID)
     repeated_degraded = sum(1 for record in flagged if record.decision == TrialDecision.DISCARDED)
+    skipped = sum(1 for record in records if record.decision == TrialDecision.SKIPPED)
     return RepeatedBadStats(
         repeated_bad_count=len(flagged),
         repeated_bad_rate=(len(flagged) / total) if total else 0.0,
         repeated_invalid_count=repeated_invalid,
         repeated_degraded_count=repeated_degraded,
         flagged_trial_ids=tuple(record.trial_id for record in flagged),
+        skipped_count=skipped,
     )
 
 

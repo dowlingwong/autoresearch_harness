@@ -7,7 +7,21 @@ from autoresearch.nodes.spec import NodeSpec
 
 
 class PromptManager:
+    """Deterministic, memory-aware proposal builder. **No LLM call.**
+
+    ``PromptManager`` wraps ``select_bounded_objective`` (the same bounded
+    selector that ``BaselineManager`` uses) and only formats its output into a
+    richer prompt-like objective.  It never constructs or calls a language
+    model.  Arms or analyses that claim LLM behaviour must use
+    ``LangGraphManager`` (or another LLM-backed backend) instead.
+
+    ``deterministic`` is True; the L5/L6 control plane masks the ``revise``
+    action for deterministic managers because they cannot produce a materially
+    different proposal on request.
+    """
+
     mode = "prompt_manager"
+    deterministic = True
 
     def propose_next_trial(
         self,

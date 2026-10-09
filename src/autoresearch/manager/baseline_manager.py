@@ -16,6 +16,7 @@ def select_bounded_objective(
 
 class BaselineManager:
     mode = "baseline_manager"
+    deterministic = True
 
     def propose_next_trial(
         self,

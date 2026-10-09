@@ -5,7 +5,7 @@ import time
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 
 def _sha256_file(path_str: str) -> str | None:
@@ -51,7 +51,15 @@ def _patch_is_empty(patch_ref: str) -> bool:
             return False
     return True
 
-from autoresearch.control_plane.budget import BudgetState
+from autoresearch.control_plane.budget import BudgetState, ComputeBudget
+from autoresearch.control_plane.controller import (
+    ContinueController,
+    ControlDecision,
+    Controller,
+    build_control_view,
+    compute_mask,
+    proposal_digest,
+)
 from autoresearch.control_plane.decision import decide_trial
 from autoresearch.control_plane.events import emit
 from autoresearch.control_plane.permissions import validate_edit_scope
@@ -72,6 +80,15 @@ from autoresearch.memory.similarity import compute_repeated_bad_stats
 from autoresearch.memory.summarizer import MemoryMode, build_memory_context
 from autoresearch.nodes.spec import NodeSpec
 from autoresearch.worker.base import DryRunWorker, Worker, WorkerResult
+
+
+class SeedInjectionUnsupportedError(RuntimeError):
+    """Raised when a seeded (verify) run is requested from a worker without seed support."""
+
+
+def _supports_seed_injection(worker: object) -> bool:
+    """True when the worker can run a trial at an injected seed (E2 verify)."""
+    return hasattr(worker, "run_trial_at_seed")
 
 
 class PendingTrialError(RuntimeError):
@@ -196,9 +213,376 @@ def _manager_status(
     )
 
 
+def _budget_view(budget_state: BudgetState, compute_budget: ComputeBudget) -> dict[str, object]:
+    return {
+        "trials_remaining": max(budget_state.total_trials - budget_state.consumed_trials, 0),
+        "trials_total": budget_state.total_trials,
+        **compute_budget.remaining(),
+    }
+
+
+def _controller_hook(
+    *,
+    controller: Controller,
+    log_default_decisions: bool,
+    event_store: object | None,
+    campaign_id: str,
+    trial_id: str,
+    epoch: str,
+    budget_index: int,
+    ledger_prefix: list[TrialRecord],
+    current_best: float | None,
+    incumbent_stack_depth: int,
+    proposal: ManagerProposal | None,
+    provisional: TrialRecord | None,
+    budget_state: BudgetState,
+    compute_budget: ComputeBudget,
+    node_spec: NodeSpec,
+    **feasibility: object,
+) -> tuple[ControlDecision, dict[str, bool]]:
+    """Build the view, compute the mask, ask the controller, and log the call.
+
+    A non-default controller (or ``log_default_decisions``) emits one
+    ``control_decision`` event.  The default ``ContinueController`` emits
+    nothing, which keeps the pre-hook record and event streams identical.
+    """
+    view = build_control_view(
+        epoch=epoch,  # type: ignore[arg-type]
+        budget_index=budget_index,
+        ledger_prefix=ledger_prefix,
+        current_best=current_best,
+        incumbent_stack_depth=incumbent_stack_depth,
+        proposal=proposal,
+        provisional=provisional,
+        budget=_budget_view(budget_state, compute_budget),
+        node=node_spec,
+    )
+    mask = compute_mask(view, **feasibility)  # type: ignore[arg-type]
+    decision = controller.decide(view, mask)
+    if (not isinstance(controller, ContinueController)) or log_default_decisions:
+        emit(
+            event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            event_type="control_decision",
+            payload={
+                "epoch": epoch,
+                "action": decision.action,
+                "scores": dict(decision.scores),
+                "mask": dict(mask),
+                "controller_version": decision.controller_version,
+                "input_hash": decision.input_hash,
+            },
+        )
+    return decision, mask
+
+
 def _editable_path(root: Path, path_str: str) -> Path:
     path = Path(path_str)
     return path if path.is_absolute() else root / path
+
+
+@dataclass
+class _IncumbentEntry:
+    """One kept incumbent, stored so E0 ``demote`` can revert it."""
+
+    snapshot: _EditableStateSnapshot | None
+    current_best_before: float | None
+    metric: float | None
+    verified: bool
+
+
+# Actions run_real_campaign implements at each epoch (BUILD_RUNBOOK L6).
+_EPOCH_ACTIONS: dict[str, tuple[str, ...]] = {
+    "E0": ("continue", "stop", "demote"),
+    "E1": ("continue", "skip", "revise"),
+    "E2": ("continue", "verify"),
+}
+
+
+def _resolve_action(
+    decision: ControlDecision,
+    mask: dict[str, bool],
+    *,
+    epoch: str,
+    event_store: object | None,
+    campaign_id: str,
+    trial_id: str,
+) -> str:
+    """Return the action to execute, falling back to ``continue`` if it is not allowed.
+
+    A controller choice that the mask rules out, or that is not implemented at
+    *epoch*, never crashes the campaign (E1/E2 run while the pending guard is
+    held).  It is logged as a ``control_decision_rejected`` event
+    ``{epoch, action, mask}`` and the trial proceeds as ``continue``.
+    """
+    action = decision.action
+    if action in _EPOCH_ACTIONS.get(epoch, ("continue",)) and mask.get(action, False):
+        return action
+    emit(
+        event_store,
+        campaign_id=campaign_id,
+        trial_id=trial_id,
+        event_type="control_decision_rejected",
+        payload={"epoch": epoch, "action": action, "mask": dict(mask)},
+    )
+    return "continue"
+
+
+def _accepts_revision_feedback(manager: object) -> bool:
+    """True when ``manager.propose_next_trial`` takes ``revision_feedback``."""
+    import inspect
+
+    method = getattr(manager, "propose_next_trial", None)
+    if method is None:
+        return False
+    try:
+        parameters = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return False
+    return "revision_feedback" in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+    )
+
+
+def _revision_feedback(memory_context: object) -> str:
+    stats = getattr(memory_context, "repeated_bad_stats", None)
+    if stats is not None and getattr(stats, "repeated_bad_count", 0):
+        return "repeated direction: avoid the parameter/direction already tried"
+    return "step too large: propose a smaller bounded step"
+
+
+def _editable_state_hash(worker: Worker, node_spec: NodeSpec) -> str | None:
+    """SHA-256 over the editable files, used by verify swap and demote audits."""
+    import hashlib
+
+    root = _worker_node_root(worker)
+    if root is None:
+        return None
+    digest = hashlib.sha256()
+    for path_str in node_spec.editable_paths:
+        digest.update(path_str.encode("utf-8"))
+        path = _editable_path(root, path_str)
+        digest.update(path.read_bytes() if path.exists() and path.is_file() else b"<missing>")
+    return digest.hexdigest()
+
+
+def _skipped_record(
+    *,
+    campaign_id: str,
+    budget_index: int,
+    node_spec: NodeSpec,
+    proposal: ManagerProposal,
+    memory_mode: str,
+    current_best: float | None,
+    timestamp_start: str,
+    timestamp_end: str,
+    control: dict[str, Any],
+) -> TrialRecord:
+    trial_id = f"{campaign_id}-trial-{budget_index:03d}"
+    return TrialRecord(
+        trial_id=trial_id,
+        campaign_id=campaign_id,
+        node_id=node_spec.name,
+        budget_index=budget_index,
+        timestamp_start=timestamp_start,
+        timestamp_end=timestamp_end,
+        manager_mode=proposal.manager_mode,
+        worker_mode="control_plane",
+        memory_mode=memory_mode,
+        proposal_summary=proposal.proposal_summary,
+        proposal_rationale=proposal.proposal_rationale,
+        targeted_files=node_spec.editable_paths,
+        patch_ref="",
+        git_commit_before="",
+        git_commit_after="",
+        execution_status=ExecutionStatus.FAILED,
+        validity_status=ValidityStatus.VALID,
+        failure_category=None,
+        raw_log_ref="",
+        parsed_metrics={},
+        current_best_before=current_best,
+        delta_vs_best=None,
+        decision=TrialDecision.SKIPPED,
+        decision_rationale="Skipped by controller at E1: proposal not executed.",
+        wall_clock_seconds=_elapsed_seconds(timestamp_start, timestamp_end),
+        cumulative_budget_consumed=budget_index,
+        provenance=build_trial_provenance(trial_id),
+        extra={"control": control},
+    )
+
+
+def _noedit_proposal(proposal: ManagerProposal) -> ManagerProposal:
+    """A copy that runs the current workspace without applying an edit."""
+    extra = {key: value for key, value in proposal.extra.items() if key != "structured_edit"}
+    extra.pop("deterministic_patch", None)
+    return replace(
+        proposal,
+        objective="Run the restored configuration unchanged; make no edit.",
+        extra=extra,
+    )
+
+
+def _run_worker_at_seed(
+    worker: Worker,
+    proposal: ManagerProposal,
+    node_spec: NodeSpec,
+    budget_index: int,
+    seed: int,
+    split_seed: int | None = None,
+) -> WorkerResult:
+    """Run one verify re-run at training seed *seed*.
+
+    *split_seed* ``None`` leaves the worker's data split where it is (the
+    ``"fixed"`` verify split policy); an int moves the split as well.
+
+    Never falls back to an unseeded ``run_trial``: paired re-runs without seed
+    control would be meaningless, so a worker without ``run_trial_at_seed``
+    raises :class:`SeedInjectionUnsupportedError`.  The E2 mask already rules
+    verify out for such workers.
+    """
+    if not _supports_seed_injection(worker):
+        raise SeedInjectionUnsupportedError(
+            f"worker {getattr(worker, 'mode', type(worker).__name__)!r} does not support "
+            "seeded runs (run_trial_at_seed); verify cannot run"
+        )
+    return worker.run_trial_at_seed(
+        proposal, node_spec, budget_index, train_seed=seed, split_seed=split_seed
+    )
+
+
+def _run_verify(
+    *,
+    record: TrialRecord,
+    proposal: ManagerProposal,
+    node_spec: NodeSpec,
+    worker: Worker,
+    incumbent_snapshot: _EditableStateSnapshot | None,
+    base_budget_index: int,
+    verify_runs: int,
+    compute_budget: ComputeBudget,
+    verify_split_policy: Literal["fixed", "vary"] = "fixed",
+) -> tuple[TrialRecord, dict[str, Any]]:
+    """Paired fresh-seed verification with a frozen response rule (E2).
+
+    ``verify_split_policy="fixed"`` (default) varies only the training seed and
+    passes ``split_seed=None``, so every re-run sees the campaign's data split.
+    ``"vary"`` sets the split seed equal to the training seed for each pair.
+    The policy is recorded as ``extra.control.verify.split_policy``.
+    """
+    if verify_split_policy not in ("fixed", "vary"):
+        raise ValueError(f"unknown verify_split_policy: {verify_split_policy!r}")
+    metric_name = node_spec.metric_name
+    direction = node_spec.metric_direction
+    candidate_snapshot = _snapshot_editable_state(worker, node_spec)
+    candidate_hash_before = _editable_state_hash(worker, node_spec)
+    seeds = [1000 + base_budget_index * 10 + index for index in range(verify_runs)]
+    noedit = _noedit_proposal(proposal)
+
+    candidate_metrics: list[float | None] = []
+    for index, seed in enumerate(seeds):
+        run_t0 = time.perf_counter()
+        result = _run_worker_at_seed(
+            worker, noedit, node_spec, 900000 + base_budget_index * 10 + index, seed,
+            split_seed=seed if verify_split_policy == "vary" else None,
+        )
+        compute_budget = compute_budget.consume_worker_run(time.perf_counter() - run_t0)
+        candidate_metrics.append(result.parsed_metrics.get(metric_name) if result.success else None)
+
+    _restore_editable_state(incumbent_snapshot)
+    incumbent_hash = _editable_state_hash(worker, node_spec)
+    incumbent_metrics: list[float | None] = []
+    for index, seed in enumerate(seeds):
+        run_t0 = time.perf_counter()
+        result = _run_worker_at_seed(
+            worker, noedit, node_spec, 950000 + base_budget_index * 10 + index, seed,
+            split_seed=seed if verify_split_policy == "vary" else None,
+        )
+        compute_budget = compute_budget.consume_worker_run(time.perf_counter() - run_t0)
+        incumbent_metrics.append(result.parsed_metrics.get(metric_name) if result.success else None)
+
+    _restore_editable_state(candidate_snapshot)
+    candidate_hash_after = _editable_state_hash(worker, node_spec)
+
+    pairs = [
+        (candidate, incumbent)
+        for candidate, incumbent in zip(candidate_metrics, incumbent_metrics)
+        if candidate is not None and incumbent is not None
+    ]
+    deltas = [candidate - incumbent for candidate, incumbent in pairs]
+    mean_delta = (sum(deltas) / len(deltas)) if deltas else 0.0
+    improved = mean_delta < 0 if direction == "minimize" else mean_delta > 0
+    response = "keep" if (pairs and improved) else "reject"
+
+    original_decision = record.decision
+    decision = record.decision
+    failure = record.failure_category
+    rationale = record.decision_rationale
+    if response == "keep" and original_decision != TrialDecision.KEPT:
+        decision = TrialDecision.KEPT
+        failure = None
+        rationale = (
+            f"Verify rescued a discard: mean paired delta {mean_delta:.6f} "
+            f"improves the {direction} objective."
+        )
+    elif response == "reject" and original_decision == TrialDecision.KEPT:
+        decision = TrialDecision.DISCARDED
+        failure = FailureCategory.DEGRADED_METRIC
+        rationale = (
+            f"Verify vetoed a keep: mean paired delta {mean_delta:.6f} "
+            f"does not improve the {direction} objective."
+        )
+    verify_meta = {
+        "r": verify_runs,
+        "seeds": seeds,
+        "split_policy": verify_split_policy,
+        "candidate_metrics": candidate_metrics,
+        "incumbent_metrics": incumbent_metrics,
+        "mean_delta": mean_delta,
+        "response": response,
+        "original_decision": original_decision.value,
+        "candidate_state_hash_before": candidate_hash_before,
+        "candidate_state_hash_after": candidate_hash_after,
+        "incumbent_state_hash": incumbent_hash,
+    }
+    updated = replace(
+        record, decision=decision, failure_category=failure, decision_rationale=rationale
+    )
+    return updated, {"verify": verify_meta, "compute_budget": compute_budget}
+
+
+def _perform_demote(
+    *,
+    incumbent_stack: list[_IncumbentEntry],
+    worker: Worker,
+    node_spec: NodeSpec,
+    current_best: float | None,
+    event_store: object | None,
+    campaign_id: str,
+    trial_id: str,
+) -> float | None:
+    """Pop the top incumbent if it is an unverified keep; return the restored current_best.
+
+    Demote never reaches below the top of the stack, so a verified keep is
+    never reverted (directly or by deleting the stack above an older entry).
+    The E0 mask enforces the same rule.
+    """
+    if not incumbent_stack:
+        raise ValueError("demote requested with an empty incumbent stack")
+    if incumbent_stack[-1].verified:
+        raise ValueError("demote requested but the top incumbent is a verified keep")
+    hash_before = _editable_state_hash(worker, node_spec)
+    entry = incumbent_stack.pop()
+    _restore_editable_state(entry.snapshot)
+    hash_after = _editable_state_hash(worker, node_spec)
+    emit(
+        event_store,
+        campaign_id=campaign_id,
+        trial_id=trial_id,
+        event_type="incumbent_demoted",
+        payload={"hash_before": hash_before, "hash_after": hash_after},
+    )
+    return entry.current_best_before
 
 
 def _snapshot_editable_state(worker: Worker, node_spec: NodeSpec) -> _EditableStateSnapshot | None:
@@ -439,6 +823,12 @@ def run_real_campaign(
     event_store: object | None = None,
     rationale_max_tokens: int | None = None,
     ungoverned: bool = False,
+    controller: Controller | None = None,
+    log_default_decisions: bool = False,
+    compute_budget: ComputeBudget | None = None,
+    t_min: int = 3,
+    verify_runs: int = 2,
+    verify_split_policy: Literal["fixed", "vary"] = "fixed",
 ) -> CampaignRunResult:
     """Run a fixed-budget campaign with a real worker.
 
@@ -467,6 +857,27 @@ def run_real_campaign(
     alongside the ledger so that we can compare the two and show exactly
     what the governed ledger would have captured versus what the ungoverned
     regime left behind.
+
+    **Controller (R1, BUILD_RUNBOOK L5/L6).**  *controller* is asked at E0
+    (``continue``/``stop``/``demote``), E1 (``continue``/``skip``/``revise``)
+    and E2 (``continue``/``verify``).  The default ``ContinueController``
+    reproduces the pre-hook records exactly.
+
+    - A choice the feasibility mask rules out, or one not implemented at that
+      epoch, is logged as ``control_decision_rejected`` ``{epoch, action,
+      mask}`` and the trial proceeds as ``continue``; it never raises.
+    - ``revise`` re-calls the manager with ``revision_feedback=<text>``; it is
+      feasible only for non-deterministic managers that accept that keyword.
+    - ``verify`` runs *verify_runs* paired seeded re-runs; it is feasible only
+      when the worker has ``run_trial_at_seed``.  *verify_split_policy*
+      ``"fixed"`` (default) varies only the training seed; ``"vary"`` moves the
+      split seed with it.  The policy is recorded in ``extra.control.verify``.
+    - ``demote`` pops the top of the incumbent stack and is feasible only when
+      that top entry is an unverified keep; verified keeps are never reverted.
+
+    *compute_budget* counts every worker run (including verify re-runs),
+    worker seconds, and LLM calls; proposals from deterministic managers
+    (``deterministic = True``) are not counted as LLM calls.
     """
     records_path = Path(records_path)
     records_path.parent.mkdir(parents=True, exist_ok=True)
@@ -480,10 +891,14 @@ def run_real_campaign(
         obs_path = records_path.parent / f"{cid_stem}_ungoverned_obs.jsonl"
 
     manager = proposal_backend or _manager(manager_mode, llm=manager_llm, temperature=manager_temperature)
+    controller = controller or ContinueController()
+    compute_budget = compute_budget or ComputeBudget()
     store = TrialAppendStore(records_path)
     existing_records = store.read_all()
     budget_state = BudgetState(total_trials=budget, consumed_trials=len(existing_records))
-    current_best = _current_best(existing_records, node_spec.metric_name)
+    current_best = _current_best(existing_records, node_spec.metric_name, node_spec.metric_direction)
+    incumbent_stack: list[_IncumbentEntry] = []
+    stop_requested = False
 
     records: list[TrialRecord] = []
     campaign_started = time.perf_counter()
@@ -499,7 +914,7 @@ def run_real_campaign(
             "node_id": node_spec.name,
         },
     )
-    while not budget_state.exhausted:
+    while not budget_state.exhausted and not compute_budget.exhausted:
         budget_index = budget_state.next_budget_index
         trial_id = f"{campaign_id}-trial-{budget_index:03d}"
         emit(
@@ -509,6 +924,50 @@ def run_real_campaign(
             event_type="trial_started",
             payload={"trial_id": trial_id, "budget_index": budget_index},
         )
+
+        e0_decision, _e0_mask = _controller_hook(
+            controller=controller,
+            log_default_decisions=log_default_decisions,
+            event_store=event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            epoch="E0",
+            budget_index=budget_index,
+            ledger_prefix=existing_records + records,
+            current_best=current_best,
+            incumbent_stack_depth=len(incumbent_stack),
+            proposal=None,
+            provisional=None,
+            budget_state=budget_state,
+            compute_budget=compute_budget,
+            node_spec=node_spec,
+            top_of_stack_unverified=bool(incumbent_stack) and not incumbent_stack[-1].verified,
+            t_min=t_min,
+        )
+        e0_action = _resolve_action(
+            e0_decision, _e0_mask, epoch="E0", event_store=event_store,
+            campaign_id=campaign_id, trial_id=trial_id,
+        )
+        if e0_action == "stop":
+            emit(
+                event_store,
+                campaign_id=campaign_id,
+                trial_id=trial_id,
+                event_type="campaign_stopped_by_controller",
+                payload={"remaining": _budget_view(budget_state, compute_budget)},
+            )
+            stop_requested = True
+            break
+        if e0_action == "demote":
+            current_best = _perform_demote(
+                incumbent_stack=incumbent_stack,
+                worker=worker,
+                node_spec=node_spec,
+                current_best=current_best,
+                event_store=event_store,
+                campaign_id=campaign_id,
+                trial_id=trial_id,
+            )
 
         memory_context = build_memory_context(
             existing_records + records, MemoryMode(memory_mode), node_spec, budget_index,
@@ -546,6 +1005,10 @@ def run_real_campaign(
             event_type="proposal_created",
             payload={"summary": proposal.proposal_summary, "manager_mode": proposal.manager_mode},
         )
+        if not getattr(manager, "deterministic", False):
+            # Only LLM-backed managers make a call; deterministic managers
+            # (baseline, prompt) consume no LLM budget.
+            compute_budget = compute_budget.consume_llm_call()
 
         if ungoverned:
             # UNGOVERNED: pending guard is not written.
@@ -574,98 +1037,226 @@ def run_real_campaign(
             )
         ts_start = _iso_now()
         worker_started = time.perf_counter()
-        emit(
-            event_store,
-            campaign_id=campaign_id,
-            trial_id=trial_id,
-            event_type="worker_started",
-            payload={"worker_mode": getattr(worker, "mode", "unknown_worker")},
-        )
         editable_snapshot = _snapshot_editable_state(worker, node_spec)
         precondition_result = _precondition_failure_result(proposal, node_spec, worker)
+        control_meta: dict[str, Any] = {}
+        skip_trial = False
+        worker_result: WorkerResult | None = None
         if precondition_result is not None:
+            emit(
+                event_store, campaign_id=campaign_id, trial_id=trial_id,
+                event_type="worker_started",
+                payload={"worker_mode": getattr(worker, "mode", "unknown_worker")},
+            )
             worker_result = precondition_result
+            emit(
+                event_store, campaign_id=campaign_id, trial_id=trial_id,
+                event_type="worker_finished",
+                payload={"success": worker_result.success,
+                         "elapsed_seconds": max(time.perf_counter() - worker_started, 0.0)},
+            )
         else:
-            try:
-                worker_result = worker.run_trial(proposal, node_spec, budget_index)
-            except Exception as exc:
-                worker_result = WorkerResult(
-                    worker_mode=getattr(worker, "mode", "unknown_worker"),
-                    changed_files=(),
-                    success=False,
-                    parsed_metrics={},
-                    raw_log_ref="",
-                    patch_ref="",
-                    git_commit_before="",
-                    git_commit_after="",
-                    failure_message=str(exc),
-                    extra={"failure_category": FailureCategory.EDIT_FAILED.value},
+            e1_decision, e1_mask = _controller_hook(
+                controller=controller,
+                log_default_decisions=log_default_decisions,
+                event_store=event_store,
+                campaign_id=campaign_id,
+                trial_id=trial_id,
+                epoch="E1",
+                budget_index=budget_index,
+                ledger_prefix=existing_records + records,
+                current_best=current_best,
+                incumbent_stack_depth=len(incumbent_stack),
+                proposal=proposal,
+                provisional=None,
+                budget_state=budget_state,
+                compute_budget=compute_budget,
+                node_spec=node_spec,
+                proposal_passed_precondition=True,
+                manager_deterministic=bool(getattr(manager, "deterministic", False)),
+                revision_feedback_supported=_accepts_revision_feedback(manager),
+                revisions_this_trial=0,
+                llm_cap_reached=(
+                    compute_budget.max_llm_calls is not None
+                    and compute_budget.llm_calls >= compute_budget.max_llm_calls
+                ),
+            )
+            e1_action = _resolve_action(
+                e1_decision, e1_mask, epoch="E1", event_store=event_store,
+                campaign_id=campaign_id, trial_id=trial_id,
+            )
+            if e1_action == "skip":
+                skip_trial = True
+                control_meta = {"epoch": "E1", "action": "skip"}
+            else:
+                if e1_action == "revise":
+                    feedback = _revision_feedback(memory_context)
+                    revised = manager.propose_next_trial(
+                        status, memory_context, node_spec, revision_feedback=feedback
+                    )
+                    compute_budget = compute_budget.consume_llm_call()
+                    revised = _proposal_with_campaign_metadata(
+                        _proposal_with_worker_memory(revised, memory_context=memory_context),
+                        node_spec=node_spec,
+                    )
+                    control_meta = {
+                        "epoch": "E1",
+                        "action": "revise",
+                        "revision": {
+                            "feedback": feedback,
+                            "original": proposal_digest(proposal),
+                            "revised": proposal_digest(revised),
+                        },
+                    }
+                    emit(
+                        event_store, campaign_id=campaign_id, trial_id=trial_id,
+                        event_type="proposal_revised",
+                        payload={"summary": revised.proposal_summary, "feedback": feedback},
+                    )
+                    proposal = revised
+                emit(
+                    event_store, campaign_id=campaign_id, trial_id=trial_id,
+                    event_type="worker_started",
+                    payload={"worker_mode": getattr(worker, "mode", "unknown_worker")},
+                )
+                recheck = _precondition_failure_result(proposal, node_spec, worker)
+                if recheck is not None:
+                    worker_result = recheck
+                else:
+                    worker_run_t0 = time.perf_counter()
+                    try:
+                        worker_result = worker.run_trial(proposal, node_spec, budget_index)
+                    except Exception as exc:
+                        worker_result = WorkerResult(
+                            worker_mode=getattr(worker, "mode", "unknown_worker"),
+                            changed_files=(),
+                            success=False,
+                            parsed_metrics={},
+                            raw_log_ref="",
+                            patch_ref="",
+                            git_commit_before="",
+                            git_commit_after="",
+                            failure_message=str(exc),
+                            extra={"failure_category": FailureCategory.EDIT_FAILED.value},
+                        )
+                    compute_budget = compute_budget.consume_worker_run(time.perf_counter() - worker_run_t0)
+                emit(
+                    event_store, campaign_id=campaign_id, trial_id=trial_id,
+                    event_type="worker_finished",
+                    payload={"success": worker_result.success,
+                             "elapsed_seconds": max(time.perf_counter() - worker_started, 0.0)},
                 )
         ts_end = _iso_now()
-        emit(
-            event_store,
-            campaign_id=campaign_id,
-            trial_id=trial_id,
-            event_type="worker_finished",
-            payload={
-                "success": worker_result.success,
-                "elapsed_seconds": max(time.perf_counter() - worker_started, 0.0),
-            },
-        )
 
-        record = _record_from_worker_result(
-            campaign_id=campaign_id,
-            budget_index=budget_index,
-            node_spec=node_spec,
-            manager_mode=proposal.manager_mode,
-            memory_mode=memory_mode,
-            proposal_summary=proposal.proposal_summary,
-            proposal_rationale=proposal.proposal_rationale,
-            proposal_extra=proposal.extra,
-            worker_result=worker_result,
-            current_best=current_best,
-            timestamp_start=ts_start,
-            timestamp_end=ts_end,
-        )
-        scope_payload = dict(record.extra.get("scope_validation", {}))
-        emit(
-            event_store,
-            campaign_id=campaign_id,
-            trial_id=trial_id,
-            event_type="scope_validated",
-            payload={
-                "valid": bool(scope_payload.get("valid")),
-                "changed_files": list(scope_payload.get("changed_paths") or worker_result.changed_files),
-            },
-        )
-        emit(
-            event_store,
-            campaign_id=campaign_id,
-            trial_id=trial_id,
-            event_type="metric_parsed",
-            payload={
-                "metric_name": node_spec.metric_name,
-                "value": record.parsed_metrics.get(node_spec.metric_name),
-            },
-        )
-        emit(
-            event_store,
-            campaign_id=campaign_id,
-            trial_id=trial_id,
-            event_type="decision_made",
-            payload={
-                "decision": record.decision.value,
-                "delta_vs_best": record.delta_vs_best,
-                "failure_category": (
-                    record.failure_category.value if record.failure_category else None
-                ),
-            },
-        )
-        # Compute cumulative repeated-bad count for this trial (including itself)
-        # and stamp it onto the immutable record before persisting.
-        rbs = compute_repeated_bad_stats(existing_records + records + [record])
-        record = replace(record, repeated_bad_count=rbs.repeated_bad_count)
-        records.append(record)
+        if skip_trial:
+            record = _skipped_record(
+                campaign_id=campaign_id,
+                budget_index=budget_index,
+                node_spec=node_spec,
+                proposal=proposal,
+                memory_mode=memory_mode,
+                current_best=current_best,
+                timestamp_start=ts_start,
+                timestamp_end=ts_end,
+                control=control_meta,
+            )
+            rbs = compute_repeated_bad_stats(existing_records + records + [record])
+            record = replace(record, repeated_bad_count=rbs.repeated_bad_count)
+            records.append(record)
+        else:
+            record = _record_from_worker_result(
+                campaign_id=campaign_id,
+                budget_index=budget_index,
+                node_spec=node_spec,
+                manager_mode=proposal.manager_mode,
+                memory_mode=memory_mode,
+                proposal_summary=proposal.proposal_summary,
+                proposal_rationale=proposal.proposal_rationale,
+                proposal_extra=proposal.extra,
+                worker_result=worker_result,
+                current_best=current_best,
+                timestamp_start=ts_start,
+                timestamp_end=ts_end,
+            )
+            scope_payload = dict(record.extra.get("scope_validation", {}))
+            emit(
+                event_store,
+                campaign_id=campaign_id,
+                trial_id=trial_id,
+                event_type="scope_validated",
+                payload={
+                    "valid": bool(scope_payload.get("valid")),
+                    "changed_files": list(scope_payload.get("changed_paths") or worker_result.changed_files),
+                },
+            )
+            emit(
+                event_store,
+                campaign_id=campaign_id,
+                trial_id=trial_id,
+                event_type="metric_parsed",
+                payload={
+                    "metric_name": node_spec.metric_name,
+                    "value": record.parsed_metrics.get(node_spec.metric_name),
+                },
+            )
+            emit(
+                event_store,
+                campaign_id=campaign_id,
+                trial_id=trial_id,
+                event_type="decision_made",
+                payload={
+                    "decision": record.decision.value,
+                    "delta_vs_best": record.delta_vs_best,
+                    "failure_category": (
+                        record.failure_category.value if record.failure_category else None
+                    ),
+                },
+            )
+            # Compute cumulative repeated-bad count for this trial (including itself)
+            # and stamp it onto the immutable record before persisting.
+            rbs = compute_repeated_bad_stats(existing_records + records + [record])
+            record = replace(record, repeated_bad_count=rbs.repeated_bad_count)
+            e2_decision, e2_mask = _controller_hook(
+                controller=controller,
+                log_default_decisions=log_default_decisions,
+                event_store=event_store,
+                campaign_id=campaign_id,
+                trial_id=trial_id,
+                epoch="E2",
+                budget_index=budget_index,
+                ledger_prefix=existing_records + records,
+                current_best=current_best,
+                incumbent_stack_depth=len(incumbent_stack),
+                proposal=proposal,
+                provisional=record,
+                budget_state=budget_state,
+                compute_budget=compute_budget,
+                node_spec=node_spec,
+                seed_injection_supported=_supports_seed_injection(worker),
+                verify_runs=verify_runs,
+                worker_runs_remaining=compute_budget.remaining()["worker_runs_remaining"],
+            )
+            e2_action = _resolve_action(
+                e2_decision, e2_mask, epoch="E2", event_store=event_store,
+                campaign_id=campaign_id, trial_id=trial_id,
+            )
+            if e2_action == "verify":
+                record, verify_result = _run_verify(
+                    record=record,
+                    proposal=proposal,
+                    node_spec=node_spec,
+                    worker=worker,
+                    incumbent_snapshot=editable_snapshot,
+                    base_budget_index=budget_index,
+                    verify_runs=verify_runs,
+                    compute_budget=compute_budget,
+                    verify_split_policy=verify_split_policy,
+                )
+                compute_budget = verify_result["compute_budget"]
+                control_meta = {**control_meta, "verify": verify_result["verify"]}
+            if control_meta:
+                record = replace(record, extra={**record.extra, "control": control_meta})
+            records.append(record)
 
         if ungoverned:
             # UNGOVERNED: write an observation entry regardless of outcome,
@@ -717,6 +1308,15 @@ def run_real_campaign(
 
         if record.decision == TrialDecision.KEPT and node_spec.metric_name in record.parsed_metrics:
             current_best = record.parsed_metrics[node_spec.metric_name]
+        if record.decision == TrialDecision.KEPT:
+            incumbent_stack.append(
+                _IncumbentEntry(
+                    snapshot=editable_snapshot,
+                    current_best_before=record.current_best_before,
+                    metric=record.parsed_metrics.get(node_spec.metric_name),
+                    verified=bool(control_meta.get("verify", {}).get("response") == "keep"),
+                )
+            )
         budget_state = budget_state.consume_one()
 
     emit(
@@ -759,13 +1359,26 @@ def run_dry_campaign(
     dry_run_profile: str = "monotonic",
     proposal_backend: object | None = None,
     event_store: object | None = None,
+    controller: Controller | None = None,
+    log_default_decisions: bool = False,
+    compute_budget: ComputeBudget | None = None,
 ) -> CampaignRunResult:
+    """Run a fixed-budget campaign with the synthetic ``DryRunWorker``.
+
+    The controller hooks run at E0/E1/E2 as in :func:`run_real_campaign`, but
+    the dry campaign supports only the ``continue`` action.  Any other action
+    raises ``NotImplementedError`` by design: skip, revise, verify, demote and
+    stop are implemented in :func:`run_real_campaign` only.  LLM calls are
+    counted only for non-deterministic managers.
+    """
     manager = proposal_backend or _manager(manager_mode, llm=manager_llm, temperature=manager_temperature)
     worker = DryRunWorker(profile=dry_run_profile)
+    controller = controller or ContinueController()
+    compute_budget = compute_budget or ComputeBudget()
     store = TrialAppendStore(records_path)
     existing_records = store.read_all()
     budget_state = BudgetState(total_trials=budget, consumed_trials=len(existing_records))
-    current_best = _current_best(existing_records, node_spec.metric_name)
+    current_best = _current_best(existing_records, node_spec.metric_name, node_spec.metric_direction)
 
     records: list[TrialRecord] = []
     campaign_started = time.perf_counter()
@@ -781,7 +1394,7 @@ def run_dry_campaign(
             "node_id": node_spec.name,
         },
     )
-    while not budget_state.exhausted:
+    while not budget_state.exhausted and not compute_budget.exhausted:
         budget_index = budget_state.next_budget_index
         trial_id = f"{campaign_id}-trial-{budget_index:03d}"
         emit(
@@ -791,6 +1404,29 @@ def run_dry_campaign(
             event_type="trial_started",
             payload={"trial_id": trial_id, "budget_index": budget_index},
         )
+        e0_decision, _e0_mask = _controller_hook(
+            controller=controller,
+            log_default_decisions=log_default_decisions,
+            event_store=event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            epoch="E0",
+            budget_index=budget_index,
+            ledger_prefix=existing_records + records,
+            current_best=current_best,
+            incumbent_stack_depth=0,
+            proposal=None,
+            provisional=None,
+            budget_state=budget_state,
+            compute_budget=compute_budget,
+            node_spec=node_spec,
+            top_of_stack_unverified=False,
+        )
+        if e0_decision.action != "continue":
+            raise NotImplementedError(
+                f"E0 action {e0_decision.action!r}: run_dry_campaign supports only "
+                "'continue' (by design); use run_real_campaign"
+            )
         memory_context = build_memory_context(existing_records + records, MemoryMode(memory_mode), node_spec, budget_index)
         emit(
             event_store,
@@ -824,6 +1460,10 @@ def run_dry_campaign(
             event_type="proposal_created",
             payload={"summary": proposal.proposal_summary, "manager_mode": proposal.manager_mode},
         )
+        if not getattr(manager, "deterministic", False):
+            # Only LLM-backed managers make a call; deterministic managers
+            # (baseline, prompt) consume no LLM budget.
+            compute_budget = compute_budget.consume_llm_call()
         emit(
             event_store,
             campaign_id=campaign_id,
@@ -839,7 +1479,38 @@ def run_dry_campaign(
             event_type="worker_started",
             payload={"worker_mode": worker.mode},
         )
+        e1_decision, _e1_mask = _controller_hook(
+            controller=controller,
+            log_default_decisions=log_default_decisions,
+            event_store=event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            epoch="E1",
+            budget_index=budget_index,
+            ledger_prefix=existing_records + records,
+            current_best=current_best,
+            incumbent_stack_depth=0,
+            proposal=proposal,
+            provisional=None,
+            budget_state=budget_state,
+            compute_budget=compute_budget,
+            node_spec=node_spec,
+            proposal_passed_precondition=True,
+            manager_deterministic=bool(getattr(manager, "deterministic", False)),
+            revisions_this_trial=0,
+            llm_cap_reached=(
+                compute_budget.max_llm_calls is not None
+                and compute_budget.llm_calls >= compute_budget.max_llm_calls
+            ),
+        )
+        if e1_decision.action != "continue":
+            raise NotImplementedError(
+                f"E1 action {e1_decision.action!r}: run_dry_campaign supports only "
+                "'continue' (by design); use run_real_campaign"
+            )
+        worker_run_t0 = time.perf_counter()
         worker_result = worker.run_trial(proposal, node_spec, budget_index)
+        compute_budget = compute_budget.consume_worker_run(time.perf_counter() - worker_run_t0)
         emit(
             event_store,
             campaign_id=campaign_id,
@@ -899,6 +1570,30 @@ def run_dry_campaign(
         # Compute cumulative repeated-bad count for this trial (including itself).
         rbs = compute_repeated_bad_stats(existing_records + records + [record])
         record = replace(record, repeated_bad_count=rbs.repeated_bad_count)
+        e2_decision, _e2_mask = _controller_hook(
+            controller=controller,
+            log_default_decisions=log_default_decisions,
+            event_store=event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            epoch="E2",
+            budget_index=budget_index,
+            ledger_prefix=existing_records + records,
+            current_best=current_best,
+            incumbent_stack_depth=0,
+            proposal=proposal,
+            provisional=record,
+            budget_state=budget_state,
+            compute_budget=compute_budget,
+            node_spec=node_spec,
+            seed_injection_supported=_supports_seed_injection(worker),
+            worker_runs_remaining=compute_budget.remaining()["worker_runs_remaining"],
+        )
+        if e2_decision.action != "continue":
+            raise NotImplementedError(
+                f"E2 action {e2_decision.action!r}: run_dry_campaign supports only "
+                "'continue' (by design); use run_real_campaign"
+            )
         records.append(record)
         store.append_many([record])
         emit(
@@ -1133,6 +1828,22 @@ def _proposal_with_campaign_metadata(proposal: ManagerProposal, *, node_spec: No
     return replace(proposal, extra=extra)
 
 
-def _current_best(records: list[TrialRecord], metric_name: str) -> float | None:
-    values = [record.parsed_metrics[metric_name] for record in records if metric_name in record.parsed_metrics]
-    return max(values) if values else None
+def _current_best(
+    records: list[TrialRecord],
+    metric_name: str,
+    metric_direction: str = "maximize",
+) -> float | None:
+    """Best metric over *kept* records, respecting the node's direction.
+
+    Only records with ``decision == KEPT`` count: invalid records may still
+    carry a parsed metric (for audit) but never define the incumbent.  On
+    minimise nodes the best value is the minimum.
+    """
+    values = [
+        record.parsed_metrics[metric_name]
+        for record in records
+        if record.decision == TrialDecision.KEPT and metric_name in record.parsed_metrics
+    ]
+    if not values:
+        return None
+    return max(values) if metric_direction == "maximize" else min(values)

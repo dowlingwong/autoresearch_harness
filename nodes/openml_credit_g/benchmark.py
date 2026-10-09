@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +21,12 @@ NODE_NAME = "openml_credit_g"
 DATA_ID = 31
 DATASET_NAME = "credit-g"
 TARGET_NAME = "class"
-SEED = 42
+# AR_TRAIN_SEED / AR_SPLIT_SEED are injected by the worker; both default to 42
+# independently, so behaviour is unchanged when they are unset and setting one
+# never moves the other (SPLIT_SEED fixes the data split, TRAIN_SEED the model).
+TRAIN_SEED = int(os.environ.get("AR_TRAIN_SEED", "42"))
+SPLIT_SEED = int(os.environ.get("AR_SPLIT_SEED", "42"))
+SEED = TRAIN_SEED
 TRAIN_SIZE = 0.70
 VAL_SIZE = 0.15
 TEST_SIZE = 0.15
@@ -69,7 +75,7 @@ def run_openml_benchmark(config_path: Path) -> dict[str, Any]:
         x,
         y_encoded,
         train_size=TRAIN_SIZE,
-        random_state=SEED,
+        random_state=SPLIT_SEED,
         stratify=y_encoded,
     )
     val_fraction_of_temp = VAL_SIZE / (VAL_SIZE + TEST_SIZE)
@@ -77,7 +83,7 @@ def run_openml_benchmark(config_path: Path) -> dict[str, Any]:
         x_temp,
         y_temp,
         train_size=val_fraction_of_temp,
-        random_state=SEED,
+        random_state=SPLIT_SEED,
         stratify=y_temp,
     )
 
