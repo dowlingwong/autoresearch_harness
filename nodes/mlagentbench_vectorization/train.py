@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import time
 from pathlib import Path
 
@@ -21,7 +22,10 @@ ALLOWED_RANGES = {
     "padding": (0, 4),
     "repeat_count": (1, 7),
 }
-SEED = 42
+# AR_SPLIT_SEED controls the random problem (the "data"); it defaults to 42.
+# The reported metric is speed_score = 1/runtime, which is timing-based and so
+# neither deterministic nor seed-free; the seed only makes the problem reproducible.
+SEED = int(os.environ.get("AR_SPLIT_SEED", os.environ.get("AR_TRAIN_SEED", "42")))
 
 
 def _load_config(path: Path) -> dict:

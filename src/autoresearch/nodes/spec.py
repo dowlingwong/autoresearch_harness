@@ -47,6 +47,7 @@ class NodeSpec:
     failure_categories: tuple[str, ...] = field(default_factory=tuple)
     editable_symbols: tuple[str, ...] = field(default_factory=tuple)
     branch_state_paths: tuple[str, ...] = field(default_factory=tuple)
+    held_out: bool = False
 
     @classmethod
     def from_mapping(cls, payload: dict[str, Any]) -> "NodeSpec":
@@ -97,6 +98,7 @@ class NodeSpec:
             failure_categories=tuple(str(category) for category in payload.get("failure_categories", ())),
             editable_symbols=tuple(str(symbol) for symbol in payload.get("editable_symbols", ())),
             branch_state_paths=tuple(str(path) for path in payload.get("branch_state_paths", ())),
+            held_out=bool(payload.get("held_out", False)),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -107,6 +109,7 @@ class NodeSpec:
         payload["failure_categories"] = list(self.failure_categories)
         payload["editable_symbols"] = list(self.editable_symbols)
         payload["branch_state_paths"] = list(self.branch_state_paths)
+        payload["held_out"] = self.held_out
         return payload
 
 

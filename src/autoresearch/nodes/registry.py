@@ -22,6 +22,11 @@ def node_spec_path(node_name: str, repo_root: str | Path | None = None) -> Path:
         "mlagentbench_vectorization": root / "configs" / "nodes" / "mlagentbench_vectorization.yaml",
         "openml_credit_g": root / "configs" / "nodes" / "openml_credit_g.yaml",
         "openml_bank_marketing": root / "configs" / "nodes" / "openml_bank_marketing.yaml",
+        "openml_breast_w": root / "configs" / "nodes" / "openml_breast_w.yaml",
+        "openml_credit_approval": root / "configs" / "nodes" / "openml_credit_approval.yaml",
+        "openml_diabetes": root / "configs" / "nodes" / "openml_diabetes.yaml",
+        "openml_ionosphere": root / "configs" / "nodes" / "openml_ionosphere.yaml",
+        "openml_wdbc": root / "configs" / "nodes" / "openml_wdbc.yaml",
         "autoresearch_macos": root / "configs" / "nodes" / "autoresearch_macos.yaml",
         "autoresearch_linux": root / "configs" / "nodes" / "autoresearch_linux.yaml",
     }
