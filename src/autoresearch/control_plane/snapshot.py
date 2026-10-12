@@ -724,12 +724,15 @@ def _complete_captured_trial(
         if record is None:
             raise ValueError("E2 snapshot has no provisional record")
         if effective == "verify":
-            record, _ = _campaign._run_verify(
+            record, verify_info = _campaign._run_verify(
                 record=record, proposal=proposal, node_spec=node_spec, worker=worker,
                 incumbent_snapshot=incumbent_snapshot, base_budget_index=budget_index,
                 verify_runs=snapshot.verify_runs, compute_budget=restored.compute_budget,
                 verify_split_policy=snapshot.verify_split_policy,
             )
+            # Keep the verify evidence and charge its re-runs, exactly as the live E2 path does.
+            control_meta["verify"] = verify_info["verify"]
+            restored.compute_budget = verify_info["compute_budget"]
     else:
         if effective == "revise":
             feedback = _campaign._revision_feedback(memory_context)
@@ -755,6 +758,19 @@ def _complete_captured_trial(
 
     record = _campaign.replace(record, extra={**record.extra, "control": control_meta})
     TrialAppendStore(restored.records_path).append_many([record])
+    # Commit semantics of the live loop (campaign.py): a non-keep restores the
+    # incumbent's editable files; a keep pushes the incumbent onto the stack.
+    if record.decision != TrialDecision.KEPT:
+        _campaign._restore_editable_state(incumbent_snapshot)
+    else:
+        restored.incumbent_stack.append(
+            _campaign._IncumbentEntry(
+                snapshot=incumbent_snapshot,
+                current_best_before=record.current_best_before,
+                metric=record.parsed_metrics.get(node_spec.metric_name),
+                verified=bool(control_meta.get("verify", {}).get("response") == "keep"),
+            )
+        )
     if event_store is not None:
         _campaign.emit(
             event_store, campaign_id=campaign_id, trial_id=trial_id,
