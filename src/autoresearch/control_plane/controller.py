@@ -122,10 +122,15 @@ class ControlDecision:
     scores: dict[str, float] = field(default_factory=dict)
     controller_version: str = "unknown"
     input_hash: str = ""
+    # LLM calls the controller itself made for this decision (R1 L12: an LLM
+    # self-control side query).  The campaign charges them to the LLM-call cap.
+    llm_calls: int = 0
 
     def __post_init__(self) -> None:
         if self.action not in ACTIONS:
             raise ValueError(f"unknown control action: {self.action!r}")
+        if not isinstance(self.llm_calls, int) or self.llm_calls < 0:
+            raise ValueError("llm_calls must be a non-negative int")
 
 
 class Controller(Protocol):

@@ -272,6 +272,7 @@ def _controller_hook(
                 "mask": dict(mask),
                 "controller_version": decision.controller_version,
                 "input_hash": decision.input_hash,
+                **({"llm_calls": decision.llm_calls} if decision.llm_calls else {}),
             },
         )
     return decision, mask
@@ -1007,6 +1008,8 @@ def run_real_campaign(
             top_of_stack_unverified=bool(incumbent_stack) and not incumbent_stack[-1].verified,
             t_min=t_min,
         )
+        if e0_decision.llm_calls:
+            compute_budget = compute_budget.consume_llm_call(e0_decision.llm_calls)
         _invoke_snapshot_hook(
             snapshot_hook,
             epoch="E0", budget_index=budget_index, campaign_id=campaign_id, trial_id=trial_id,
@@ -1165,6 +1168,8 @@ def run_real_campaign(
                     and compute_budget.llm_calls >= compute_budget.max_llm_calls
                 ),
             )
+            if e1_decision.llm_calls:
+                compute_budget = compute_budget.consume_llm_call(e1_decision.llm_calls)
             e1_action = _resolve_action(
                 e1_decision, e1_mask, epoch="E1", event_store=event_store,
                 campaign_id=campaign_id, trial_id=trial_id,
@@ -1332,6 +1337,8 @@ def run_real_campaign(
                 verify_runs=verify_runs,
                 worker_runs_remaining=compute_budget.remaining()["worker_runs_remaining"],
             )
+            if e2_decision.llm_calls:
+                compute_budget = compute_budget.consume_llm_call(e2_decision.llm_calls)
             e2_action = _resolve_action(
                 e2_decision, e2_mask, epoch="E2", event_store=event_store,
                 campaign_id=campaign_id, trial_id=trial_id,
@@ -1518,6 +1525,8 @@ def run_dry_campaign(
             node_spec=node_spec,
             top_of_stack_unverified=False,
         )
+        if e0_decision.llm_calls:
+            compute_budget = compute_budget.consume_llm_call(e0_decision.llm_calls)
         if e0_decision.action != "continue":
             raise NotImplementedError(
                 f"E0 action {e0_decision.action!r}: run_dry_campaign supports only "
@@ -1600,6 +1609,8 @@ def run_dry_campaign(
                 and compute_budget.llm_calls >= compute_budget.max_llm_calls
             ),
         )
+        if e1_decision.llm_calls:
+            compute_budget = compute_budget.consume_llm_call(e1_decision.llm_calls)
         if e1_decision.action != "continue":
             raise NotImplementedError(
                 f"E1 action {e1_decision.action!r}: run_dry_campaign supports only "
@@ -1686,6 +1697,8 @@ def run_dry_campaign(
             seed_injection_supported=_supports_seed_injection(worker),
             worker_runs_remaining=compute_budget.remaining()["worker_runs_remaining"],
         )
+        if e2_decision.llm_calls:
+            compute_budget = compute_budget.consume_llm_call(e2_decision.llm_calls)
         if e2_decision.action != "continue":
             raise NotImplementedError(
                 f"E2 action {e2_decision.action!r}: run_dry_campaign supports only "
