@@ -15,7 +15,6 @@ import warnings
 
 import numpy as np
 from sklearn.exceptions import ConvergenceWarning
-from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import train_test_split
 from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import StandardScaler

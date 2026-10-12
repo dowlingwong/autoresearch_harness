@@ -647,6 +647,11 @@ def _resolve_first_action(
         seed_injection_supported=_campaign._supports_seed_injection(worker),
         t_min=snapshot.t_min,
         verify_runs=snapshot.verify_runs,
+        worker_runs_remaining=compute_budget.remaining().get("worker_runs_remaining"),
+        llm_cap_reached=bool(compute_budget.max_llm_calls is not None
+                             and compute_budget.llm_calls >= compute_budget.max_llm_calls),
+        top_of_stack_unverified=bool(incumbent_stack_depth and snapshot.incumbent_stack
+                                     and not snapshot.incumbent_stack[-1].verified),
     )
     return _campaign._resolve_action(
         ControlDecision(action=action, controller_version="forced", input_hash=view.input_hash()),
@@ -736,17 +741,39 @@ def _complete_captured_trial(
     else:
         if effective == "revise":
             feedback = _campaign._revision_feedback(memory_context)
+            original = proposal
             proposal = manager.propose_next_trial(
                 status, memory_context, node_spec, revision_feedback=feedback
             )
-            control_meta["revision"] = {"feedback": feedback}
+            restored.compute_budget = restored.compute_budget.consume_llm_call()
+            proposal = _campaign._proposal_with_campaign_metadata(
+                _campaign._proposal_with_worker_memory(proposal, memory_context=memory_context),
+                node_spec=node_spec,
+            )
+            control_meta["revision"] = {
+                "feedback": feedback,
+                "original": _campaign.proposal_digest(original),
+                "revised": _campaign.proposal_digest(proposal),
+            }
         if proposal is None:
             raise ValueError("snapshot has no proposal to replay at this epoch")
         precondition = _campaign._precondition_failure_result(proposal, node_spec, worker)
         if precondition is not None:
             worker_result = precondition
         else:
-            worker_result = worker.run_trial(proposal, node_spec, budget_index)
+            run_t0 = _campaign.time.perf_counter()
+            try:
+                worker_result = worker.run_trial(proposal, node_spec, budget_index)
+            except Exception as exc:  # mirror the live loop: a worker exception is a failed edit
+                worker_result = WorkerResult(
+                    worker_mode=getattr(worker, "mode", "unknown_worker"), changed_files=(), success=False,
+                    parsed_metrics={}, raw_log_ref="", patch_ref="", git_commit_before="",
+                    git_commit_after="", failure_message=str(exc),
+                    extra={"failure_category": _campaign.FailureCategory.EDIT_FAILED.value},
+                )
+            restored.compute_budget = restored.compute_budget.consume_worker_run(
+                _campaign.time.perf_counter() - run_t0
+            )
         record = _campaign._record_from_worker_result(
             campaign_id=campaign_id, budget_index=budget_index, node_spec=node_spec,
             manager_mode=proposal.manager_mode, memory_mode=snapshot.memory_mode,

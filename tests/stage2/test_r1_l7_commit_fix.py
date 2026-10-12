@@ -81,3 +81,51 @@ class TestResumedCommitSemantics(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AllE1:
+    def __init__(self) -> None:
+        self.snaps = []
+
+    def __call__(self, context) -> None:
+        if context.epoch == "E1" and context.proposal is not None:
+            self.snaps.append(capture_snapshot(context))
+
+
+class TestResumedE1AndMask(unittest.TestCase):
+    """L14 review fixes: resumed E1 charges its worker run; a forced verify respects the compute mask."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.tmp = Path(tempfile.mkdtemp())
+        spec = load_registered_node("digits_mlp", repo_root=ROOT)
+        node = cls.tmp / "node"
+        shutil.copytree(ROOT / "nodes" / "digits_mlp", node)
+        cls.e1, cls.e2 = AllE1(), AllE2()
+
+        def hook(ctx):
+            cls.e1(ctx)
+            cls.e2(ctx)
+
+        run_real_campaign(node_spec=spec, campaign_id="l14", budget=4, manager_mode="baseline_manager",
+                          memory_mode="none", records_path=cls.tmp / "t.jsonl",
+                          worker=LocalWorker(node_root=node, artifact_dir=cls.tmp / "art"),
+                          compute_budget=ComputeBudget(max_worker_runs=5), snapshot_hook=hook)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_resumed_e1_continue_charges_one_worker_run(self) -> None:
+        snap = self.e1.snaps[0]
+        res = resume_campaign(snap, self.tmp / "e1c", first_action="continue", horizon=0)
+        before = int(snap.compute_budget_state.get("worker_runs", 0))
+        self.assertEqual(res.restored.compute_budget.worker_runs, before + 1)
+
+    def test_forced_verify_without_budget_falls_back_to_continue(self) -> None:
+        late = [s for s in self.e2.snaps
+                if 5 - int(s.compute_budget_state.get("worker_runs", 0)) < 2 * s.verify_runs]
+        self.assertTrue(late, "need an E2 snapshot with fewer than 2r runs left")
+        res = resume_campaign(late[-1], self.tmp / "late", first_action="verify", horizon=0)
+        self.assertEqual(res.first_record.extra["control"]["action"], "continue")
+        self.assertLessEqual(res.restored.compute_budget.worker_runs, 5)

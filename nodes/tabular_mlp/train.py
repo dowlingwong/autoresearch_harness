@@ -2,8 +2,10 @@
 """tabular_mlp: editable hyperparameters for a frozen sklearn MLP benchmark (R1 L8b).
 
 Only the constants below are editable. Output:
-    val_score: 0.XXXXXX   (validation ROC AUC, higher is better)
-    test_score: 0.XXXXXX  (held-out test split; informational, never used to keep)
+    val_score: 0.XXXXXX   (validation metric, higher is better)
+The held-out test score is computed but deliberately not printed: the worker
+parses every ``key: value`` line into the ledger, and a controller or an LLM
+side query must never see a test metric (L14 review, finding 6).
 """
 from benchmark import run_benchmark
 
@@ -24,7 +26,6 @@ def main() -> None:
         max_iter=MAX_ITER,
     )
     print(f"val_score: {result['val_score']:.6f}")
-    print(f"test_score: {result['test_score']:.6f}")
     print(f"train_loss: {result['train_loss']:.6f}")
 
 
