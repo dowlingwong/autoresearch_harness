@@ -19,6 +19,8 @@ def node_spec_path(node_name: str, repo_root: str | Path | None = None) -> Path:
         "resnet_trigger": root / "configs" / "nodes" / "resnet_trigger.yaml",
         "lr_synthetic": root / "configs" / "nodes" / "lr_synthetic.yaml",
         "mlp_synthetic": root / "configs" / "nodes" / "mlp_synthetic.yaml",
+        "digits_mlp": root / "configs" / "nodes" / "digits_mlp.yaml",
+        "tabular_mlp": root / "configs" / "nodes" / "tabular_mlp.yaml",
         "mlagentbench_vectorization": root / "configs" / "nodes" / "mlagentbench_vectorization.yaml",
         "openml_credit_g": root / "configs" / "nodes" / "openml_credit_g.yaml",
         "openml_bank_marketing": root / "configs" / "nodes" / "openml_bank_marketing.yaml",

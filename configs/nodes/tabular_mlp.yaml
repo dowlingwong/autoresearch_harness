@@ -1,0 +1,66 @@
+{
+  "name": "tabular_mlp",
+  "description": "Noisy CPU node: sklearn MLPClassifier on a fixed synthetic tabular pool (make_classification, 2,000 rows, 20 features, 6 informative, 8% label noise, generator seed 0). The metric is validation ROC AUC. Only bounded MLP hyperparameters in train.py are editable; data, split and seeds are frozen.",
+  "editable_paths": [
+    "train.py"
+  ],
+  "editable_symbols": [
+    "HIDDEN_UNITS",
+    "ALPHA",
+    "LEARNING_RATE_INIT",
+    "BATCH_SIZE",
+    "MAX_ITER"
+  ],
+  "frozen_paths": [
+    "benchmark.py",
+    "artifacts/"
+  ],
+  "setup_command": null,
+  "run_command": "python3 train.py",
+  "metric_name": "val_score",
+  "metric_direction": "maximize",
+  "metric_parser": "autoresearch.nodes.mlp_synthetic.metric_parser:parse_val_score",
+  "acceptance_rule": "candidate_metric > current_best_metric",
+  "validity_checks": [
+    "metric_present",
+    "finite_metric",
+    "editable_scope_only",
+    "command_exit_zero"
+  ],
+  "failure_categories": [
+    "syntax_error",
+    "runtime_error",
+    "metric_missing",
+    "invalid_edit_scope",
+    "degraded_metric",
+    "no_op_patch"
+  ],
+  "allowed_ranges": {
+    "HIDDEN_UNITS": [
+      4,
+      256
+    ],
+    "ALPHA": [
+      1e-06,
+      1.0
+    ],
+    "LEARNING_RATE_INIT": [
+      0.0001,
+      0.1
+    ],
+    "BATCH_SIZE": [
+      8,
+      512
+    ],
+    "MAX_ITER": [
+      5,
+      300
+    ]
+  },
+  "default_budget": {
+    "trials": 10,
+    "max_wall_clock_hours": 0.25
+  },
+  "expected_runtime": "about 1-3 seconds per trial on laptop CPU",
+  "held_out": false
+}

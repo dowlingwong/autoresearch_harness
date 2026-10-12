@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import os
+
 import numpy as np
 
 
 RANDOM_SEED = 123
+# AR_SPLIT_SEED / AR_TRAIN_SEED are injected by the worker (R1 L8b). The
+# defaults reproduce the previous constants exactly: the dataset and split use
+# RANDOM_SEED (123) and training uses RANDOM_SEED + 1 (124).
+SPLIT_SEED = int(os.environ.get("AR_SPLIT_SEED", str(RANDOM_SEED)))
+TRAIN_SEED = int(os.environ.get("AR_TRAIN_SEED", str(RANDOM_SEED + 1)))
 N_TRAIN = 1200
 N_VAL = 400
 N_FEATURES = 12
@@ -27,7 +34,7 @@ def run_mlp_benchmark(
 
     x_train, y_train, x_val, y_val = _make_dataset()
     y_train_col = y_train.reshape(-1, 1)
-    rng = np.random.default_rng(RANDOM_SEED + 1)
+    rng = np.random.default_rng(TRAIN_SEED)
 
     w1 = rng.normal(0.0, np.sqrt(2.0 / x_train.shape[1]), size=(x_train.shape[1], hidden_dim))
     b1 = np.zeros((1, hidden_dim), dtype=np.float64)
@@ -74,7 +81,7 @@ def run_mlp_benchmark(
 
 
 def _make_dataset() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    rng = np.random.default_rng(RANDOM_SEED)
+    rng = np.random.default_rng(SPLIT_SEED)
     n_total = N_TRAIN + N_VAL
     n_a = n_total // 2
     n_b = n_total - n_a
