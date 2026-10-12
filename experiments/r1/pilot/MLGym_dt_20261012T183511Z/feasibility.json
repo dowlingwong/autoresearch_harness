@@ -1,0 +1,29 @@
+{
+  "schema": "r1.mlgym_feasibility/1",
+  "label": "PILOT",
+  "status": "blocked",
+  "task_runs": 0,
+  "cloned_by_this_batch": false,
+  "harness_adapter_written": false,
+  "upstream": "facebookresearch/MLGym",
+  "upstream_license_from_author_prompt": "CC-BY-NC-4.0",
+  "hosts": {
+    "deepthought2.etp.kit.edu": {
+      "docker": {
+        "returncode": 1,
+        "stdout": "\n",
+        "stderr": "permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get \"http://%2Fvar%2Frun%2Fdocker.sock/v1.51/info\": dial unix /var/run/docker.sock: connect: permission denied\n"
+      },
+      "podman": null
+    },
+    "deepthought.etp.kit.edu": {
+      "docker": {
+        "returncode": 0,
+        "stdout": "\n",
+        "stderr": "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n"
+      },
+      "podman": null
+    }
+  },
+  "reason": "Deepthought2: Docker daemon permission denied. Deepthought: Docker daemon cannot be reached. Neither host exposes Podman in PATH."
+}
