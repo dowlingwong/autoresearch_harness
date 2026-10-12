@@ -272,7 +272,7 @@ def _controller_hook(
                 "mask": dict(mask),
                 "controller_version": decision.controller_version,
                 "input_hash": decision.input_hash,
-                **({"llm_calls": decision.llm_calls} if decision.llm_calls else {}),
+                "llm_calls": decision.llm_calls,
             },
         )
     return decision, mask
