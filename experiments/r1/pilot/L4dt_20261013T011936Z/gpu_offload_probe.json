@@ -1,0 +1,72 @@
+{
+  "label": "ENGINEERING_ONLY",
+  "response": {
+    "model": "qwen2.5-coder:7b",
+    "created_at": "2026-10-13T01:19:34.760680421Z",
+    "response": "OK",
+    "done": true,
+    "done_reason": "length",
+    "context": [
+      151644,
+      8948,
+      198,
+      2610,
+      525,
+      1207,
+      16948,
+      11,
+      3465,
+      553,
+      54364,
+      14817,
+      13,
+      1446,
+      525,
+      264,
+      10950,
+      17847,
+      13,
+      151645,
+      198,
+      151644,
+      872,
+      198,
+      20841,
+      10402,
+      151645,
+      198,
+      151644,
+      77091,
+      198,
+      3925
+    ],
+    "total_duration": 2717713406,
+    "load_duration": 2507598742,
+    "prompt_eval_count": 31,
+    "prompt_eval_duration": 206371897,
+    "eval_count": 1,
+    "eval_duration": 2132991
+  },
+  "processes": {
+    "models": [
+      {
+        "name": "qwen2.5-coder:7b",
+        "model": "qwen2.5-coder:7b",
+        "size": 5560907776,
+        "digest": "dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364",
+        "details": {
+          "parent_model": "",
+          "format": "gguf",
+          "family": "qwen2",
+          "families": [
+            "qwen2"
+          ],
+          "parameter_size": "7.6B",
+          "quantization_level": "Q4_K_M"
+        },
+        "expires_at": "2026-10-12T18:49:34.764809187-07:00",
+        "size_vram": 5560907776
+      }
+    ]
+  }
+}

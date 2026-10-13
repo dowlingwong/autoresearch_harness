@@ -1,0 +1,11 @@
+--- a/train.py
++++ b/train.py
+@@ -27,7 +27,7 @@
+ LEARNING_RATE = 5e-4
+ REGULARIZATION = 0.001
+ N_EPOCHS = 80
+-BATCH_SIZE = 16
++BATCH_SIZE = 32
+ 
+ # ── fixed settings ───────────────────────────────────────────────────────────
+ # AR_TRAIN_SEED / AR_SPLIT_SEED are injected by the worker; both default to

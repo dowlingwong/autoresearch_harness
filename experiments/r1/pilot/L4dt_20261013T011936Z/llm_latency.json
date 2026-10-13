@@ -1,0 +1,31 @@
+{
+  "completion_tokens": {
+    "max": 95,
+    "mean": 90.4,
+    "median": 90.5,
+    "min": 85,
+    "n": 10
+  },
+  "event_files": [
+    "/data1/dowling/tmp/r1_batch1_ENGINEERING_ONLY_ada_20261012_DcmRNh/autoresearch_harness/experiments/r1/pilot/L4dt_20261013T011936Z/events.jsonl"
+  ],
+  "label": "PILOT",
+  "latency_ms": {
+    "max": 848.0100480373949,
+    "mean": 814.598328480497,
+    "median": 820.8710500621237,
+    "min": 773.399808909744,
+    "n": 10
+  },
+  "n_calls": 10,
+  "n_parse_failures": 0,
+  "parse_failure_rate": 0.0,
+  "prompt_tokens": {
+    "max": 622,
+    "mean": 619.2,
+    "median": 620.0,
+    "min": 611,
+    "n": 10
+  },
+  "tokens_reported": true
+}
