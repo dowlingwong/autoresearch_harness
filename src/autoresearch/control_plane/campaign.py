@@ -78,8 +78,14 @@ from autoresearch.memory.research_context import load_node_research_context_ref
 from autoresearch.memory.schemas import ExecutionStatus, FailureCategory, TrialDecision, TrialRecord, ValidityStatus
 from autoresearch.memory.similarity import compute_repeated_bad_stats
 from autoresearch.memory.summarizer import MemoryMode, build_memory_context
+from autoresearch.nodes.active_keys import inactive_key_in_proposal, resolve_active_keys
 from autoresearch.nodes.spec import NodeSpec
 from autoresearch.worker.base import DryRunWorker, Worker, WorkerResult
+
+# D25: how many times the control plane re-asks the manager for a proposal
+# after an inactive key was named, before the trial is skipped.  Each revision
+# is an LLM call charged to the LLM-call cap; no worker run is ever spent.
+MAX_INACTIVE_KEY_REVISIONS = 2
 
 
 class SeedInjectionUnsupportedError(RuntimeError):
@@ -201,6 +207,13 @@ def _manager_status(
         if editable_symbols:
             allowed = set(editable_symbols)
             constants = {key: value for key, value in constants.items() if key in allowed}
+        # D25: a node that declares active keys shows the manager only those
+        # keys (prompt and structured-edit resolution).  Undeclared nodes are
+        # unchanged.
+        active = resolve_active_keys(node_spec, constants)
+        if active is not None:
+            active_set = set(active)
+            constants = {key: value for key, value in constants.items() if key in active_set}
         effective_config = build_effective_config(constants)
     return ManagerStatus(
         campaign_id=campaign_id,
@@ -386,8 +399,8 @@ def _resolve_action(
     return "continue"
 
 
-def _accepts_revision_feedback(manager: object) -> bool:
-    """True when ``manager.propose_next_trial`` takes ``revision_feedback``."""
+def _accepts_kwarg(manager: object, name: str) -> bool:
+    """True when ``manager.propose_next_trial`` takes the keyword *name*."""
     import inspect
 
     method = getattr(manager, "propose_next_trial", None)
@@ -397,9 +410,14 @@ def _accepts_revision_feedback(manager: object) -> bool:
         parameters = inspect.signature(method).parameters
     except (TypeError, ValueError):
         return False
-    return "revision_feedback" in parameters or any(
+    return name in parameters or any(
         parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
     )
+
+
+def _accepts_revision_feedback(manager: object) -> bool:
+    """True when ``manager.propose_next_trial`` takes ``revision_feedback``."""
+    return _accepts_kwarg(manager, "revision_feedback")
 
 
 def _revision_feedback(memory_context: object) -> str:
@@ -424,6 +442,24 @@ def _editable_state_hash(worker: Worker, node_spec: NodeSpec) -> str | None:
     return digest.hexdigest()
 
 
+def _effective_config_at(worker: Worker, node_spec: NodeSpec) -> dict[str, str] | None:
+    """Effective config of the current workspace (D27), or None without a node root."""
+    root = _worker_node_root(worker)
+    if root is None:
+        return None
+    constants: dict[str, str] = {}
+    for rel_path in node_spec.editable_paths:
+        constants.update(parse_train_constants(_editable_path(root, rel_path)))
+    return build_effective_config(constants)
+
+
+def _llm_cap_reached(compute_budget: ComputeBudget) -> bool:
+    return (
+        compute_budget.max_llm_calls is not None
+        and compute_budget.llm_calls >= compute_budget.max_llm_calls
+    )
+
+
 def _skipped_record(
     *,
     campaign_id: str,
@@ -435,6 +471,7 @@ def _skipped_record(
     timestamp_start: str,
     timestamp_end: str,
     control: dict[str, Any],
+    rationale: str | None = None,
 ) -> TrialRecord:
     trial_id = f"{campaign_id}-trial-{budget_index:03d}"
     return TrialRecord(
@@ -461,7 +498,7 @@ def _skipped_record(
         current_best_before=current_best,
         delta_vs_best=None,
         decision=TrialDecision.SKIPPED,
-        decision_rationale="Skipped by controller at E1: proposal not executed.",
+        decision_rationale=rationale or "Skipped by controller at E1: proposal not executed.",
         wall_clock_seconds=_elapsed_seconds(timestamp_start, timestamp_end),
         cumulative_budget_consumed=budget_index,
         provenance=build_trial_provenance(trial_id),
@@ -963,6 +1000,11 @@ def run_real_campaign(
     )
     incumbent_stack: list[_IncumbentEntry] = list(initial_incumbent_stack or [])
     stop_requested = False
+    # D27: record-only novelty flags.  The incumbent's effective config starts
+    # as the workspace configuration and follows keeps and demotions; the seen
+    # list holds the effective config of every evaluated trial.
+    incumbent_effective: dict[str, str] | None = _effective_config_at(worker, node_spec)
+    seen_effective: list[dict[str, str]] = []
 
     records: list[TrialRecord] = []
     campaign_started = time.perf_counter()
@@ -1043,6 +1085,9 @@ def run_real_campaign(
                 campaign_id=campaign_id,
                 trial_id=trial_id,
             )
+            restored = _effective_config_at(worker, node_spec)
+            if restored is not None:
+                incumbent_effective = restored
 
         memory_context = build_memory_context(
             existing_records + records, MemoryMode(memory_mode), node_spec, budget_index,
@@ -1085,6 +1130,65 @@ def run_real_campaign(
             # (baseline, prompt) consume no LLM budget.
             compute_budget = compute_budget.consume_llm_call()
         _emit_llm_call(event_store, campaign_id=campaign_id, trial_id=trial_id, proposal=proposal)
+
+        # D25: a proposal that names an inactive key is rejected before any
+        # worker run.  The manager may revise (each revision is an LLM call
+        # charged to the cap); when the revisions are exhausted the trial is
+        # skipped with reason ``inactive_key`` and no worker run.
+        inactive_rejected: dict[str, Any] | None = None
+        if resolve_active_keys(node_spec, status.current_constants) is not None:
+            rejected_key = inactive_key_in_proposal(proposal, node_spec, status.current_constants)
+            revisions_used = 0
+            while (
+                rejected_key is not None
+                and revisions_used < MAX_INACTIVE_KEY_REVISIONS
+                and _accepts_revision_feedback(manager)
+                and not getattr(manager, "deterministic", False)
+                and not _llm_cap_reached(compute_budget)
+            ):
+                emit(
+                    event_store,
+                    campaign_id=campaign_id,
+                    trial_id=trial_id,
+                    event_type="proposal_rejected_inactive_key",
+                    payload={
+                        "key": rejected_key,
+                        "revision": revisions_used,
+                        "active_keys": list(resolve_active_keys(node_spec, status.current_constants) or ()),
+                    },
+                )
+                proposal = manager.propose_next_trial(
+                    status,
+                    memory_context,
+                    node_spec,
+                    revision_feedback=(
+                        f"inactive key: {rejected_key} has no effect for the current "
+                        "configuration; choose one of the active editable keys"
+                    ),
+                    revision_attempt=revisions_used + 1,
+                )
+                compute_budget = compute_budget.consume_llm_call()
+                proposal = _proposal_with_campaign_metadata(
+                    _proposal_with_worker_memory(proposal, memory_context=memory_context),
+                    node_spec=node_spec,
+                )
+                _emit_llm_call(event_store, campaign_id=campaign_id, trial_id=trial_id, proposal=proposal)
+                revisions_used += 1
+                rejected_key = inactive_key_in_proposal(proposal, node_spec, status.current_constants)
+            if rejected_key is not None:
+                inactive_rejected = {"key": rejected_key, "revisions": revisions_used}
+                emit(
+                    event_store,
+                    campaign_id=campaign_id,
+                    trial_id=trial_id,
+                    event_type="proposal_rejected_inactive_key",
+                    payload={
+                        "key": rejected_key,
+                        "revision": revisions_used,
+                        "active_keys": list(resolve_active_keys(node_spec, status.current_constants) or ()),
+                        "skipped": True,
+                    },
+                )
 
         if ungoverned:
             # UNGOVERNED: pending guard is not written.
@@ -1143,101 +1247,108 @@ def run_real_campaign(
                 memory_mode=memory_mode, manager_mode=manager_mode, t_min=t_min,
                 verify_runs=verify_runs, verify_split_policy=verify_split_policy,
             )
-            e1_decision, e1_mask = _controller_hook(
-                controller=controller,
-                log_default_decisions=log_default_decisions,
-                event_store=event_store,
-                campaign_id=campaign_id,
-                trial_id=trial_id,
-                epoch="E1",
-                budget_index=budget_index,
-                ledger_prefix=existing_records + records,
-                current_best=current_best,
-                incumbent_stack_depth=len(incumbent_stack),
-                proposal=proposal,
-                provisional=None,
-                budget_state=budget_state,
-                compute_budget=compute_budget,
-                node_spec=node_spec,
-                proposal_passed_precondition=True,
-                manager_deterministic=bool(getattr(manager, "deterministic", False)),
-                revision_feedback_supported=_accepts_revision_feedback(manager),
-                revisions_this_trial=0,
-                llm_cap_reached=(
-                    compute_budget.max_llm_calls is not None
-                    and compute_budget.llm_calls >= compute_budget.max_llm_calls
-                ),
-            )
-            if e1_decision.llm_calls:
-                compute_budget = compute_budget.consume_llm_call(e1_decision.llm_calls)
-            e1_action = _resolve_action(
-                e1_decision, e1_mask, epoch="E1", event_store=event_store,
-                campaign_id=campaign_id, trial_id=trial_id,
-            )
-            if e1_action == "skip":
+            if inactive_rejected is not None:
+                # D25: revisions exhausted on an inactive-key proposal; skip
+                # without asking the controller and without any worker run.
                 skip_trial = True
-                control_meta = {"epoch": "E1", "action": "skip"}
+                control_meta = {"epoch": "E1", "action": "skip", "reason": "inactive_key", **inactive_rejected}
             else:
-                if e1_action == "revise":
-                    feedback = _revision_feedback(memory_context)
-                    revised = manager.propose_next_trial(
-                        status, memory_context, node_spec, revision_feedback=feedback
-                    )
-                    compute_budget = compute_budget.consume_llm_call()
-                    revised = _proposal_with_campaign_metadata(
-                        _proposal_with_worker_memory(revised, memory_context=memory_context),
-                        node_spec=node_spec,
-                    )
-                    control_meta = {
-                        "epoch": "E1",
-                        "action": "revise",
-                        "revision": {
-                            "feedback": feedback,
-                            "original": proposal_digest(proposal),
-                            "revised": proposal_digest(revised),
-                        },
-                    }
+                e1_decision, e1_mask = _controller_hook(
+                    controller=controller,
+                    log_default_decisions=log_default_decisions,
+                    event_store=event_store,
+                    campaign_id=campaign_id,
+                    trial_id=trial_id,
+                    epoch="E1",
+                    budget_index=budget_index,
+                    ledger_prefix=existing_records + records,
+                    current_best=current_best,
+                    incumbent_stack_depth=len(incumbent_stack),
+                    proposal=proposal,
+                    provisional=None,
+                    budget_state=budget_state,
+                    compute_budget=compute_budget,
+                    node_spec=node_spec,
+                    proposal_passed_precondition=True,
+                    manager_deterministic=bool(getattr(manager, "deterministic", False)),
+                    revision_feedback_supported=_accepts_revision_feedback(manager),
+                    revisions_this_trial=0,
+                    llm_cap_reached=_llm_cap_reached(compute_budget),
+                )
+                if e1_decision.llm_calls:
+                    compute_budget = compute_budget.consume_llm_call(e1_decision.llm_calls)
+                e1_action = _resolve_action(
+                    e1_decision, e1_mask, epoch="E1", event_store=event_store,
+                    campaign_id=campaign_id, trial_id=trial_id,
+                )
+                if e1_action == "skip":
+                    skip_trial = True
+                    control_meta = {"epoch": "E1", "action": "skip"}
+                else:
+                    if e1_action == "revise":
+                        feedback = _revision_feedback(memory_context)
+                        revise_kwargs: dict[str, Any] = {"revision_feedback": feedback}
+                        if _accepts_kwarg(manager, "revision_attempt"):
+                            revise_kwargs["revision_attempt"] = 1
+                        revised = manager.propose_next_trial(
+                            status, memory_context, node_spec, **revise_kwargs
+                        )
+                        compute_budget = compute_budget.consume_llm_call()
+                        revised = _proposal_with_campaign_metadata(
+                            _proposal_with_worker_memory(revised, memory_context=memory_context),
+                            node_spec=node_spec,
+                        )
+                        control_meta = {
+                            "epoch": "E1",
+                            "action": "revise",
+                            "revision": {
+                                "feedback": feedback,
+                                "original": proposal_digest(proposal),
+                                "revised": proposal_digest(revised),
+                            },
+                        }
+                        emit(
+                            event_store, campaign_id=campaign_id, trial_id=trial_id,
+                            event_type="proposal_revised",
+                            payload={"summary": revised.proposal_summary, "feedback": feedback},
+                        )
+                        _emit_llm_call(event_store, campaign_id=campaign_id, trial_id=trial_id, proposal=revised)
+                        proposal = revised
                     emit(
                         event_store, campaign_id=campaign_id, trial_id=trial_id,
-                        event_type="proposal_revised",
-                        payload={"summary": revised.proposal_summary, "feedback": feedback},
+                        event_type="worker_started",
+                        payload={"worker_mode": getattr(worker, "mode", "unknown_worker")},
                     )
-                    _emit_llm_call(event_store, campaign_id=campaign_id, trial_id=trial_id, proposal=revised)
-                    proposal = revised
-                emit(
-                    event_store, campaign_id=campaign_id, trial_id=trial_id,
-                    event_type="worker_started",
-                    payload={"worker_mode": getattr(worker, "mode", "unknown_worker")},
-                )
-                recheck = _precondition_failure_result(proposal, node_spec, worker)
-                if recheck is not None:
-                    worker_result = recheck
-                else:
-                    worker_run_t0 = time.perf_counter()
-                    try:
-                        worker_result = worker.run_trial(proposal, node_spec, budget_index)
-                    except Exception as exc:
-                        worker_result = WorkerResult(
-                            worker_mode=getattr(worker, "mode", "unknown_worker"),
-                            changed_files=(),
-                            success=False,
-                            parsed_metrics={},
-                            raw_log_ref="",
-                            patch_ref="",
-                            git_commit_before="",
-                            git_commit_after="",
-                            failure_message=str(exc),
-                            extra={"failure_category": FailureCategory.EDIT_FAILED.value},
-                        )
-                    compute_budget = compute_budget.consume_worker_run(time.perf_counter() - worker_run_t0)
-                emit(
-                    event_store, campaign_id=campaign_id, trial_id=trial_id,
-                    event_type="worker_finished",
-                    payload={"success": worker_result.success,
-                             "elapsed_seconds": max(time.perf_counter() - worker_started, 0.0)},
-                )
+                    recheck = _precondition_failure_result(proposal, node_spec, worker)
+                    if recheck is not None:
+                        worker_result = recheck
+                    else:
+                        worker_run_t0 = time.perf_counter()
+                        try:
+                            worker_result = worker.run_trial(proposal, node_spec, budget_index)
+                        except Exception as exc:
+                            worker_result = WorkerResult(
+                                worker_mode=getattr(worker, "mode", "unknown_worker"),
+                                changed_files=(),
+                                success=False,
+                                parsed_metrics={},
+                                raw_log_ref="",
+                                patch_ref="",
+                                git_commit_before="",
+                                git_commit_after="",
+                                failure_message=str(exc),
+                                extra={"failure_category": FailureCategory.EDIT_FAILED.value},
+                            )
+                        compute_budget = compute_budget.consume_worker_run(time.perf_counter() - worker_run_t0)
+                    emit(
+                        event_store, campaign_id=campaign_id, trial_id=trial_id,
+                        event_type="worker_finished",
+                        payload={"success": worker_result.success,
+                                 "elapsed_seconds": max(time.perf_counter() - worker_started, 0.0)},
+                    )
         ts_end = _iso_now()
 
+        candidate_effective: dict[str, str] | None = None
         if skip_trial:
             record = _skipped_record(
                 campaign_id=campaign_id,
@@ -1249,6 +1360,12 @@ def run_real_campaign(
                 timestamp_start=ts_start,
                 timestamp_end=ts_end,
                 control=control_meta,
+                rationale=(
+                    f"Skipped at E1: proposal named an inactive key "
+                    f"({control_meta.get('key')}); revisions exhausted."
+                    if control_meta.get("reason") == "inactive_key"
+                    else None
+                ),
             )
             rbs = compute_repeated_bad_stats(existing_records + records + [record])
             record = replace(record, repeated_bad_count=rbs.repeated_bad_count)
@@ -1302,6 +1419,32 @@ def run_real_campaign(
                     ),
                 },
             )
+            # D27: record-only novelty flags on the evaluated trial.  Emitted
+            # as its own event so TrialRecord bytes stay unchanged.
+            candidate_effective = _effective_config_at(worker, node_spec)
+            if candidate_effective is not None:
+                candidate_metric = record.parsed_metrics.get(node_spec.metric_name)
+                emit(
+                    event_store,
+                    campaign_id=campaign_id,
+                    trial_id=trial_id,
+                    event_type="edit_novelty",
+                    payload={
+                        "config_equals_incumbent": (
+                            incumbent_effective is not None
+                            and candidate_effective == incumbent_effective
+                        ),
+                        "config_seen_before": any(
+                            candidate_effective == seen for seen in seen_effective
+                        ),
+                        "metric_identical_to_incumbent": (
+                            candidate_metric is not None
+                            and current_best is not None
+                            and float(candidate_metric) == float(current_best)
+                        ),
+                    },
+                )
+                seen_effective.append(candidate_effective)
             # Compute cumulative repeated-bad count for this trial (including itself)
             # and stamp it onto the immutable record before persisting.
             rbs = compute_repeated_bad_stats(existing_records + records + [record])
@@ -1411,6 +1554,8 @@ def run_real_campaign(
 
         if record.decision == TrialDecision.KEPT and node_spec.metric_name in record.parsed_metrics:
             current_best = record.parsed_metrics[node_spec.metric_name]
+        if record.decision == TrialDecision.KEPT and candidate_effective is not None:
+            incumbent_effective = candidate_effective
         if record.decision == TrialDecision.KEPT:
             incumbent_stack.append(
                 _IncumbentEntry(

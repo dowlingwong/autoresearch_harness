@@ -84,5 +84,14 @@
     "trials": 10,
     "max_wall_clock_hours": 0.5
   },
-  "expected_runtime": "~2-10 seconds/trial after OpenML cache warm-up"
+  "expected_runtime": "~2-10 seconds/trial after OpenML cache warm-up",
+  "active_keys": {
+    "by_model_type": {
+      "logistic_regression": ["model_type", "C", "class_weight", "max_iter", "scaler", "imputer"],
+      "random_forest": ["model_type", "n_estimators", "max_depth", "class_weight", "scaler", "imputer"],
+      "gradient_boosting": ["model_type", "n_estimators", "max_depth", "learning_rate", "scaler", "imputer"]
+    },
+    "dataset_excluded": [],
+    "note": "D25: keys that reach the frozen pipeline under each model_type; computed from the template code. imputer is excluded where the dataset has no categorical columns (features metadata in this repo)."
+  }
 }

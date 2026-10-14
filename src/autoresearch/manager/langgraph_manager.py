@@ -38,6 +38,44 @@ class _PlanState(TypedDict):
     proposal: Any        # ManagerProposal | None, filled by validate_proposal
     revision_feedback: Any  # str | None — E1 revise feedback from the control plane
     llm_meta: Any        # dict | None — per-call latency/usage telemetry
+    llm_seed: Any        # int | None — D26 deterministic sampling seed
+    llm: Any             # LLM for this call (constructor-seeded, or the injected stub)
+    llm_seed_as_kwarg: Any  # bool — pass the seed to llm.invoke (injected stubs only)
+
+
+def manager_seed(
+    campaign_id: str,
+    budget_index: int,
+    repetition: int = 0,
+    revision_attempt: int = 0,
+) -> int:
+    """D26: deterministic Ollama seed from (campaign/instance, trial, repetition, revision).
+
+    Stable across processes and platforms (SHA-256 of the canonical string),
+    so a branch can be re-run to the same proposals on the same model, Ollama
+    version and hardware.  Bit-reproducibility across hardware is not claimed.
+    """
+    payload = "|".join(
+        str(part)
+        for part in (campaign_id, int(budget_index), int(repetition), int(revision_attempt))
+    )
+    return int.from_bytes(sha256(payload.encode("utf-8")).digest()[:4], "big")
+
+
+def _accepts_seed_kwarg(llm: Any) -> bool:
+    """True when ``llm.invoke`` accepts an extra ``seed`` keyword argument."""
+    import inspect
+
+    method = getattr(llm, "invoke", None)
+    if method is None:
+        return False
+    try:
+        parameters = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return False
+    return "seed" in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+    )
 
 
 def _usage_from_response(response: Any) -> tuple[int | None, int | None]:
@@ -262,6 +300,23 @@ def _validate_proposal(state: _PlanState) -> _PlanState:
         extra["deterministic_patch"] = True
         extra["structured_edit"] = structured_edit
 
+    if not structured_edit and getattr(node_spec, "active_keys", None):
+        # D25: keep the key the manager named when it resolves to an editable
+        # symbol but not to a current (active) constant, so the control plane
+        # can reject the inactive key before any worker run.  Ungated nodes
+        # are byte-identical: nothing is added to their proposals.
+        named_raw = str(parsed.get("param") or "").strip()
+        if not named_raw:
+            match = re.search(
+                r"change\s+([A-Za-z_][A-Za-z0-9_]*)\s+from\s+\S+\s+to\s+\S+",
+                objective,
+                re.IGNORECASE,
+            )
+            named_raw = match.group(1) if match else ""
+        canonical = _canonical_editable_symbol(named_raw, node_spec)
+        if canonical:
+            extra["named_param"] = canonical
+
     proposal = ManagerProposal(
         manager_mode=LangGraphManager.mode,
         proposal_summary=summary,
@@ -271,6 +326,17 @@ def _validate_proposal(state: _PlanState) -> _PlanState:
         extra=extra,
     )
     return {**state, "proposal": proposal}
+
+
+def _canonical_editable_symbol(raw: str, node_spec: NodeSpec) -> str | None:
+    """Resolve *raw* case-insensitively against the node's editable symbols."""
+    if not raw:
+        return None
+    editable = tuple(getattr(node_spec, "editable_symbols", ()) or ())
+    if raw in editable:
+        return raw
+    lookup = {symbol.lower(): symbol for symbol in editable}
+    return lookup.get(raw.lower())
 
 
 # ---------------------------------------------------------------------------
@@ -296,11 +362,15 @@ class LangGraphManager:
         model: str = "ollama/qwen2.5-coder:7b",
         host: str = "http://localhost:11434",
         temperature: float = 0.2,
+        repetition: int = 0,
     ) -> None:
         self._injected_llm = llm
         self._model = model
         self._host = host
         self._temperature = temperature
+        # D26: repetition index used in the deterministic per-call seed.  The
+        # default 0 is the root campaign; branch repetitions set it.
+        self._repetition = int(repetition)
         self._graph: Any = None
 
     @classmethod
@@ -323,14 +393,35 @@ class LangGraphManager:
         node_spec: NodeSpec,
         *,
         revision_feedback: str | None = None,
+        revision_attempt: int | None = None,
     ) -> ManagerProposal:
         """Generate one proposal.
 
         ``revision_feedback`` is set only by the control plane's E1 ``revise``
-        action.  It is added to the prompt and recorded as
-        ``extra["revision_feedback"]``; when it is ``None`` (the default) the
-        prompt and the proposal are exactly as before.
+        action or the D25 inactive-key revision loop.  It is added to the
+        prompt and recorded as ``extra["revision_feedback"]``; when it is
+        ``None`` (the default) the prompt and the proposal are exactly as
+        before.
+
+        ``revision_attempt`` (D26) is the zero-based count of revisions already
+        made for this trial; it enters the deterministic sampling seed so a
+        revision is not a repeat of the rejected call under the same seed.
         """
+        seed = manager_seed(
+            status.campaign_id,
+            status.budget_index,
+            self._repetition,
+            int(revision_attempt or 0),
+        )
+        if self._injected_llm is not None:
+            call_llm = self._injected_llm
+            seed_as_kwarg = True
+        else:
+            # Real backends take the seed at construction time (ChatOllama
+            # supports a per-call ``seed`` option); the graph default LLM is
+            # only a fallback for callers that bypass propose_next_trial.
+            call_llm = self._resolve_llm(seed=seed)
+            seed_as_kwarg = False
         graph = self._get_graph()
         result = graph.invoke(
             {
@@ -341,6 +432,9 @@ class LangGraphManager:
                 "raw_proposal": "",
                 "proposal": None,
                 "revision_feedback": revision_feedback,
+                "llm_seed": seed,
+                "llm": call_llm,
+                "llm_seed_as_kwarg": seed_as_kwarg,
             }
         )
         return result["proposal"]
@@ -367,8 +461,18 @@ class LangGraphManager:
 
         def _generate_proposal(state: _PlanState) -> _PlanState:
             from langchain_core.messages import HumanMessage
+            call_llm = state.get("llm") or llm
+            seed = state.get("llm_seed")
             started = time.perf_counter()
-            response = llm.invoke([HumanMessage(content=state["context_text"])])
+            messages = [HumanMessage(content=state["context_text"])]
+            if (
+                state.get("llm_seed_as_kwarg")
+                and seed is not None
+                and _accepts_seed_kwarg(call_llm)
+            ):
+                response = call_llm.invoke(messages, seed=seed)
+            else:
+                response = call_llm.invoke(messages)
             latency_ms = (time.perf_counter() - started) * 1000.0
             prompt_tokens, completion_tokens = _usage_from_response(response)
             content = getattr(response, "content", "") or ""
@@ -377,6 +481,7 @@ class LangGraphManager:
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
                 "response_chars": len(content),
+                "seed": seed,
             }
             return {**state, "raw_proposal": content, "llm_meta": llm_meta}
 
@@ -390,7 +495,7 @@ class LangGraphManager:
         builder.add_edge("validate_proposal", END)
         return builder.compile()
 
-    def _resolve_llm(self) -> Any:
+    def _resolve_llm(self, seed: int | None = None) -> Any:
         if self._injected_llm is not None:
             return self._injected_llm
         config = resolve_llm_config(self._model)
@@ -402,4 +507,4 @@ class LangGraphManager:
                 api_key="",
                 model_id=f"ollama/{self._model}",
             )
-        return _build_chat_model(config, self._temperature)
+        return _build_chat_model(config, self._temperature, seed=seed)

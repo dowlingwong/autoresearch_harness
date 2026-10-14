@@ -19,5 +19,14 @@
   "allowed_ranges": {"C": [0.001, 100.0], "max_depth": [2, 30], "n_estimators": [20, 500], "learning_rate": [0.001, 0.5], "max_iter": [100, 3000]},
   "default_budget": {"trials": 10, "max_wall_clock_hours": 0.5},
   "expected_runtime": "~2-10 seconds/trial after OpenML cache warm-up",
-  "held_out": false
+  "held_out": false,
+  "active_keys": {
+    "by_model_type": {
+      "logistic_regression": ["model_type", "C", "class_weight", "max_iter", "scaler", "imputer"],
+      "random_forest": ["model_type", "n_estimators", "max_depth", "class_weight", "scaler", "imputer"],
+      "gradient_boosting": ["model_type", "n_estimators", "max_depth", "learning_rate", "scaler", "imputer"]
+    },
+    "dataset_excluded": ["imputer"],
+    "note": "D25: keys that reach the frozen pipeline under each model_type; computed from the template code. imputer is excluded where the dataset has no categorical columns (features metadata in this repo)."
+  }
 }

@@ -138,17 +138,22 @@ class LangChainProposalBackend:
         }
 
 
-def _build_chat_model(config: LLMConfig, temperature: float) -> Any:
+def _build_chat_model(config: LLMConfig, temperature: float, seed: int | None = None) -> Any:
     if config.provider in {"legacy", "ollama"}:
         try:
             from langchain_ollama import ChatOllama
         except ImportError as exc:
             raise ImportError("langchain-ollama is required for Ollama models") from exc
-        return ChatOllama(
-            model=config.model_name,
-            base_url=config.base_url or "http://localhost:11434",
-            temperature=temperature,
-        )
+        kwargs: dict[str, Any] = {
+            "model": config.model_name,
+            "base_url": config.base_url or "http://localhost:11434",
+            "temperature": temperature,
+        }
+        if seed is not None:
+            # D26: the pinned langchain-ollama passes ``seed`` through to
+            # Ollama's options on every call to this model instance.
+            kwargs["seed"] = seed
+        return ChatOllama(**kwargs)
 
     if config.provider in {"vllm", "lm_studio", "llamacpp", "openai", "deepseek"}:
         try:
@@ -163,6 +168,8 @@ def _build_chat_model(config: LLMConfig, temperature: float) -> Any:
             "base_url": config.base_url or None,
             "temperature": temperature,
         }
+        if seed is not None:
+            kwargs["seed"] = seed
         if config.api_key:
             kwargs["api_key"] = config.api_key
         if config.provider == "deepseek":
@@ -179,6 +186,8 @@ def _build_chat_model(config: LLMConfig, temperature: float) -> Any:
         return ChatOpenAI(**kwargs)
 
     if config.provider == "anthropic":
+        if seed is not None:
+            raise ValueError("Anthropic does not support sampling seeds (D26 expects an Ollama seed)")
         try:
             from langchain_anthropic import ChatAnthropic
         except ImportError as exc:

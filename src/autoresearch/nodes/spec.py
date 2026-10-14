@@ -48,6 +48,11 @@ class NodeSpec:
     editable_symbols: tuple[str, ...] = field(default_factory=tuple)
     branch_state_paths: tuple[str, ...] = field(default_factory=tuple)
     held_out: bool = False
+    # D25: optional node-declared active keys.  ``None`` means no declaration
+    # (behaviour exactly as before); a mapping may key active keys by the
+    # current ``model_type`` and exclude keys at dataset level.  Kept out of
+    # ``to_dict`` when empty so hashes of undeclared nodes do not drift.
+    active_keys: dict[str, object] | None = None
 
     @classmethod
     def from_mapping(cls, payload: dict[str, Any]) -> "NodeSpec":
@@ -99,6 +104,7 @@ class NodeSpec:
             editable_symbols=tuple(str(symbol) for symbol in payload.get("editable_symbols", ())),
             branch_state_paths=tuple(str(path) for path in payload.get("branch_state_paths", ())),
             held_out=bool(payload.get("held_out", False)),
+            active_keys=_active_keys_from_mapping(payload.get("active_keys")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -110,7 +116,21 @@ class NodeSpec:
         payload["editable_symbols"] = list(self.editable_symbols)
         payload["branch_state_paths"] = list(self.branch_state_paths)
         payload["held_out"] = self.held_out
+        if not self.active_keys:
+            # D25: an undeclared (or empty) declaration must not change
+            # node-spec hashes or research-context hashes.
+            payload.pop("active_keys", None)
         return payload
+
+
+def _active_keys_from_mapping(raw: object) -> dict[str, object] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise NodeSpecError("active_keys must be a mapping")
+    if not raw:
+        return None
+    return dict(raw)
 
 
 def load_node_spec(path: str | Path) -> NodeSpec:
