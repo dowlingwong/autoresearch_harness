@@ -23,6 +23,7 @@ from typing import Any, TypedDict
 
 from autoresearch.manager.base import ManagerProposal, ManagerStatus
 from autoresearch.memory.summarizer import MemoryContext
+from autoresearch.nodes.active_keys import resolve_active_keys
 from autoresearch.nodes.spec import NodeSpec
 from autoresearch.llm.langchain_client import _build_chat_model
 from autoresearch.llm.providers import LLMConfig, resolve_llm_config
@@ -118,7 +119,14 @@ def _prepare_context(state: _PlanState) -> _PlanState:
     editable_file = node_spec.editable_paths[0] if node_spec.editable_paths else "train.py"
 
     # List editable values so the LLM can use exact names and current values.
+    # D25: when the node declares active keys, the prompt shows only the keys
+    # active for the current configuration.  The status itself is unfiltered
+    # (the scripted stand-in's proposal law depends on reading it unchanged).
     current_constants = getattr(status, "current_constants", {}) or {}
+    active = resolve_active_keys(node_spec, current_constants)
+    if active is not None:
+        active_set = set(active)
+        current_constants = {k: v for k, v in current_constants.items() if k in active_set}
     if current_constants:
         lines.append(f"Editable values currently in {editable_file} (use exact names):")
         for k, v in current_constants.items():
@@ -507,4 +515,8 @@ class LangGraphManager:
                 api_key="",
                 model_id=f"ollama/{self._model}",
             )
+        if config.provider == "anthropic":
+            # D26 is an Ollama sampling seed; Anthropic exposes no seed.  Keep
+            # the pre-D26 unseeded behaviour for that provider (review F6).
+            seed = None
         return _build_chat_model(config, self._temperature, seed=seed)

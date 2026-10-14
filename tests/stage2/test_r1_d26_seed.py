@@ -110,6 +110,31 @@ class TestD26SeedIsPassedAndLogged(unittest.TestCase):
         self.assertEqual(len(llm_events), 1)
         self.assertEqual(llm_events[0]["payload"]["seed"], llm.seeds[0])
 
+    def test_seed_is_skipped_for_providers_without_one(self) -> None:
+        # Review F6: D26 is an Ollama seed; an Anthropic-backed manager keeps
+        # its pre-D26 unseeded behaviour instead of raising.
+        import autoresearch.manager.langgraph_manager as lgm
+        from autoresearch.llm.providers import LLMConfig
+
+        captured = {}
+
+        def fake_build(config, temperature, seed=None):
+            captured["provider"] = config.provider
+            captured["seed"] = seed
+            return SimpleNamespace(invoke=lambda messages: None)
+
+        self.assertTrue(hasattr(lgm, "_build_chat_model"))
+        original_config, original_build = lgm.resolve_llm_config, lgm._build_chat_model
+        try:
+            lgm.resolve_llm_config = lambda model: LLMConfig(
+                provider="anthropic", model_name="claude", base_url="", api_key="", model_id="claude",
+            )
+            lgm._build_chat_model = fake_build
+            LangGraphManager(model="anthropic/claude")._resolve_llm(seed=12345)
+        finally:
+            lgm.resolve_llm_config, lgm._build_chat_model = original_config, original_build
+        self.assertEqual(captured, {"provider": "anthropic", "seed": None})
+
     def test_pinned_ollama_backend_receives_the_seed_at_construction(self) -> None:
         config = LLMConfig(
             provider="ollama",

@@ -207,13 +207,11 @@ def _manager_status(
         if editable_symbols:
             allowed = set(editable_symbols)
             constants = {key: value for key, value in constants.items() if key in allowed}
-        # D25: a node that declares active keys shows the manager only those
-        # keys (prompt and structured-edit resolution).  Undeclared nodes are
-        # unchanged.
-        active = resolve_active_keys(node_spec, constants)
-        if active is not None:
-            active_set = set(active)
-            constants = {key: value for key, value in constants.items() if key in active_set}
+        # D25 active-key filtering happens when the LLM prompt is prepared
+        # (langgraph_manager._prepare_context), not here: this status also feeds
+        # the scripted stand-in, whose proposal sequence for the existing seeds
+        # must stay identical (golden).  Inactive proposals are rejected by the
+        # control plane before any worker run.
         effective_config = build_effective_config(constants)
     return ManagerStatus(
         campaign_id=campaign_id,
@@ -1002,7 +1000,11 @@ def run_real_campaign(
     stop_requested = False
     # D27: record-only novelty flags.  The incumbent's effective config starts
     # as the workspace configuration and follows keeps and demotions; the seen
-    # list holds the effective config of every evaluated trial.
+    # list holds the effective config of every evaluated trial.  Known
+    # limitation (review F3): the seen list covers the current campaign
+    # segment; effective configs evaluated before a resume cannot be
+    # reconstructed from the ledger, so a duplicate of a pre-resume config is
+    # not flagged.  The flags are record-only and change no decision.
     incumbent_effective: dict[str, str] | None = _effective_config_at(worker, node_spec)
     seen_effective: list[dict[str, str]] = []
 
@@ -1157,15 +1159,16 @@ def run_real_campaign(
                         "active_keys": list(resolve_active_keys(node_spec, status.current_constants) or ()),
                     },
                 )
-                proposal = manager.propose_next_trial(
-                    status,
-                    memory_context,
-                    node_spec,
-                    revision_feedback=(
+                revise_kwargs: dict[str, Any] = {
+                    "revision_feedback": (
                         f"inactive key: {rejected_key} has no effect for the current "
                         "configuration; choose one of the active editable keys"
                     ),
-                    revision_attempt=revisions_used + 1,
+                }
+                if _accepts_kwarg(manager, "revision_attempt"):
+                    revise_kwargs["revision_attempt"] = revisions_used + 1
+                proposal = manager.propose_next_trial(
+                    status, memory_context, node_spec, **revise_kwargs
                 )
                 compute_budget = compute_budget.consume_llm_call()
                 proposal = _proposal_with_campaign_metadata(
@@ -1618,6 +1621,10 @@ def run_dry_campaign(
     raises ``NotImplementedError`` by design: skip, revise, verify, demote and
     stop are implemented in :func:`run_real_campaign` only.  LLM calls are
     counted only for non-deterministic managers.
+
+    D27 ``edit_novelty`` events are emitted only on the real path: the dry
+    worker has no workspace, so there is no effective config to compare and
+    the flags would be vacuous (review F4).
     """
     manager = proposal_backend or _manager(manager_mode, llm=manager_llm, temperature=manager_temperature)
     worker = DryRunWorker(profile=dry_run_profile)

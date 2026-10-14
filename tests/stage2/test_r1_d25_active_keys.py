@@ -108,16 +108,44 @@ class TestD25DeclarationResolution(unittest.TestCase):
         active = resolve_active_keys(spec, {"model_type": "logistic_regression"})
         self.assertIn("imputer", active)
 
-    def test_active_set_follows_a_model_type_change_in_the_workspace(self) -> None:
+    def test_manager_status_keeps_the_full_editable_set(self) -> None:
+        # Regression for review F1: the scripted stand-in reads this status, so
+        # it must keep every editable constant (the D25 filter applies to the
+        # LLM prompt only).  Filtering here silently changed the scripted
+        # proposal sequence for the existing seeds.
         spec = load_registered_node("openml_ionosphere", repo_root=ROOT)
         with tempfile.TemporaryDirectory() as tmp:
             node_root = _copy_openml(Path(tmp), "openml_ionosphere")
             worker = SimpleNamespace(node_root=node_root)
+            status = _manager_status(
+                campaign_id="c", budget_index=1, current_best=None, node_spec=spec, worker=worker
+            )
+        self.assertIn("class_weight", status.current_constants)
+        self.assertIn("imputer", status.current_constants)
+
+    def test_prompt_active_set_follows_a_model_type_change_in_the_workspace(self) -> None:
+        from autoresearch.manager.base import ManagerStatus
+        from autoresearch.manager.langgraph_manager import _prepare_context
+
+        spec = load_registered_node("openml_ionosphere", repo_root=ROOT)
+        with tempfile.TemporaryDirectory() as tmp:
+            node_root = _copy_openml(Path(tmp), "openml_ionosphere")
+            worker = SimpleNamespace(node_root=node_root)
+
+            def prompt_for(status):
+                memory = build_memory_context([], "none", spec, status.budget_index)
+                state = {"status": status, "memory_context": memory, "node_spec": spec,
+                         "context_text": "", "raw_proposal": "", "proposal": None,
+                         "revision_feedback": None}
+                return _prepare_context(state)["context_text"]
+
             before = _manager_status(
                 campaign_id="c", budget_index=1, current_best=None, node_spec=spec, worker=worker
             )
-            self.assertIn("class_weight", before.current_constants)
-            self.assertNotIn("imputer", before.current_constants)
+            prompt = prompt_for(before)
+            self.assertIn("class_weight = ", prompt)
+            self.assertNotIn("imputer = ", prompt)
+
             config_text = (node_root / "config.yaml").read_text()
             (node_root / "config.yaml").write_text(
                 config_text.replace("model_type: logistic_regression", "model_type: gradient_boosting")
@@ -125,8 +153,10 @@ class TestD25DeclarationResolution(unittest.TestCase):
             after = _manager_status(
                 campaign_id="c", budget_index=2, current_best=None, node_spec=spec, worker=worker
             )
-        self.assertNotIn("class_weight", after.current_constants)
-        self.assertIn("learning_rate", after.current_constants)
+            prompt_after = prompt_for(after)
+        self.assertNotIn("class_weight = ", prompt_after)
+        self.assertIn("learning_rate = ", prompt_after)
+        self.assertNotIn("imputer = ", prompt_after)
 
 
 class TestD25InactiveKeyValidation(unittest.TestCase):
@@ -207,32 +237,89 @@ class TestD25InactiveKeyValidation(unittest.TestCase):
         self.assertEqual(len(manager.calls), 1)  # cap reached after the initial call
         self.assertEqual(records[0].extra["control"]["revisions"], 0)
 
-    def test_langgraph_manager_records_the_named_param_for_declared_nodes(self) -> None:
-        from autoresearch.manager.langgraph_manager import LangGraphManager
+    def _status_with_full_constants(self, spec, constants):
         from autoresearch.manager.base import ManagerStatus
 
-        spec = load_registered_node("openml_ionosphere", repo_root=ROOT)
-        status = ManagerStatus(
+        return ManagerStatus(
             campaign_id="c", budget_index=1, current_best_metric=None,
             metric_name=spec.metric_name, metric_direction=spec.metric_direction,
-            current_constants={"model_type": "logistic_regression", "C": "1.0", "class_weight": "null",
-                               "max_iter": "1000", "scaler": "none"},
+            current_constants=dict(constants),
         )
-        llm_response = json.dumps({
+
+    def _langgraph_proposal(self, spec, status, response: dict):
+        from autoresearch.manager.langgraph_manager import LangGraphManager
+
+        class _LLM:
+            def invoke(self, messages):
+                return SimpleNamespace(content=json.dumps(response))
+
+        return LangGraphManager(llm=_LLM()).propose_next_trial(
+            status, build_memory_context([], "none", spec, 1), spec
+        )
+
+    def test_inactive_key_in_the_live_status_is_caught_via_the_structured_edit(self) -> None:
+        # The campaign status keeps the full editable set (review F1), so an
+        # inactive named key resolves to a structured edit and is caught there.
+        spec = load_registered_node("openml_ionosphere", repo_root=ROOT)
+        status = self._status_with_full_constants(spec, {
+            "model_type": "logistic_regression", "C": "1.0", "class_weight": "null",
+            "max_iter": "1000", "scaler": "none", "imputer": "most_frequent",
+        })
+        proposal = self._langgraph_proposal(spec, status, {
+            "summary": "s", "rationale": "r",
+            "objective": "Change imputer from most_frequent to constant in config.yaml.",
+            "param": "imputer", "old_value": "most_frequent", "new_value": "constant",
+        })
+        self.assertEqual(
+            inactive_key_in_proposal(proposal, spec, status.current_constants), "imputer"
+        )
+
+    def test_an_editable_symbol_missing_from_the_status_is_still_named(self) -> None:
+        spec = load_registered_node("openml_ionosphere", repo_root=ROOT)
+        status = self._status_with_full_constants(spec, {
+            "model_type": "logistic_regression", "C": "1.0", "max_iter": "1000",
+        })
+        proposal = self._langgraph_proposal(spec, status, {
             "summary": "s", "rationale": "r",
             "objective": "Change imputer in config.yaml.",
             "param": "imputer", "old_value": "most_frequent", "new_value": "constant",
         })
-
-        class _LLM:
-            def invoke(self, messages):
-                return SimpleNamespace(content=llm_response)
-
-        proposal = LangGraphManager(llm=_LLM()).propose_next_trial(
-            status, build_memory_context([], "none", spec, 1), spec
-        )
         self.assertEqual(proposal.extra.get("named_param"), "imputer")
-        self.assertEqual(inactive_key_in_proposal(proposal, spec, status.current_constants), "imputer")
+        self.assertEqual(
+            inactive_key_in_proposal(proposal, spec, status.current_constants), "imputer"
+        )
+
+    def test_a_manager_without_revision_attempt_is_not_passed_it(self) -> None:
+        # Review F2: a manager accepting revision_feedback but not
+        # revision_attempt must not crash the revision loop.
+        spec = load_registered_node("openml_ionosphere", repo_root=ROOT)
+
+        class _Manager:
+            deterministic = False
+
+            def __init__(self):
+                self.calls = 0
+
+            def propose_next_trial(self, status, memory_context, node_spec, *, revision_feedback=None):
+                self.calls += 1
+                if self.calls == 1:
+                    return _proposal(spec, "Change imputer from most_frequent to constant in config.yaml.")
+                return _proposal(spec, "Change C from 1.0 to 2.0 in config.yaml.", summary="good")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            node_root = _copy_openml(Path(tmp), "openml_ionosphere")
+            worker = _CountingWorker(node_root)
+            manager = _Manager()
+            records_path = Path(tmp) / "trials.jsonl"
+            run_real_campaign(
+                node_spec=spec, campaign_id="d25d", budget=1, manager_mode="langgraph_manager",
+                memory_mode="none", records_path=records_path, worker=worker,
+                proposal_backend=manager,
+            )
+            records = TrialAppendStore(records_path).read_all()
+        self.assertEqual(manager.calls, 2)  # initial + one revision, no TypeError
+        self.assertEqual(worker.run_calls, 1)
+        self.assertEqual(records[0].decision.value, "kept")
 
 
 class TestD25DefaultPathUnchanged(unittest.TestCase):
