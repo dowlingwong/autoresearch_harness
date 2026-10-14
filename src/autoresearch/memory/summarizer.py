@@ -121,12 +121,14 @@ def _summary_line(
     rationale_max_tokens: int | None = None,
     metric_name: str | None = None,
 ) -> str:
-    # Prefer the node's declared metric name (D24); fall back to val_auc and
-    # then to the first parsed metric for backwards compatibility with callers
-    # that pass no metric name.  ``in`` is used instead of ``or`` so that a
-    # metric of exactly 0.0 is shown, not skipped.
-    if metric_name and metric_name in record.parsed_metrics:
-        metric = record.parsed_metrics[metric_name]
+    # The line shows the node's declared metric (D24).  When a metric name is
+    # given it is used strictly: a missing value shows "missing" rather than
+    # leaking a different parsed metric (e.g. train_loss).  ``in`` is used
+    # instead of ``or`` so that a metric of exactly 0.0 is shown, not skipped.
+    # The old val_auc/first-parsed fallbacks remain only for callers that pass
+    # no metric name.
+    if metric_name is not None:
+        metric = record.parsed_metrics.get(metric_name)
     elif "val_auc" in record.parsed_metrics:
         metric = record.parsed_metrics["val_auc"]
     else:

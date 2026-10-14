@@ -86,6 +86,13 @@ def test_summary_line_shows_a_metric_of_exactly_zero():
     assert "metric=0.300000" not in context.context_text
 
 
+def test_a_missing_node_metric_never_leaks_another_parsed_metric():
+    records = [_record(1, {"train_loss": 0.3})]  # no val_score parsed
+    context = build_memory_context(records, MemoryMode.APPEND_ONLY_SUMMARY, _spec(), 2)
+    assert "metric=missing" in context.context_text
+    assert "0.300000" not in context.context_text
+
+
 def test_best_strategy_respects_minimise_direction():
     spec = _spec(metric_name="val_loss", direction="minimize")
     records = [
