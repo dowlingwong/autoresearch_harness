@@ -70,15 +70,23 @@ def build_memory_context(
             ]
         )
     elif memory_mode == MemoryMode.APPEND_ONLY_SUMMARY:
-        context = "\n".join(_summary_line(record, include_rationale=False) for record in records)
+        context = "\n".join(
+            _summary_line(record, include_rationale=False, metric_name=node_spec.metric_name)
+            for record in records
+        )
     else:
         lines = [
-            _summary_line(record, include_rationale=True, rationale_max_tokens=rationale_max_tokens)
+            _summary_line(
+                record,
+                include_rationale=True,
+                rationale_max_tokens=rationale_max_tokens,
+                metric_name=node_spec.metric_name,
+            )
             for record in records
         ]
         if repeated.repeated_bad_count:
             lines.append(f"repeated_bad_warnings={','.join(repeated.flagged_trial_ids)}")
-        lines.append(_best_strategy_line(records, node_spec.metric_name))
+        lines.append(_best_strategy_line(records, node_spec.metric_name, node_spec.metric_direction))
         context = "\n".join(line for line in lines if line)
 
     compressed = len(context)
@@ -111,12 +119,18 @@ def _summary_line(
     record: TrialRecord,
     include_rationale: bool,
     rationale_max_tokens: int | None = None,
+    metric_name: str | None = None,
 ) -> str:
-    # Use the node's metric name if known; fall back to val_auc for backwards
-    # compatibility with existing callers and tests.
-    metric = record.parsed_metrics.get("val_auc") or next(
-        iter(record.parsed_metrics.values()), None
-    )
+    # Prefer the node's declared metric name (D24); fall back to val_auc and
+    # then to the first parsed metric for backwards compatibility with callers
+    # that pass no metric name.  ``in`` is used instead of ``or`` so that a
+    # metric of exactly 0.0 is shown, not skipped.
+    if metric_name and metric_name in record.parsed_metrics:
+        metric = record.parsed_metrics[metric_name]
+    elif "val_auc" in record.parsed_metrics:
+        metric = record.parsed_metrics["val_auc"]
+    else:
+        metric = next(iter(record.parsed_metrics.values()), None)
     metric_text = f"{metric:.6f}" if metric is not None else "missing"
     line = (
         f"{record.trial_id}: decision={record.decision.value}; "
@@ -130,12 +144,21 @@ def _summary_line(
     return line
 
 
-def _best_strategy_line(records: list[TrialRecord], metric_name: str) -> str:
+def _best_strategy_line(
+    records: list[TrialRecord],
+    metric_name: str,
+    metric_direction: str = "maximize",
+) -> str:
     best = None
     for record in records:
         if metric_name not in record.parsed_metrics:
             continue
-        if best is None or record.parsed_metrics[metric_name] > best.parsed_metrics[metric_name]:
+        if best is None:
+            best = record
+        elif metric_direction == "minimize":
+            if record.parsed_metrics[metric_name] < best.parsed_metrics[metric_name]:
+                best = record
+        elif record.parsed_metrics[metric_name] > best.parsed_metrics[metric_name]:
             best = record
     if best is None:
         return "best_strategy=none"
