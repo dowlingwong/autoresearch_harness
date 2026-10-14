@@ -688,12 +688,17 @@ def _complete_captured_trial(
     *,
     first_action: str,
     event_store: object | None = None,
-) -> TrialRecord:
+) -> tuple[TrialRecord, tuple[str, str] | None]:
     """Execute the captured epoch's forced first action and append one record.
 
     At E1 the captured proposal is replayed through the worker (the manager is
     *not* called again for it).  At E2 the worker already ran, so the captured
     provisional record and worker result are committed directly.
+
+    Returns the record and the evaluated configuration's
+    ``(effective_sha256, active_sha256)`` when the trial was evaluated, so the
+    resumed segment can count it among the configurations seen before the
+    continuation (review F9).
     """
     snapshot = restored.snapshot
     node_spec = restored.node_spec
@@ -738,6 +743,16 @@ def _complete_captured_trial(
     control_meta: dict[str, Any] = {"epoch": snapshot.epoch, "action": effective, "resumed": True}
     ts_start = _campaign._iso_now()
 
+    def _evaluated_hashes() -> tuple[str, str] | None:
+        effective_config = _campaign._effective_config_at(worker, node_spec)
+        if effective_config is None:
+            return None
+        return (
+            _campaign._config_sha256(effective_config),
+            _campaign._active_config_sha256(effective_config, node_spec),
+        )
+
+    captured_hashes: tuple[str, str] | None = None
     if effective == "skip":
         record = _campaign._skipped_record(
             campaign_id=campaign_id, budget_index=budget_index, node_spec=node_spec,
@@ -748,6 +763,9 @@ def _complete_captured_trial(
         record = snapshot.provisional
         if record is None:
             raise ValueError("E2 snapshot has no provisional record")
+        # The workspace still holds the captured candidate here (the snapshot's
+        # editable files); verify below restores the incumbent between runs.
+        captured_hashes = _evaluated_hashes()
         if effective == "verify":
             record, verify_info = _campaign._run_verify(
                 record=record, proposal=proposal, node_spec=node_spec, worker=worker,
@@ -802,6 +820,9 @@ def _complete_captured_trial(
             current_best=restored.current_best, timestamp_start=ts_start,
             timestamp_end=_campaign._iso_now(),
         )
+        # The worker just left the evaluated candidate in the workspace; take
+        # its hashes before the non-keep restore below.
+        captured_hashes = _evaluated_hashes()
 
     record = _campaign.replace(record, extra={**record.extra, "control": control_meta})
     TrialAppendStore(restored.records_path).append_many([record])
@@ -823,7 +844,7 @@ def _complete_captured_trial(
             event_store, campaign_id=campaign_id, trial_id=trial_id,
             event_type="branch_trial_committed", payload={"action": effective, "epoch": snapshot.epoch},
         )
-    return record
+    return record, captured_hashes
 
 
 @dataclass
@@ -889,8 +910,21 @@ def resume_campaign(
         )
         return ResumeResult(restored=restored, first_record=None, continuation=continuation)
 
-    first_record = _complete_captured_trial(restored, first_action=first_action, event_store=event_store)
+    first_record, captured_hashes = _complete_captured_trial(
+        restored, first_action=first_action, event_store=event_store
+    )
     continuation = None
+    # Review F9: the captured trial was evaluated inside this resumed segment.
+    # Count its configuration among the ones seen before the continuation, so
+    # a later duplicate of it is flagged (E1 snapshots have no candidate yet
+    # at capture time, so the snapshot's own sets cannot cover it).
+    if captured_hashes is not None:
+        resume_seeds["initial_seen_effective_hashes"] = tuple(sorted(
+            set(resume_seeds["initial_seen_effective_hashes"]) | {captured_hashes[0]}
+        ))
+        resume_seeds["initial_seen_active_hashes"] = tuple(sorted(
+            set(resume_seeds["initial_seen_active_hashes"]) | {captured_hashes[1]}
+        ))
     if horizon > 0:
         continuation = _campaign.run_real_campaign(
             node_spec=restored.node_spec,

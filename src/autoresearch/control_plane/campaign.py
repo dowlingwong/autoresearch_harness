@@ -445,15 +445,42 @@ def _editable_state_hash(worker: Worker, node_spec: NodeSpec) -> str | None:
     return digest.hexdigest()
 
 
-def _effective_config_at(worker: Worker, node_spec: NodeSpec) -> dict[str, str] | None:
-    """Effective config of the current workspace (D27), or None without a node root."""
+def _editable_constants_at(worker: Worker, node_spec: NodeSpec) -> dict[str, str] | None:
+    """Editable constants parsed from the current workspace, or None without a node root."""
     root = _worker_node_root(worker)
     if root is None:
         return None
     constants: dict[str, str] = {}
     for rel_path in node_spec.editable_paths:
         constants.update(parse_train_constants(_editable_path(root, rel_path)))
-    return build_effective_config(constants)
+    return constants
+
+
+def _novelty_config(constants: dict[str, str], node_spec: NodeSpec) -> dict[str, str]:
+    """The configuration D27 novelty sees: the effective config plus its editable symbols.
+
+    ``build_effective_config`` is a narrow approximation and does not cover
+    every editable symbol (e.g. ``HIDDEN_UNITS`` on ``digits_mlp``), so an edit
+    to an uncovered symbol would be invisible to the novelty flags and their
+    hashes (review F7).  Every editable symbol the builder does not cover is
+    added unchanged; undeclared nodes contribute all of their editable
+    constants.
+    """
+    config = build_effective_config(constants)
+    editable_symbols = tuple(getattr(node_spec, "editable_symbols", ()) or ())
+    selected = editable_symbols or tuple(constants)
+    for symbol in selected:
+        if symbol in constants:
+            config.setdefault(symbol, str(constants[symbol]))
+    return config
+
+
+def _effective_config_at(worker: Worker, node_spec: NodeSpec) -> dict[str, str] | None:
+    """Effective config of the current workspace (D27), or None without a node root."""
+    constants = _editable_constants_at(worker, node_spec)
+    if constants is None:
+        return None
+    return _novelty_config(constants, node_spec)
 
 
 def _config_sha256(config: dict[str, str] | None) -> str | None:

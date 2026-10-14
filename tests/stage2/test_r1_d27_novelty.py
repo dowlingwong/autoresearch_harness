@@ -8,6 +8,7 @@ ENGINEERING_ONLY.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import tempfile
 import unittest
@@ -18,6 +19,7 @@ from autoresearch.control_plane.campaign import (
     _active_config_sha256,
     _config_sha256,
     _effective_config_at,
+    _novelty_config,
     _project_active_config,
     run_real_campaign,
 )
@@ -53,6 +55,36 @@ class _ConfigWritingWorker:
         self.run_calls += 1
         (self.node_root / "train.py").write_text(
             f"LEARNING_RATE = {spec['learning_rate']}\n", encoding="utf-8"
+        )
+        return WorkerResult(
+            worker_mode=self.mode,
+            changed_files=("train.py",),
+            success=True,
+            parsed_metrics={node_spec.metric_name: spec["metric"]},
+            raw_log_ref="fake.log",
+            patch_ref="fake.diff",
+            git_commit_before="b",
+            git_commit_after="a",
+        )
+
+
+class _HiddenUnitsWorker:
+    """Edits HIDDEN_UNITS in digits_mlp's train.py (not covered by build_effective_config)."""
+
+    mode = "hidden_units_worker"
+
+    def __init__(self, node_root: Path, trials: list[dict]) -> None:
+        self.node_root = Path(node_root)
+        self._trials = list(trials)
+        self.run_calls = 0
+
+    def run_trial(self, proposal, node_spec, budget_index):
+        spec = self._trials.pop(0)
+        self.run_calls += 1
+        text = (self.node_root / "train.py").read_text(encoding="utf-8")
+        (self.node_root / "train.py").write_text(
+            re.sub(r"HIDDEN_UNITS = \d+", f"HIDDEN_UNITS = {spec['hidden_units']}", text),
+            encoding="utf-8",
         )
         return WorkerResult(
             worker_mode=self.mode,
@@ -126,6 +158,21 @@ class _E2Recorder:
         self.snapshots.append(snapshot)
 
 
+class _E1Recorder:
+    """Snapshot hook: capture at E1 (before the captured trial is evaluated)."""
+
+    def __init__(self, out_dir: Path) -> None:
+        self.out_dir = Path(out_dir)
+        self.snapshots = []
+
+    def __call__(self, context) -> None:
+        if context.epoch != "E1":
+            return
+        snapshot = capture_snapshot(context)
+        write_snapshot(snapshot, self.out_dir)
+        self.snapshots.append(snapshot)
+
+
 def _events(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
@@ -163,8 +210,10 @@ class TestD27EditNoveltyFlags(unittest.TestCase):
 
     def _expected_payload(self, rate: str, metric_flag: bool, equals: bool, seen: bool) -> dict:
         # lr_synthetic is undeclared: the active projection is the full config,
-        # so the active hash and the active flags mirror the full ones.
-        effective = build_effective_config({"LEARNING_RATE": rate})
+        # so the active hash and the active flags mirror the full ones.  The
+        # novelty configuration covers every editable symbol (F7 fix).
+        spec = load_registered_node("lr_synthetic", repo_root=ROOT)
+        effective = _novelty_config({"LEARNING_RATE": rate}, spec)
         sha = _config_sha256(effective)
         return {
             "config_equals_incumbent": equals,
@@ -271,23 +320,43 @@ class TestD27F3ResumeFix(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            spec, snapshot_dir = self._root_with_snapshot(tmp, [{"learning_rate": "0.002", "metric": 0.90}])
-            stripped = read_snapshot(snapshot_dir)
-            self.assertIsNotNone(stripped.seen_effective_hashes)  # new format first
+            spec = load_registered_node("lr_synthetic", repo_root=ROOT)
+            root_dir = tmp / "root"
+            node_root = root_dir / "node"
+            shutil.copytree(ROOT / "nodes" / "lr_synthetic", node_root)
+            (node_root / "train.py").write_text("LEARNING_RATE = 0.001\n", encoding="utf-8")
+            # Two pre-resume trials; the snapshot captures the second one.
+            worker = _ConfigWritingWorker(node_root, [
+                {"learning_rate": "0.002", "metric": 0.90},
+                {"learning_rate": "0.003", "metric": 0.91},
+            ])
+            recorder = _E2Recorder(root_dir / "snapshot")
+            run_real_campaign(
+                node_spec=spec, campaign_id="legacy", budget=2, manager_mode="baseline_manager",
+                memory_mode="none", records_path=root_dir / "root_trials.jsonl", worker=worker,
+                proposal_backend=_StaticBackend(spec),
+                event_store=CampaignEventStore(root_dir / "events.jsonl"),
+                initial_current_best=0.95, snapshot_hook=recorder,
+            )
+            # The E2 captured trial is committed from the provisional record,
+            # so the branch worker only serves the two continuation trials.
             result, _ = self._resume(
-                tmp, spec, snapshot_dir,
-                [{"learning_rate": "0.002", "metric": 0.90}, {"learning_rate": "0.003", "metric": 0.99}],
+                tmp, spec, root_dir / "snapshot",
+                [{"learning_rate": "0.003", "metric": 0.95},   # duplicate of the captured trial
+                 {"learning_rate": "0.002", "metric": 0.99}],  # trial 1's pre-resume config
                 2, mutate_manifest=_drop_sets,
             )
             flags = _novelty_payloads(result.restored.events_path)
         self.assertEqual(len(flags), 2)
         # Old format: the pre-resume set is unknown, recorded on the first
-        # event only; the duplicate of trial 1 is NOT silently reported False
-        # without that marker.
+        # event only.  The captured trial is evaluated inside the segment
+        # (review F9), so its duplicate is seen; trial 1's genuine pre-resume
+        # config is not, and the marker says the set was unknown rather than
+        # silently empty.
         self.assertEqual(flags[0]["seen_before_resume"], "unknown")
-        self.assertIs(flags[0]["config_seen_before"], False)  # current segment only
+        self.assertIs(flags[0]["config_seen_before"], True)  # captured trial
         self.assertNotIn("seen_before_resume", flags[1])
-        self.assertIs(flags[1]["config_seen_before"], False)  # 0.003 is new here
+        self.assertIs(flags[1]["config_seen_before"], False)  # pre-resume 0.002
 
     def test_snapshot_carries_sorted_seen_hash_sets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -296,6 +365,40 @@ class TestD27F3ResumeFix(unittest.TestCase):
             snapshot = read_snapshot(snapshot_dir)
             self.assertEqual(len(snapshot.seen_effective_hashes), 1)
             self.assertEqual(snapshot.seen_active_hashes, snapshot.seen_effective_hashes)
+
+    def test_e1_resume_counts_the_captured_trial_as_seen(self) -> None:
+        # Review F9: the captured E1 trial is evaluated inside the resumed
+        # segment (the snapshot predates it); a later duplicate of its
+        # configuration must set config_seen_before.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            spec = load_registered_node("lr_synthetic", repo_root=ROOT)
+            root_dir = tmp / "root"
+            node_root = root_dir / "node"
+            shutil.copytree(ROOT / "nodes" / "lr_synthetic", node_root)
+            (node_root / "train.py").write_text("LEARNING_RATE = 0.001\n", encoding="utf-8")
+            recorder = _E1Recorder(root_dir / "snapshot")
+            run_real_campaign(
+                node_spec=spec, campaign_id="f9", budget=1, manager_mode="baseline_manager",
+                memory_mode="none", records_path=root_dir / "root_trials.jsonl",
+                worker=_ConfigWritingWorker(node_root, [{"learning_rate": "0.002", "metric": 0.90}]),
+                proposal_backend=_StaticBackend(spec),
+                event_store=CampaignEventStore(root_dir / "events.jsonl"),
+                initial_current_best=0.95, snapshot_hook=recorder,
+            )
+            snapshot = read_snapshot(root_dir / "snapshot")
+            into = tmp / "branch"
+            branch_worker = _ConfigWritingWorker(into, [
+                {"learning_rate": "0.002", "metric": 0.90},  # the captured trial, replayed
+                {"learning_rate": "0.002", "metric": 0.95},  # duplicate proposal
+            ])
+            result = resume_campaign(snapshot, into, first_action="continue", horizon=1,
+                                     manager=_StaticBackend(spec), worker=branch_worker)
+            flags = _novelty_payloads(result.restored.events_path)
+        self.assertEqual(branch_worker.run_calls, 2)
+        self.assertEqual(len(flags), 1)
+        self.assertIs(flags[0]["config_seen_before"], True)
+        self.assertIs(flags[0]["active_config_seen_before"], True)
 
 
 class TestD27ActiveVsFullHashing(unittest.TestCase):
@@ -388,6 +491,53 @@ class TestD27ActiveVsFullHashing(unittest.TestCase):
         self.assertIs(flags[1]["active_config_seen_before"], True)
         self.assertIs(flags[1]["config_equals_incumbent"], False)
         self.assertIs(flags[1]["config_seen_before"], False)
+
+
+class TestD27EditableSymbolCoverage(unittest.TestCase):
+    """Review F7: editable symbols outside build_effective_config's map must count.
+
+    ``digits_mlp`` declares HIDDEN_UNITS, ALPHA and LEARNING_RATE_INIT among its
+    editable symbols, none of which the narrow effective map covers.
+    """
+
+    def test_an_uncovered_editable_symbol_moves_the_config_hash(self) -> None:
+        spec = load_registered_node("digits_mlp", repo_root=ROOT)
+        with tempfile.TemporaryDirectory() as tmp:
+            node_root = Path(tmp) / "node"
+            shutil.copytree(ROOT / "nodes" / "digits_mlp", node_root)
+            worker = SimpleNamespace(node_root=node_root)
+            before = _effective_config_at(worker, spec)
+            self.assertIn("HIDDEN_UNITS", before)
+            self.assertEqual(before["HIDDEN_UNITS"], "32")
+            text = (node_root / "train.py").read_text(encoding="utf-8")
+            (node_root / "train.py").write_text(text.replace("HIDDEN_UNITS = 32", "HIDDEN_UNITS = 96"))
+            after = _effective_config_at(worker, spec)
+        self.assertEqual(after["HIDDEN_UNITS"], "96")
+        self.assertNotEqual(_config_sha256(before), _config_sha256(after))
+
+    def test_novelty_flags_see_an_uncovered_editable_symbol(self) -> None:
+        spec = load_registered_node("digits_mlp", repo_root=ROOT)
+        trials = [
+            {"hidden_units": "64", "metric": 0.90},  # T1: new config, kept
+            {"hidden_units": "96", "metric": 0.95},  # T2: a different new config
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            node_root = Path(tmp) / "node"
+            shutil.copytree(ROOT / "nodes" / "digits_mlp", node_root)
+            worker = _HiddenUnitsWorker(node_root, trials)
+            events_path = Path(tmp) / "events.jsonl"
+            run_real_campaign(
+                node_spec=spec, campaign_id="f7", budget=2, manager_mode="baseline_manager",
+                memory_mode="none", records_path=Path(tmp) / "trials.jsonl", worker=worker,
+                proposal_backend=_StaticBackend(spec), event_store=CampaignEventStore(events_path),
+                initial_current_best=0.5,
+            )
+            flags = _novelty_payloads(events_path)
+        self.assertEqual(len(flags), 2)
+        self.assertIs(flags[1]["config_equals_incumbent"], False)
+        self.assertIs(flags[1]["config_seen_before"], False)
+        self.assertIs(flags[1]["active_config_equals_incumbent"], False)
+        self.assertIs(flags[1]["active_config_seen_before"], False)
 
 
 if __name__ == "__main__":
