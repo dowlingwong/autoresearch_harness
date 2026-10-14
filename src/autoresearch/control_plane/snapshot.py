@@ -96,6 +96,12 @@ class CampaignSnapshot:
     provisional: TrialRecord | None
     worker_result: WorkerResult | None
     worker_mode: str
+    # D27 F3 fix: hashes of every config evaluated so far (full effective
+    # config and its active-key projection).  ``None`` means the snapshot was
+    # taken before this field existed: a resume records "unknown before
+    # resume" and never treats it as an empty set.
+    seen_effective_hashes: tuple[str, ...] | None = None
+    seen_active_hashes: tuple[str, ...] | None = None
     layer_hashes: dict[str, str] = field(default_factory=dict)
 
 
@@ -269,6 +275,8 @@ def capture_snapshot(
         provisional=context.provisional,
         worker_result=context.worker_result,
         worker_mode=getattr(context.worker, "mode", type(context.worker).__name__),
+        seen_effective_hashes=tuple(context.seen_effective_hashes),
+        seen_active_hashes=tuple(context.seen_active_hashes),
     )
     snapshot.layer_hashes = _layer_hashes(snapshot)
     return snapshot
@@ -342,6 +350,12 @@ def write_snapshot(snapshot: CampaignSnapshot, out_dir: str | Path) -> Path:
         "verify_runs": snapshot.verify_runs,
         "verify_split_policy": snapshot.verify_split_policy,
         "worker_mode": snapshot.worker_mode,
+        "seen_effective_hashes": (
+            None if snapshot.seen_effective_hashes is None else list(snapshot.seen_effective_hashes)
+        ),
+        "seen_active_hashes": (
+            None if snapshot.seen_active_hashes is None else list(snapshot.seen_active_hashes)
+        ),
         "layer_hashes": snapshot.layer_hashes,
         "ledger_prefix": [record.to_dict() for record in snapshot.ledger_prefix],
         "incumbent_stack": [
@@ -386,6 +400,10 @@ def read_snapshot(out_dir: str | Path) -> CampaignSnapshot:
     provisional = (
         TrialRecord.from_mapping(manifest["provisional"]) if manifest.get("provisional") else None
     )
+    # D27 F3 fix: a manifest without the sets is an old-format snapshot; its
+    # resume must report "unknown before resume", never a silent empty set.
+    seen_effective = manifest.get("seen_effective_hashes")
+    seen_active = manifest.get("seen_active_hashes")
     return CampaignSnapshot(
         node_name=str(manifest["node_name"]),
         campaign_id=str(manifest["campaign_id"]),
@@ -416,6 +434,8 @@ def read_snapshot(out_dir: str | Path) -> CampaignSnapshot:
         provisional=provisional,
         worker_result=_worker_result_from_dict(manifest.get("worker_result")),
         worker_mode=str(manifest.get("worker_mode", "local_worker")),
+        seen_effective_hashes=None if seen_effective is None else tuple(str(h) for h in seen_effective),
+        seen_active_hashes=None if seen_active is None else tuple(str(h) for h in seen_active),
         layer_hashes=dict(manifest.get("layer_hashes", {})),
     )
 
@@ -833,6 +853,18 @@ def resume_campaign(
     restored = restore_snapshot(snapshot, into_dir, worker=worker, manager=manager)
     event_store = CampaignEventStore(restored.events_path)
 
+    # D27 F3 fix: seed the novelty seen-sets from the snapshot.  A snapshot
+    # taken before the sets existed (old format, both ``None``) resumes with
+    # "unknown before resume", recorded on the first ``edit_novelty`` event of
+    # the resumed segment; it is never treated as an empty set.
+    seen_effective = snapshot.seen_effective_hashes
+    seen_active = snapshot.seen_active_hashes
+    resume_seeds: dict[str, Any] = {
+        "initial_seen_effective_hashes": seen_effective or (),
+        "initial_seen_active_hashes": seen_active or (),
+        "seen_before_resume_unknown": seen_effective is None or seen_active is None,
+    }
+
     if snapshot.epoch == "E0":
         controller = FirstActionThenPolicy(
             epoch="E0", budget_index=snapshot.budget_index, action=first_action, policy=policy
@@ -853,6 +885,7 @@ def resume_campaign(
             verify_split_policy=snapshot.verify_split_policy,
             initial_current_best=restored.current_best,
             initial_incumbent_stack=restored.incumbent_stack,
+            **resume_seeds,
         )
         return ResumeResult(restored=restored, first_record=None, continuation=continuation)
 
@@ -879,6 +912,7 @@ def resume_campaign(
                 else restored.current_best
             ),
             initial_incumbent_stack=restored.incumbent_stack,
+            **resume_seeds,
         )
     return ResumeResult(restored=restored, first_record=first_record, continuation=continuation)
 

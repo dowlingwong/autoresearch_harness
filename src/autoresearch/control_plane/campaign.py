@@ -353,6 +353,11 @@ class SnapshotContext:
     t_min: int
     verify_runs: int
     verify_split_policy: str
+    # D27 F3 fix: the evaluated-config hashes seen so far (full and active-key
+    # projection).  Stored in E2 snapshots so a resumed segment seeds its
+    # novelty flags from configurations evaluated before the resume.
+    seen_effective_hashes: tuple[str, ...] = ()
+    seen_active_hashes: tuple[str, ...] = ()
 
 
 def _invoke_snapshot_hook(snapshot_hook: object | None, **kwargs: object) -> None:
@@ -449,6 +454,50 @@ def _effective_config_at(worker: Worker, node_spec: NodeSpec) -> dict[str, str] 
     for rel_path in node_spec.editable_paths:
         constants.update(parse_train_constants(_editable_path(root, rel_path)))
     return build_effective_config(constants)
+
+
+def _config_sha256(config: dict[str, str] | None) -> str | None:
+    """Canonical SHA-256 of an effective config (D27 F3 fix)."""
+    import hashlib
+
+    if config is None:
+        return None
+    payload = json.dumps(config, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _project_active_config(
+    effective_config: dict[str, str], node_spec: NodeSpec
+) -> dict[str, str]:
+    """Project an effective config onto the node's active keys (D27 F3 fix).
+
+    The active set is resolved from the configuration's own ``model_type``, so
+    a mid-campaign model-type switch projects each config under its own
+    declaration.  Undeclared nodes, or a ``model_type`` the declaration does
+    not cover, return the full configuration unchanged: the active hash then
+    equals the full hash.
+    """
+    active = resolve_active_keys(
+        node_spec, {"model_type": str(effective_config.get("model_type", ""))}
+    )
+    if active is None:
+        return dict(effective_config)
+    canonical = {key.lower(): key for key in effective_config}
+    projected: dict[str, str] = {}
+    for key in active:
+        resolved = key if key in effective_config else canonical.get(str(key).lower())
+        if resolved is not None:
+            projected[resolved] = effective_config[resolved]
+    return projected
+
+
+def _active_config_sha256(
+    effective_config: dict[str, str] | None, node_spec: NodeSpec
+) -> str | None:
+    """Active-key projection hash, equal to the full hash on undeclared nodes."""
+    if effective_config is None:
+        return None
+    return _config_sha256(_project_active_config(effective_config, node_spec))
 
 
 def _llm_cap_reached(compute_budget: ComputeBudget) -> bool:
@@ -924,6 +973,9 @@ def run_real_campaign(
     snapshot_hook: object | None = None,
     initial_current_best: float | None = None,
     initial_incumbent_stack: list[_IncumbentEntry] | None = None,
+    initial_seen_effective_hashes: tuple[str, ...] | list[str] | None = None,
+    initial_seen_active_hashes: tuple[str, ...] | list[str] | None = None,
+    seen_before_resume_unknown: bool = False,
 ) -> CampaignRunResult:
     """Run a fixed-budget campaign with a real worker.
 
@@ -1000,13 +1052,22 @@ def run_real_campaign(
     stop_requested = False
     # D27: record-only novelty flags.  The incumbent's effective config starts
     # as the workspace configuration and follows keeps and demotions; the seen
-    # list holds the effective config of every evaluated trial.  Known
-    # limitation (review F3): the seen list covers the current campaign
-    # segment; effective configs evaluated before a resume cannot be
-    # reconstructed from the ledger, so a duplicate of a pre-resume config is
-    # not flagged.  The flags are record-only and change no decision.
+    # sets hold the configuration hash of every evaluated trial, seeded from a
+    # resumed snapshot's stored sets (D27 F3 fix) so that configurations
+    # evaluated before a resume are flagged too.  A snapshot without those sets
+    # (old format) resumes with ``seen_before_resume_unknown``: the first
+    # ``edit_novelty`` event after the resume records ``"unknown"`` and the
+    # flags only see the current segment, never a silently empty set.  The
+    # flags are record-only and change no decision.
     incumbent_effective: dict[str, str] | None = _effective_config_at(worker, node_spec)
-    seen_effective: list[dict[str, str]] = []
+    incumbent_active: dict[str, str] | None = (
+        _project_active_config(incumbent_effective, node_spec)
+        if incumbent_effective is not None
+        else None
+    )
+    seen_effective_hashes: set[str] = set(initial_seen_effective_hashes or ())
+    seen_active_hashes: set[str] = set(initial_seen_active_hashes or ())
+    pending_unknown_marker = bool(seen_before_resume_unknown)
 
     records: list[TrialRecord] = []
     campaign_started = time.perf_counter()
@@ -1062,6 +1123,8 @@ def run_real_campaign(
             incumbent_stack=incumbent_stack, budget_state=budget_state, compute_budget=compute_budget,
             controller=controller, manager=manager, memory_mode=memory_mode, manager_mode=manager_mode,
             t_min=t_min, verify_runs=verify_runs, verify_split_policy=verify_split_policy,
+            seen_effective_hashes=tuple(sorted(seen_effective_hashes)),
+            seen_active_hashes=tuple(sorted(seen_active_hashes)),
         )
         e0_action = _resolve_action(
             e0_decision, _e0_mask, epoch="E0", event_store=event_store,
@@ -1090,6 +1153,7 @@ def run_real_campaign(
             restored = _effective_config_at(worker, node_spec)
             if restored is not None:
                 incumbent_effective = restored
+                incumbent_active = _project_active_config(restored, node_spec)
 
         memory_context = build_memory_context(
             existing_records + records, MemoryMode(memory_mode), node_spec, budget_index,
@@ -1243,12 +1307,14 @@ def run_real_campaign(
                 snapshot_hook,
                 epoch="E1", budget_index=budget_index, campaign_id=campaign_id, trial_id=trial_id,
                 node_spec=node_spec, worker=worker, proposal=proposal, provisional=None,
-                worker_result=None, incumbent_snapshot=editable_snapshot,
+                worker_result=None,                 incumbent_snapshot=editable_snapshot,
                 ledger_prefix=existing_records + records, current_best=current_best,
                 incumbent_stack=incumbent_stack, budget_state=budget_state,
                 compute_budget=compute_budget, controller=controller, manager=manager,
                 memory_mode=memory_mode, manager_mode=manager_mode, t_min=t_min,
                 verify_runs=verify_runs, verify_split_policy=verify_split_policy,
+                seen_effective_hashes=tuple(sorted(seen_effective_hashes)),
+                seen_active_hashes=tuple(sorted(seen_active_hashes)),
             )
             if inactive_rejected is not None:
                 # D25: revisions exhausted on an inactive-key proposal; skip
@@ -1423,31 +1489,50 @@ def run_real_campaign(
                 },
             )
             # D27: record-only novelty flags on the evaluated trial.  Emitted
-            # as its own event so TrialRecord bytes stay unchanged.
+            # as its own event so TrialRecord bytes stay unchanged.  The flags
+            # compare both the full effective config and its active-key
+            # projection (D27 F3 fix); the seen sets were seeded from the
+            # resumed snapshot when applicable.
             candidate_effective = _effective_config_at(worker, node_spec)
+            candidate_active = (
+                _project_active_config(candidate_effective, node_spec)
+                if candidate_effective is not None
+                else None
+            )
             if candidate_effective is not None:
                 candidate_metric = record.parsed_metrics.get(node_spec.metric_name)
+                effective_sha256 = _config_sha256(candidate_effective)
+                active_sha256 = _config_sha256(candidate_active)
+                novelty_payload: dict[str, Any] = {
+                    "config_equals_incumbent": (
+                        incumbent_effective is not None
+                        and candidate_effective == incumbent_effective
+                    ),
+                    "config_seen_before": effective_sha256 in seen_effective_hashes,
+                    "metric_identical_to_incumbent": (
+                        candidate_metric is not None
+                        and current_best is not None
+                        and float(candidate_metric) == float(current_best)
+                    ),
+                    "effective_config_sha256": effective_sha256,
+                    "active_config_sha256": active_sha256,
+                    "active_config_equals_incumbent": (
+                        incumbent_active is not None and candidate_active == incumbent_active
+                    ),
+                    "active_config_seen_before": active_sha256 in seen_active_hashes,
+                }
+                if pending_unknown_marker:
+                    novelty_payload["seen_before_resume"] = "unknown"
+                    pending_unknown_marker = False
                 emit(
                     event_store,
                     campaign_id=campaign_id,
                     trial_id=trial_id,
                     event_type="edit_novelty",
-                    payload={
-                        "config_equals_incumbent": (
-                            incumbent_effective is not None
-                            and candidate_effective == incumbent_effective
-                        ),
-                        "config_seen_before": any(
-                            candidate_effective == seen for seen in seen_effective
-                        ),
-                        "metric_identical_to_incumbent": (
-                            candidate_metric is not None
-                            and current_best is not None
-                            and float(candidate_metric) == float(current_best)
-                        ),
-                    },
+                    payload=novelty_payload,
                 )
-                seen_effective.append(candidate_effective)
+                seen_effective_hashes.add(effective_sha256)
+                seen_active_hashes.add(active_sha256)
             # Compute cumulative repeated-bad count for this trial (including itself)
             # and stamp it onto the immutable record before persisting.
             rbs = compute_repeated_bad_stats(existing_records + records + [record])
@@ -1462,6 +1547,8 @@ def run_real_campaign(
                 compute_budget=compute_budget, controller=controller, manager=manager,
                 memory_mode=memory_mode, manager_mode=manager_mode, t_min=t_min,
                 verify_runs=verify_runs, verify_split_policy=verify_split_policy,
+                seen_effective_hashes=tuple(sorted(seen_effective_hashes)),
+                seen_active_hashes=tuple(sorted(seen_active_hashes)),
             )
             e2_decision, e2_mask = _controller_hook(
                 controller=controller,
@@ -1559,6 +1646,7 @@ def run_real_campaign(
             current_best = record.parsed_metrics[node_spec.metric_name]
         if record.decision == TrialDecision.KEPT and candidate_effective is not None:
             incumbent_effective = candidate_effective
+            incumbent_active = candidate_active
         if record.decision == TrialDecision.KEPT:
             incumbent_stack.append(
                 _IncumbentEntry(
