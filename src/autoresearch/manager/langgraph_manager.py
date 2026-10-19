@@ -27,6 +27,12 @@ from autoresearch.nodes.active_keys import resolve_active_keys
 from autoresearch.nodes.spec import NodeSpec
 from autoresearch.llm.langchain_client import _build_chat_model
 from autoresearch.llm.providers import LLMConfig, resolve_llm_config
+from autoresearch.llm.transport_retry import (
+    DEFAULT_POLICY,
+    POLICY_VERSION,
+    TransportRetryPolicy,
+    invoke_with_retry,
+)
 
 
 class _PlanState(TypedDict):
@@ -42,6 +48,7 @@ class _PlanState(TypedDict):
     llm_seed: Any        # int | None — D26 deterministic sampling seed
     llm: Any             # LLM for this call (constructor-seeded, or the injected stub)
     llm_seed_as_kwarg: Any  # bool — pass the seed to llm.invoke (injected stubs only)
+    transport_retry: Any  # TransportRetryPolicy | None — bounded transport retry
 
 
 def manager_seed(
@@ -371,6 +378,8 @@ class LangGraphManager:
         host: str = "http://localhost:11434",
         temperature: float = 0.2,
         repetition: int = 0,
+        transport_retry: TransportRetryPolicy | None = DEFAULT_POLICY,
+        sleep: Any = None,
     ) -> None:
         self._injected_llm = llm
         self._model = model
@@ -379,6 +388,11 @@ class LangGraphManager:
         # D26: repetition index used in the deterministic per-call seed.  The
         # default 0 is the root campaign; branch repetitions set it.
         self._repetition = int(repetition)
+        # Bounded transport retry (19 Oct 2026): up to 3 attempts for
+        # transport/server-loss errors only.  ``None`` or ``max_attempts=1``
+        # is the historical no-retry behaviour.
+        self._transport_retry = transport_retry
+        self._sleep = sleep if sleep is not None else time.sleep
         self._graph: Any = None
 
     @classmethod
@@ -431,7 +445,21 @@ class LangGraphManager:
             call_llm = self._resolve_llm(seed=seed)
             seed_as_kwarg = False
         graph = self._get_graph()
-        result = graph.invoke(
+        try:
+            result = self._invoke_graph(graph, status, memory_context, node_spec, revision_feedback,
+                                        seed, call_llm, seed_as_kwarg)
+        except Exception as exc:
+            if getattr(exc, "llm_call_attempts", None) is not None:
+                try:
+                    exc.llm_call_seed = seed  # type: ignore[attr-defined]
+                except Exception:  # pragma: no cover
+                    pass
+            raise
+        return result["proposal"]
+
+    def _invoke_graph(self, graph, status, memory_context, node_spec, revision_feedback,
+                      seed, call_llm, seed_as_kwarg):
+        return graph.invoke(
             {
                 "status": status,
                 "memory_context": memory_context,
@@ -443,9 +471,9 @@ class LangGraphManager:
                 "llm_seed": seed,
                 "llm": call_llm,
                 "llm_seed_as_kwarg": seed_as_kwarg,
+                "transport_retry": self._transport_retry,
             }
         )
-        return result["proposal"]
 
     # ------------------------------------------------------------------
     # Internal helpers — graph construction and LLM resolution
@@ -471,17 +499,25 @@ class LangGraphManager:
             from langchain_core.messages import HumanMessage
             call_llm = state.get("llm") or llm
             seed = state.get("llm_seed")
-            started = time.perf_counter()
             messages = [HumanMessage(content=state["context_text"])]
-            if (
-                state.get("llm_seed_as_kwarg")
-                and seed is not None
-                and _accepts_seed_kwarg(call_llm)
-            ):
-                response = call_llm.invoke(messages, seed=seed)
-            else:
-                response = call_llm.invoke(messages)
-            latency_ms = (time.perf_counter() - started) * 1000.0
+            policy = state.get("transport_retry") or TransportRetryPolicy(max_attempts=1, backoff_seconds=())
+
+            def _call() -> Any:
+                # The same messages and the same D26 seed on every attempt.
+                if (
+                    state.get("llm_seed_as_kwarg")
+                    and seed is not None
+                    and _accepts_seed_kwarg(call_llm)
+                ):
+                    return call_llm.invoke(messages, seed=seed)
+                return call_llm.invoke(messages)
+
+            started = time.perf_counter()
+            response, attempts = invoke_with_retry(_call, policy, sleep=self._sleep)
+            # Latency of the successful attempt (the pre-retry meaning of the field).
+            latency_ms = (attempts[-1]["seconds"] * 1000.0) if policy.enabled else (
+                (time.perf_counter() - started) * 1000.0
+            )
             prompt_tokens, completion_tokens = _usage_from_response(response)
             content = getattr(response, "content", "") or ""
             llm_meta = {
@@ -491,6 +527,11 @@ class LangGraphManager:
                 "response_chars": len(content),
                 "seed": seed,
             }
+            if policy.enabled:
+                # Every attempt is logged (attempt index, error class); a
+                # no-retry policy keeps the historical payload unchanged.
+                llm_meta["transport_retry_policy"] = POLICY_VERSION
+                llm_meta["transport_attempts"] = attempts
             return {**state, "raw_proposal": content, "llm_meta": llm_meta}
 
         builder = StateGraph(_PlanState)

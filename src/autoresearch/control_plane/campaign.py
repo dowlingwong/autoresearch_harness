@@ -305,6 +305,38 @@ def _editable_path(root: Path, path_str: str) -> Path:
     return path if path.is_absolute() else root / path
 
 
+def _propose_logged(
+    manager: object, event_store: object | None, campaign_id: str, trial_id: str, *args: Any, **kwargs: Any
+) -> ManagerProposal:
+    """Call the manager; on a failed LLM call, log its transport attempts first.
+
+    A manager whose transport retry gave up (or met a non-retryable error)
+    re-raises with ``llm_call_attempts`` attached.  That log is emitted as an
+    ``llm_call_failed`` event before the exception propagates, so the attempt
+    indices, error classes and the seed survive the failure.  Managers without
+    the attribute behave exactly as before.
+    """
+    try:
+        return manager.propose_next_trial(*args, **kwargs)  # type: ignore[attr-defined]
+    except Exception as exc:
+        attempts = getattr(exc, "llm_call_attempts", None)
+        if attempts is not None:
+            emit(
+                event_store,
+                campaign_id=campaign_id,
+                trial_id=trial_id,
+                event_type="llm_call_failed",
+                payload={
+                    "error_type": type(exc).__name__,
+                    "error": str(exc)[:300],
+                    "transport_attempts": list(attempts),
+                    "transport_retry_policy": getattr(exc, "llm_call_retry_policy", None),
+                    "seed": getattr(exc, "llm_call_seed", None),
+                },
+            )
+        raise
+
+
 def _emit_llm_call(event_store: object | None, *, campaign_id: str, trial_id: str, proposal: ManagerProposal) -> None:
     """Emit an ``llm_call`` event when a manager reports per-call telemetry.
 
@@ -1314,7 +1346,7 @@ def run_real_campaign(
         )
         proposal = _proposal_with_campaign_metadata(
             _proposal_with_worker_memory(
-                manager.propose_next_trial(status, memory_context, node_spec),
+                _propose_logged(manager, event_store, campaign_id, trial_id, status, memory_context, node_spec),
                 memory_context=memory_context,
             ),
             node_spec=node_spec,
@@ -1366,7 +1398,7 @@ def run_real_campaign(
                 }
                 if _accepts_kwarg(manager, "revision_attempt"):
                     revise_kwargs["revision_attempt"] = revisions_used + 1
-                proposal = manager.propose_next_trial(
+                proposal = _propose_logged(manager, event_store, campaign_id, trial_id,
                     status, memory_context, node_spec, **revise_kwargs
                 )
                 compute_budget = compute_budget.consume_llm_call()
@@ -1495,7 +1527,7 @@ def run_real_campaign(
                         revise_kwargs: dict[str, Any] = {"revision_feedback": feedback}
                         if _accepts_kwarg(manager, "revision_attempt"):
                             revise_kwargs["revision_attempt"] = 1
-                        revised = manager.propose_next_trial(
+                        revised = _propose_logged(manager, event_store, campaign_id, trial_id,
                             status, memory_context, node_spec, **revise_kwargs
                         )
                         compute_budget = compute_budget.consume_llm_call()
