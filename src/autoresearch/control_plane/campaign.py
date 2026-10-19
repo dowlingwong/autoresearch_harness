@@ -60,7 +60,18 @@ from autoresearch.control_plane.controller import (
     compute_mask,
     proposal_digest,
 )
-from autoresearch.control_plane.decision import decide_trial
+from autoresearch.control_plane.action_versions import (
+    KEEP_RULE_BAYES,
+    VERIFY_FAILED_STANDS,
+    VERIFY_RESPONSE_POSTERIOR,
+    ActionVersions,
+    KeepPrior,
+    KeepPriorProvider,
+    resolve_keep_prior,
+    validate_campaign_versions,
+    verify_posterior_mean,
+)
+from autoresearch.control_plane.decision import decide_trial, decide_trial_bayes_threshold
 from autoresearch.control_plane.events import emit
 from autoresearch.control_plane.permissions import validate_edit_scope
 from autoresearch.manager.base import ManagerProposal, ManagerStatus
@@ -358,6 +369,9 @@ class SnapshotContext:
     # novelty flags from configurations evaluated before the resume.
     seen_effective_hashes: tuple[str, ...] = ()
     seen_active_hashes: tuple[str, ...] = ()
+    # D4 amendment: the campaign's declared action versions (``None`` = the
+    # historical behaviour; snapshots then carry no ``action_versions`` field).
+    action_versions: dict[str, str] | None = None
 
 
 def _invoke_snapshot_hook(snapshot_hook: object | None, **kwargs: object) -> None:
@@ -630,8 +644,19 @@ def _run_verify(
     verify_runs: int,
     compute_budget: ComputeBudget,
     verify_split_policy: Literal["fixed", "vary"] = "fixed",
+    action_versions: ActionVersions | None = None,
+    prior: KeepPrior | None = None,
 ) -> tuple[TrialRecord, dict[str, Any]]:
     """Paired fresh-seed verification with a frozen response rule (E2).
+
+    *action_versions* ``None`` (or ``ActionVersions.legacy()``) is the
+    historical behaviour: keep iff D̄ > 0, and a verify whose pairs all fail
+    responds ``reject``.  Declared versions (D4 amendment, 18 Oct 2026):
+    ``posterior_mean/v1`` keeps iff E[Δ | Δ̂, D̄] > 0 under T2 §1 with the
+    campaign split policy (needs *prior*); ``original_stands/v1`` leaves the
+    original decision in place when every pair fails and records
+    ``verify_failed``.  Non-legacy versions add their evidence to the verify
+    record; legacy records are byte-identical to the pre-amendment ones.
 
     ``verify_split_policy="fixed"`` (default) varies only the training seed and
     passes ``split_seed=None``, so every re-run sees the campaign's data split.
@@ -681,6 +706,19 @@ def _run_verify(
     mean_delta = (sum(deltas) / len(deltas)) if deltas else 0.0
     improved = mean_delta < 0 if direction == "minimize" else mean_delta > 0
     response = "keep" if (pairs and improved) else "reject"
+    posterior_mean: float | None = None
+    if action_versions is not None:
+        if not pairs:
+            if action_versions.verify_failed == VERIFY_FAILED_STANDS:
+                response = "verify_failed"
+        elif action_versions.verify_response == VERIFY_RESPONSE_POSTERIOR:
+            if prior is None:
+                raise ValueError("posterior-mean verify response needs a keep prior")
+            dbar = -mean_delta if direction == "minimize" else mean_delta
+            posterior_mean = verify_posterior_mean(
+                record.delta_vs_best, dbar, len(pairs), prior, verify_split_policy
+            )
+            response = "keep" if posterior_mean > 0 else "reject"
 
     original_decision = record.decision
     decision = record.decision
@@ -713,10 +751,55 @@ def _run_verify(
         "candidate_state_hash_after": candidate_hash_after,
         "incumbent_state_hash": incumbent_hash,
     }
+    if action_versions is not None and not action_versions.is_legacy:
+        verify_meta["action_versions"] = action_versions.to_dict()
+        verify_meta["valid_pairs"] = len(pairs)
+        verify_meta["verify_failed"] = not pairs
+        if action_versions.verify_response == VERIFY_RESPONSE_POSTERIOR:
+            verify_meta["posterior_mean"] = posterior_mean
+            verify_meta["prior"] = prior.to_dict() if prior is not None else None
     updated = replace(
         record, decision=decision, failure_category=failure, decision_rationale=rationale
     )
     return updated, {"verify": verify_meta, "compute_budget": compute_budget}
+
+
+def _enum_value_is_valid(record: TrialRecord) -> bool:
+    """True when *record* is a valid trial (used by snapshot resume)."""
+    return record.validity_status == ValidityStatus.VALID
+
+
+def _apply_keep_rule(
+    record: TrialRecord, *, node_spec: NodeSpec, prior: KeepPrior | None
+) -> tuple[TrialRecord, dict[str, Any]]:
+    """Re-decide *record* under ``bayes_threshold/v1`` (D4 amendment).
+
+    Invalid records keep their ``failed_invalid`` decision; the first valid
+    metric is kept as under the default rule.  The rule's record is stored in
+    ``extra.keep_rule`` and returned for the ``decision_made`` event.
+    """
+    valid = record.validity_status == ValidityStatus.VALID
+    if valid and prior is None:
+        raise ValueError("bayes_threshold/v1 needs a keep prior for every valid trial")
+    if not valid:
+        meta: dict[str, Any] = {"version": KEEP_RULE_BAYES, "applied": False, "reason": "invalid_trial"}
+        return replace(record, extra={**record.extra, "keep_rule": meta}), meta
+    result, meta = decide_trial_bayes_threshold(
+        validity_status=record.validity_status,
+        candidate_metric=record.parsed_metrics.get(node_spec.metric_name),
+        current_best_metric=record.current_best_before,
+        metric_direction=node_spec.metric_direction,
+        prior=prior,  # type: ignore[arg-type]
+    )
+    updated = replace(
+        record,
+        decision=result.decision,
+        failure_category=result.failure_category,
+        decision_rationale=result.rationale,
+        delta_vs_best=result.delta_vs_best,
+        extra={**record.extra, "keep_rule": meta},
+    )
+    return updated, meta
 
 
 def _perform_demote(
@@ -996,13 +1079,15 @@ def run_real_campaign(
     compute_budget: ComputeBudget | None = None,
     t_min: int = 3,
     verify_runs: int = 2,
-    verify_split_policy: Literal["fixed", "vary"] = "fixed",
+    verify_split_policy: Literal["fixed", "vary"] | None = None,
     snapshot_hook: object | None = None,
     initial_current_best: float | None = None,
     initial_incumbent_stack: list[_IncumbentEntry] | None = None,
     initial_seen_effective_hashes: tuple[str, ...] | list[str] | None = None,
     initial_seen_active_hashes: tuple[str, ...] | list[str] | None = None,
     seen_before_resume_unknown: bool = False,
+    action_versions: ActionVersions | None = None,
+    keep_prior: KeepPriorProvider | None = None,
 ) -> CampaignRunResult:
     """Run a fixed-budget campaign with a real worker.
 
@@ -1052,7 +1137,28 @@ def run_real_campaign(
     *compute_budget* counts every worker run (including verify re-runs),
     worker seconds, and LLM calls; proposals from deterministic managers
     (``deterministic = True``) are not counted as LLM calls.
+
+    **Action versions (D4 amendment, 18 Oct 2026).**  *action_versions*
+    ``None`` (default) is the historical behaviour, with *verify_split_policy*
+    defaulting to ``"fixed"``.  A declared :class:`ActionVersions` sets the
+    split policy (an explicit, different *verify_split_policy* is an error),
+    the keep rule (``bayes_threshold/v1``: keep iff Δ̂ > t* = −μσ²/τ², run-free),
+    the verify response and the verify-failed policy.  *keep_prior* supplies
+    (μ, τ, σ) per decision: a constant :class:`KeepPrior` or a callable that
+    receives the leak-safe E2 ``ControlView``.  The rule and its prior are
+    recorded in the ``decision_made`` event and ``extra.keep_rule``.
     """
+    if action_versions is not None:
+        if verify_split_policy is not None and verify_split_policy != action_versions.verify_split_policy:
+            raise ValueError(
+                f"verify_split_policy={verify_split_policy!r} contradicts the declared "
+                f"action versions ({action_versions.verify_split_policy!r})"
+            )
+        verify_split_policy = action_versions.verify_split_policy  # type: ignore[assignment]
+    elif verify_split_policy is None:
+        verify_split_policy = "fixed"
+    validate_campaign_versions(action_versions, keep_prior)
+    action_versions_dict = action_versions.to_dict() if action_versions is not None else None
     records_path = Path(records_path)
     records_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1108,6 +1214,7 @@ def run_real_campaign(
             "manager_mode": manager_mode,
             "memory_mode": memory_mode,
             "node_id": node_spec.name,
+            **({"action_versions": action_versions_dict} if action_versions_dict is not None else {}),
         },
     )
     while not budget_state.exhausted and not compute_budget.exhausted:
@@ -1150,6 +1257,7 @@ def run_real_campaign(
             incumbent_stack=incumbent_stack, budget_state=budget_state, compute_budget=compute_budget,
             controller=controller, manager=manager, memory_mode=memory_mode, manager_mode=manager_mode,
             t_min=t_min, verify_runs=verify_runs, verify_split_policy=verify_split_policy,
+            action_versions=action_versions_dict,
             seen_effective_hashes=tuple(sorted(seen_effective_hashes)),
             seen_active_hashes=tuple(sorted(seen_active_hashes)),
         )
@@ -1340,6 +1448,7 @@ def run_real_campaign(
                 compute_budget=compute_budget, controller=controller, manager=manager,
                 memory_mode=memory_mode, manager_mode=manager_mode, t_min=t_min,
                 verify_runs=verify_runs, verify_split_policy=verify_split_policy,
+                action_versions=action_versions_dict,
                 seen_effective_hashes=tuple(sorted(seen_effective_hashes)),
                 seen_active_hashes=tuple(sorted(seen_active_hashes)),
             )
@@ -1481,6 +1590,22 @@ def run_real_campaign(
                 timestamp_start=ts_start,
                 timestamp_end=ts_end,
             )
+            decision_prior: KeepPrior | None = None
+            keep_rule_meta: dict[str, Any] | None = None
+            if (
+                action_versions is not None
+                and action_versions.needs_prior
+                and record.validity_status == ValidityStatus.VALID
+            ):
+                decision_prior = resolve_keep_prior(keep_prior, build_control_view(
+                    epoch="E2", budget_index=budget_index,
+                    ledger_prefix=existing_records + records, current_best=current_best,
+                    incumbent_stack_depth=len(incumbent_stack), proposal=proposal,
+                    provisional=record, budget=_budget_view(budget_state, compute_budget),
+                    node=node_spec,
+                ))
+            if action_versions is not None and action_versions.keep_rule == KEEP_RULE_BAYES:
+                record, keep_rule_meta = _apply_keep_rule(record, node_spec=node_spec, prior=decision_prior)
             scope_payload = dict(record.extra.get("scope_validation", {}))
             emit(
                 event_store,
@@ -1513,6 +1638,7 @@ def run_real_campaign(
                     "failure_category": (
                         record.failure_category.value if record.failure_category else None
                     ),
+                    **({"keep_rule": keep_rule_meta} if keep_rule_meta is not None else {}),
                 },
             )
             # D27: record-only novelty flags on the evaluated trial.  Emitted
@@ -1574,6 +1700,7 @@ def run_real_campaign(
                 compute_budget=compute_budget, controller=controller, manager=manager,
                 memory_mode=memory_mode, manager_mode=manager_mode, t_min=t_min,
                 verify_runs=verify_runs, verify_split_policy=verify_split_policy,
+                action_versions=action_versions_dict,
                 seen_effective_hashes=tuple(sorted(seen_effective_hashes)),
                 seen_active_hashes=tuple(sorted(seen_active_hashes)),
             )
@@ -1614,6 +1741,8 @@ def run_real_campaign(
                     verify_runs=verify_runs,
                     compute_budget=compute_budget,
                     verify_split_policy=verify_split_policy,
+                    action_versions=action_versions,
+                    prior=decision_prior,
                 )
                 compute_budget = verify_result["compute_budget"]
                 control_meta = {**control_meta, "verify": verify_result["verify"]}

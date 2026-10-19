@@ -103,6 +103,9 @@ class CampaignSnapshot:
     seen_effective_hashes: tuple[str, ...] | None = None
     seen_active_hashes: tuple[str, ...] | None = None
     layer_hashes: dict[str, str] = field(default_factory=dict)
+    # D4 amendment: declared action versions of the campaign; ``None`` means
+    # historical behaviour and keeps the manifest free of the field.
+    action_versions: dict[str, str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +280,7 @@ def capture_snapshot(
         worker_mode=getattr(context.worker, "mode", type(context.worker).__name__),
         seen_effective_hashes=tuple(context.seen_effective_hashes),
         seen_active_hashes=tuple(context.seen_active_hashes),
+        action_versions=(dict(context.action_versions) if context.action_versions is not None else None),
     )
     snapshot.layer_hashes = _layer_hashes(snapshot)
     return snapshot
@@ -371,6 +375,8 @@ def write_snapshot(snapshot: CampaignSnapshot, out_dir: str | Path) -> Path:
         "provisional": snapshot.provisional.to_dict() if snapshot.provisional else None,
         "worker_result": _worker_result_to_dict(snapshot.worker_result),
     }
+    if snapshot.action_versions is not None:
+        manifest["action_versions"] = dict(snapshot.action_versions)
     manifest_path = out / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return manifest_path
@@ -437,6 +443,9 @@ def read_snapshot(out_dir: str | Path) -> CampaignSnapshot:
         seen_effective_hashes=None if seen_effective is None else tuple(str(h) for h in seen_effective),
         seen_active_hashes=None if seen_active is None else tuple(str(h) for h in seen_active),
         layer_hashes=dict(manifest.get("layer_hashes", {})),
+        action_versions=(
+            dict(manifest["action_versions"]) if manifest.get("action_versions") is not None else None
+        ),
     )
 
 
@@ -688,6 +697,8 @@ def _complete_captured_trial(
     *,
     first_action: str,
     event_store: object | None = None,
+    action_versions: Any | None = None,
+    keep_prior: Any | None = None,
 ) -> tuple[TrialRecord, tuple[str, str] | None]:
     """Execute the captured epoch's forced first action and append one record.
 
@@ -752,6 +763,20 @@ def _complete_captured_trial(
             _campaign._active_config_sha256(effective_config, node_spec),
         )
 
+    def _decision_prior(provisional: TrialRecord | None) -> Any | None:
+        # D4 amendment: the per-decision prior, resolved from the same leak-safe
+        # E2 view the live loop uses.  Only declared versions that need it ask.
+        if action_versions is None or not action_versions.needs_prior or provisional is None:
+            return None
+        if _campaign._enum_value_is_valid(provisional) is False:
+            return None
+        return _campaign.resolve_keep_prior(keep_prior, build_control_view(
+            epoch="E2", budget_index=budget_index, ledger_prefix=list(snapshot.ledger_prefix),
+            current_best=restored.current_best, incumbent_stack_depth=len(restored.incumbent_stack),
+            proposal=proposal, provisional=provisional,
+            budget=_campaign._budget_view(budget_state, restored.compute_budget), node=node_spec,
+        ))
+
     captured_hashes: tuple[str, str] | None = None
     if effective == "skip":
         record = _campaign._skipped_record(
@@ -772,6 +797,7 @@ def _complete_captured_trial(
                 incumbent_snapshot=incumbent_snapshot, base_budget_index=budget_index,
                 verify_runs=snapshot.verify_runs, compute_budget=restored.compute_budget,
                 verify_split_policy=snapshot.verify_split_policy,
+                action_versions=action_versions, prior=_decision_prior(record),
             )
             # Keep the verify evidence and charge its re-runs, exactly as the live E2 path does.
             control_meta["verify"] = verify_info["verify"]
@@ -820,6 +846,10 @@ def _complete_captured_trial(
             current_best=restored.current_best, timestamp_start=ts_start,
             timestamp_end=_campaign._iso_now(),
         )
+        if action_versions is not None and action_versions.keep_rule == _campaign.KEEP_RULE_BAYES:
+            record, _ = _campaign._apply_keep_rule(
+                record, node_spec=node_spec, prior=_decision_prior(record)
+            )
         # The worker just left the evaluated candidate in the workspace; take
         # its hashes before the non-keep restore below.
         captured_hashes = _evaluated_hashes()
@@ -863,8 +893,13 @@ def resume_campaign(
     horizon: int = 0,
     worker: Any | None = None,
     manager: Any | None = None,
+    keep_prior: Any | None = None,
 ) -> ResumeResult:
     """Restore *snapshot* into a fresh dir and continue it.
+
+    A snapshot that declares ``action_versions`` (D4 amendment) resumes under
+    the same versions; *keep_prior* supplies their per-decision prior.  A
+    snapshot without the field resumes with the historical behaviour.
 
     The captured epoch runs *first_action* (rejected to ``continue`` if the
     mask forbids it); then *policy* runs for *horizon* further trials.  At E1
@@ -873,6 +908,14 @@ def resume_campaign(
     """
     restored = restore_snapshot(snapshot, into_dir, worker=worker, manager=manager)
     event_store = CampaignEventStore(restored.events_path)
+    action_versions = (
+        _campaign.ActionVersions.from_dict(snapshot.action_versions)
+        if snapshot.action_versions is not None
+        else None
+    )
+    versions_kwargs: dict[str, Any] = (
+        {"action_versions": action_versions, "keep_prior": keep_prior} if action_versions is not None else {}
+    )
 
     # D27 F3 fix: seed the novelty seen-sets from the snapshot.  A snapshot
     # taken before the sets existed (old format, both ``None``) resumes with
@@ -907,11 +950,13 @@ def resume_campaign(
             initial_current_best=restored.current_best,
             initial_incumbent_stack=restored.incumbent_stack,
             **resume_seeds,
+            **versions_kwargs,
         )
         return ResumeResult(restored=restored, first_record=None, continuation=continuation)
 
     first_record, captured_hashes = _complete_captured_trial(
-        restored, first_action=first_action, event_store=event_store
+        restored, first_action=first_action, event_store=event_store,
+        action_versions=action_versions, keep_prior=keep_prior,
     )
     continuation = None
     # Review F9: the captured trial was evaluated inside this resumed segment.
@@ -947,6 +992,7 @@ def resume_campaign(
             ),
             initial_incumbent_stack=restored.incumbent_stack,
             **resume_seeds,
+            **versions_kwargs,
         )
     return ResumeResult(restored=restored, first_record=first_record, continuation=continuation)
 

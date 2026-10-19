@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from autoresearch.memory.schemas import FailureCategory, TrialDecision, ValidityStatus
+
+if TYPE_CHECKING:  # pragma: no cover
+    from autoresearch.control_plane.action_versions import KeepPrior
 
 MetricDirection = Literal["maximize", "minimize"]
 
@@ -65,3 +68,65 @@ def decide_trial(
         failure_category=FailureCategory.DEGRADED_METRIC,
     )
 
+
+
+def decide_trial_bayes_threshold(
+    *,
+    validity_status: ValidityStatus,
+    candidate_metric: float | None,
+    current_best_metric: float | None,
+    metric_direction: MetricDirection,
+    prior: "KeepPrior",
+    failure_category: FailureCategory | None = None,
+) -> tuple[DecisionResult, dict[str, object]]:
+    """Run-free Bayes threshold keep rule (``bayes_threshold/v1``, D4 amendment).
+
+    Keep iff Δ̂ > t*, t* = −μσ²/τ² (T2 Proposition 1), with Δ̂ the
+    direction-adjusted delta against the current best.  Invalid trials and the
+    first valid metric are decided exactly as by :func:`decide_trial`.  Returns
+    the decision and the record of the rule (version, prior, threshold, Δ̂, the
+    default rule's decision) for the decision event.
+    """
+    from autoresearch.control_plane.action_versions import KEEP_RULE_BAYES, bayes_keep
+
+    default = decide_trial(
+        validity_status=validity_status,
+        candidate_metric=candidate_metric,
+        current_best_metric=current_best_metric,
+        metric_direction=metric_direction,
+        failure_category=failure_category,
+    )
+    meta: dict[str, object] = {
+        "version": KEEP_RULE_BAYES,
+        "prior": prior.to_dict(),
+        "threshold": prior.threshold,
+        "delta_hat": default.delta_vs_best,
+        "default_decision": default.decision.value,
+    }
+    if default.delta_vs_best is None:
+        # Invalid trial or first valid metric: the rule has no comparison to act on.
+        meta["applied"] = False
+        return default, meta
+    meta["applied"] = True
+    delta = default.delta_vs_best
+    if bayes_keep(delta, prior):
+        result = DecisionResult(
+            decision=TrialDecision.KEPT,
+            rationale=(
+                f"Bayes threshold keep: delta {delta:.6f} exceeds t*={prior.threshold:.6f} "
+                f"({metric_direction})."
+            ),
+            delta_vs_best=delta,
+        )
+    else:
+        result = DecisionResult(
+            decision=TrialDecision.DISCARDED,
+            rationale=(
+                f"Bayes threshold discard: delta {delta:.6f} does not exceed "
+                f"t*={prior.threshold:.6f} ({metric_direction})."
+            ),
+            delta_vs_best=delta,
+            failure_category=FailureCategory.DEGRADED_METRIC,
+        )
+    meta["decision"] = result.decision.value
+    return result, meta
