@@ -289,3 +289,20 @@ def verify_posterior_mean(
         [[var_hat, cov_hat_dbar], [cov_hat_dbar, var_dbar]],
         [float(delta_hat), float(dbar)],
     )
+
+
+def declare_new_campaign(manifest: dict[str, Any], **overrides: str) -> ActionVersions:
+    """Record the PLAN defaults (verify split ``"vary"``, 18 Oct 2026) in a new manifest.
+
+    Writes both the top-level ``verify_split_policy`` (read by existing
+    collectors) and the full ``action_versions`` declaration, and returns the
+    versions to pass to ``run_real_campaign``.  Refuses a manifest that already
+    declares something else, so a historical manifest is never rewritten.
+    """
+    versions = ActionVersions.new_campaign(**overrides)
+    for key, value in (("verify_split_policy", versions.verify_split_policy),
+                       ("action_versions", versions.to_dict())):
+        if key in manifest and manifest[key] != value:
+            raise ValueError(f"manifest already declares {key}={manifest[key]!r}")
+        manifest[key] = value
+    return versions
