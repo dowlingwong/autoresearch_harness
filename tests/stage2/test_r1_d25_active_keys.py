@@ -108,6 +108,24 @@ class TestD25DeclarationResolution(unittest.TestCase):
         active = resolve_active_keys(spec, {"model_type": "logistic_regression"})
         self.assertIn("imputer", active)
 
+    def test_pool_22oct_numeric_nodes_exclude_imputer_for_every_model_type(self) -> None:
+        # D21 pool extension (22 Oct): sonar, blood-transfusion and qsar-biodeg are
+        # numeric-only, so imputer is inactive; the per-model keys match ionosphere.
+        reference = load_registered_node("openml_ionosphere", repo_root=ROOT)
+        for name in ("openml_sonar", "openml_blood_transfusion", "openml_qsar_biodeg"):
+            spec = load_registered_node(name, repo_root=ROOT)
+            for model_type in ("logistic_regression", "random_forest", "gradient_boosting"):
+                with self.subTest(node=name, model_type=model_type):
+                    active = resolve_active_keys(spec, {"model_type": model_type})
+                    self.assertNotIn("imputer", active)
+                    self.assertEqual(active, resolve_active_keys(reference, {"model_type": model_type}))
+
+    def test_credit_g_keeps_imputer_because_it_has_categorical_columns(self) -> None:
+        spec = load_registered_node("openml_credit_g", repo_root=ROOT)
+        for model_type in ("logistic_regression", "random_forest", "gradient_boosting"):
+            with self.subTest(model_type=model_type):
+                self.assertIn("imputer", resolve_active_keys(spec, {"model_type": model_type}))
+
     def test_manager_status_keeps_the_full_editable_set(self) -> None:
         # Regression for review F1: the scripted stand-in reads this status, so
         # it must keep every editable constant (the D25 filter applies to the
