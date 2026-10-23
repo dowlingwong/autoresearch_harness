@@ -32,6 +32,8 @@ POOL_22OCT = {
     "openml_sonar": (40, "sonar", "Class"),
     "openml_blood_transfusion": (1464, "blood-transfusion-service-center", "Class"),
     "openml_qsar_biodeg": (1494, "qsar-biodeg", "Class"),
+    # reserve node, measured 23 Oct (paper PLAN §10 "D21 reserve")
+    "openml_climate": (1467, "climate-model-simulation-crashes", "Class"),
 }
 TEMPLATE_FILES = ("benchmark.py", "train.py", "config.yaml", "README.md")
 
@@ -134,7 +136,7 @@ class TestOpenmlPool22Oct(unittest.TestCase):
         # '1'/'2'-encoded targets.  Binary AUC is invariant to which label is
         # positive, so this is a naming convention, not a metric choice.
         labels = {"openml_sonar": ("Rock", "Mine"), "openml_blood_transfusion": ("1", "2"),
-                  "openml_qsar_biodeg": ("1", "2")}
+                  "openml_qsar_biodeg": ("1", "2"), "openml_climate": ("1", "2")}
         rng = np.random.default_rng(0)
         for name, (a, b) in labels.items():
             with self.subTest(node=name), tempfile.TemporaryDirectory() as tmp:

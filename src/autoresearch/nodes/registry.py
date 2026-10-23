@@ -32,6 +32,7 @@ def node_spec_path(node_name: str, repo_root: str | Path | None = None) -> Path:
         "openml_sonar": root / "configs" / "nodes" / "openml_sonar.yaml",
         "openml_blood_transfusion": root / "configs" / "nodes" / "openml_blood_transfusion.yaml",
         "openml_qsar_biodeg": root / "configs" / "nodes" / "openml_qsar_biodeg.yaml",
+        "openml_climate": root / "configs" / "nodes" / "openml_climate.yaml",
         "autoresearch_macos": root / "configs" / "nodes" / "autoresearch_macos.yaml",
         "autoresearch_linux": root / "configs" / "nodes" / "autoresearch_linux.yaml",
     }

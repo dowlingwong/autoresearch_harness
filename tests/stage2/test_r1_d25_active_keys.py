@@ -112,7 +112,7 @@ class TestD25DeclarationResolution(unittest.TestCase):
         # D21 pool extension (22 Oct): sonar, blood-transfusion and qsar-biodeg are
         # numeric-only, so imputer is inactive; the per-model keys match ionosphere.
         reference = load_registered_node("openml_ionosphere", repo_root=ROOT)
-        for name in ("openml_sonar", "openml_blood_transfusion", "openml_qsar_biodeg"):
+        for name in ("openml_sonar", "openml_blood_transfusion", "openml_qsar_biodeg", "openml_climate"):
             spec = load_registered_node(name, repo_root=ROOT)
             for model_type in ("logistic_regression", "random_forest", "gradient_boosting"):
                 with self.subTest(node=name, model_type=model_type):
