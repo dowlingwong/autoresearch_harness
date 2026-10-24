@@ -14,7 +14,7 @@ except ImportError:  # pragma: no cover
     BaseModel = object  # type: ignore[assignment,misc]
     Field = None  # type: ignore[assignment]
 
-from autoresearch.llm.providers import LLMConfig, resolve_llm_config
+from autoresearch.llm.providers import LOCAL_NO_KEY, LLMConfig, resolve_llm_config
 from autoresearch.manager.base import ManagerProposal, ManagerStatus
 from autoresearch.memory.summarizer import MemoryContext
 from autoresearch.nodes.spec import NodeSpec
@@ -172,6 +172,13 @@ def _build_chat_model(config: LLMConfig, temperature: float, seed: int | None = 
             kwargs["seed"] = seed
         if config.api_key:
             kwargs["api_key"] = config.api_key
+        if config.provider == "llamacpp":
+            # R1 A.10 (25 Oct 2026): a local llama-server needs no key (the OpenAI
+            # client refuses to start without one), and the client must not retry
+            # on its own: the bounded transport retry (transport_retry.py) is the
+            # only retry, so every attempt is logged with the same D26 seed.
+            kwargs.setdefault("api_key", LOCAL_NO_KEY)
+            kwargs["max_retries"] = 0
         if config.provider == "deepseek":
             thinking = os.environ.get("DEEPSEEK_THINKING", "").strip().lower()
             if thinking:

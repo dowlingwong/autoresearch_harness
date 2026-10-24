@@ -29,7 +29,7 @@ def test_resolve_local_provider_defaults(monkeypatch) -> None:
         monkeypatch.delenv(key, raising=False)
     assert resolve_llm_config("vllm/Qwen/Qwen2.5").base_url == "http://localhost:8000"
     assert resolve_llm_config("lm_studio/local-model").base_url == "http://localhost:1234/v1"
-    assert resolve_llm_config("llamacpp/model.gguf").base_url == "http://localhost:8080"
+    assert resolve_llm_config("llamacpp/model.gguf").base_url == "http://localhost:8080/v1"  # A.10: OpenAI /v1
 
 
 def test_resolve_cloud_provider_keys(monkeypatch) -> None:

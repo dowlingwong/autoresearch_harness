@@ -17,8 +17,22 @@ _LOCAL_PROVIDERS = {
     "ollama": ("OLLAMA_BASE_URL", "http://localhost:11434", ""),
     "vllm": ("VLLM_BASE_URL", "http://localhost:8000", "VLLM_API_KEY"),
     "lm_studio": ("LMSTUDIO_BASE_URL", "http://localhost:1234/v1", "LMSTUDIO_API_KEY"),
-    "llamacpp": ("LLAMACPP_BASE_URL", "http://localhost:8080", "LLAMACPP_API_KEY"),
+    "llamacpp": ("LLAMACPP_BASE_URL", "http://localhost:8080/v1", "LLAMACPP_API_KEY"),
 }
+
+# Placeholder key for local OpenAI-compatible servers that need none (llama-server
+# without ``--api-key``): the OpenAI client refuses to start without some key.
+LOCAL_NO_KEY = "sk-no-key-required"
+
+
+def openai_v1_base_url(base_url: str) -> str:
+    """llama-server's OpenAI-compatible routes live under ``/v1`` (R1 A.10, 25 Oct 2026).
+
+    ``ChatOpenAI`` appends ``/chat/completions`` to its base URL, so a bare
+    ``http://host:port`` gets ``/v1``; a URL already ending in ``/v1`` is kept.
+    """
+    url = base_url.rstrip("/")
+    return url if url.endswith("/v1") else url + "/v1"
 
 _CLOUD_PROVIDERS = {
     "openai": ("OPENAI_BASE_URL", "https://api.openai.com/v1", "OPENAI_API_KEY"),
@@ -61,10 +75,13 @@ def resolve_llm_config(model_id: str) -> LLMConfig:
     if prefix in _LOCAL_PROVIDERS:
         base_env, default_base_url, key_env = _LOCAL_PROVIDERS[prefix]
         api_key = os.environ.get(key_env, "") if key_env else ""
+        base_url = os.environ.get(base_env, default_base_url)
+        if prefix == "llamacpp":
+            base_url = openai_v1_base_url(base_url)
         return LLMConfig(
             provider=prefix,
             model_name=model_name,
-            base_url=os.environ.get(base_env, default_base_url),
+            base_url=base_url,
             api_key=api_key,
             model_id=raw,
         )
