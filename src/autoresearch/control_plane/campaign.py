@@ -1579,38 +1579,77 @@ def run_real_campaign(
                         )
                         _emit_llm_call(event_store, campaign_id=campaign_id, trial_id=trial_id, proposal=revised)
                         proposal = revised
-                    emit(
-                        event_store, campaign_id=campaign_id, trial_id=trial_id,
-                        event_type="worker_started",
-                        payload={"worker_mode": getattr(worker, "mode", "unknown_worker")},
-                    )
-                    recheck = _precondition_failure_result(proposal, node_spec, worker)
-                    if recheck is not None:
-                        worker_result = recheck
-                    else:
-                        worker_run_t0 = time.perf_counter()
-                        try:
-                            worker_result = worker.run_trial(proposal, node_spec, budget_index)
-                        except Exception as exc:
-                            worker_result = WorkerResult(
-                                worker_mode=getattr(worker, "mode", "unknown_worker"),
-                                changed_files=(),
-                                success=False,
-                                parsed_metrics={},
-                                raw_log_ref="",
-                                patch_ref="",
-                                git_commit_before="",
-                                git_commit_after="",
-                                failure_message=str(exc),
-                                extra={"failure_category": FailureCategory.EDIT_FAILED.value},
+                        if getattr(controller, "rescreen_after_revise", False):
+                            # R1 Track H (F4, 26 Oct): a controller that opts in is asked once more
+                            # at E1 about the revised proposal (revise is now infeasible: one
+                            # revision per trial) and may skip it.  Controllers without the
+                            # attribute keep the historical behaviour (the revision runs).
+                            e1b_decision, e1b_mask = _controller_hook(
+                                controller=controller,
+                                log_default_decisions=log_default_decisions,
+                                event_store=event_store,
+                                campaign_id=campaign_id,
+                                trial_id=trial_id,
+                                epoch="E1",
+                                budget_index=budget_index,
+                                ledger_prefix=existing_records + records,
+                                current_best=current_best,
+                                incumbent_stack_depth=len(incumbent_stack),
+                                proposal=proposal,
+                                provisional=None,
+                                budget_state=budget_state,
+                                compute_budget=compute_budget,
+                                node_spec=node_spec,
+                                proposal_passed_precondition=True,
+                                manager_deterministic=bool(getattr(manager, "deterministic", False)),
+                                revision_feedback_supported=_accepts_revision_feedback(manager),
+                                revisions_this_trial=1,
+                                llm_cap_reached=_llm_cap_reached(compute_budget),
                             )
-                        compute_budget = compute_budget.consume_worker_run(time.perf_counter() - worker_run_t0)
-                    emit(
-                        event_store, campaign_id=campaign_id, trial_id=trial_id,
-                        event_type="worker_finished",
-                        payload={"success": worker_result.success,
-                                 "elapsed_seconds": max(time.perf_counter() - worker_started, 0.0)},
-                    )
+                            if e1b_decision.llm_calls:
+                                compute_budget = compute_budget.consume_llm_call(e1b_decision.llm_calls)
+                            e1b_action = _resolve_action(
+                                e1b_decision, e1b_mask, epoch="E1", event_store=event_store,
+                                campaign_id=campaign_id, trial_id=trial_id,
+                            )
+                            if e1b_action == "skip":
+                                skip_trial = True
+                                control_meta = {**control_meta, "action": "skip", "rescreened_after_revise": True}
+                                if e1b_decision.detail.get("skip_reason") is not None:
+                                    control_meta["skip_reason"] = str(e1b_decision.detail["skip_reason"])
+                    if not skip_trial:
+                        emit(
+                            event_store, campaign_id=campaign_id, trial_id=trial_id,
+                            event_type="worker_started",
+                            payload={"worker_mode": getattr(worker, "mode", "unknown_worker")},
+                        )
+                        recheck = _precondition_failure_result(proposal, node_spec, worker)
+                        if recheck is not None:
+                            worker_result = recheck
+                        else:
+                            worker_run_t0 = time.perf_counter()
+                            try:
+                                worker_result = worker.run_trial(proposal, node_spec, budget_index)
+                            except Exception as exc:
+                                worker_result = WorkerResult(
+                                    worker_mode=getattr(worker, "mode", "unknown_worker"),
+                                    changed_files=(),
+                                    success=False,
+                                    parsed_metrics={},
+                                    raw_log_ref="",
+                                    patch_ref="",
+                                    git_commit_before="",
+                                    git_commit_after="",
+                                    failure_message=str(exc),
+                                    extra={"failure_category": FailureCategory.EDIT_FAILED.value},
+                                )
+                            compute_budget = compute_budget.consume_worker_run(time.perf_counter() - worker_run_t0)
+                        emit(
+                            event_store, campaign_id=campaign_id, trial_id=trial_id,
+                            event_type="worker_finished",
+                            payload={"success": worker_result.success,
+                                     "elapsed_seconds": max(time.perf_counter() - worker_started, 0.0)},
+                        )
         ts_end = _iso_now()
 
         candidate_effective: dict[str, str] | None = None

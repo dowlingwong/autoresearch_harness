@@ -254,3 +254,79 @@ class TestSkipDisplay(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RevisableBackend(RecordingBackend):
+    deterministic = False
+
+    def propose_next_trial(self, status, memory_context, node_spec, revision_feedback=None, revision_attempt=None):
+        proposal = super().propose_next_trial(status, memory_context, node_spec)
+        if revision_feedback is not None:
+            proposal = replace(proposal, proposal_summary=proposal.proposal_summary + " (revised)")
+        return proposal
+
+
+class ReviseThenController:
+    """At trial 2: revise first; on the re-screen of the revision answer ``second``."""
+
+    version = "revise_then/v1"
+
+    def __init__(self, second, rescreen):
+        self.second, self.calls = second, []
+        if rescreen:
+            self.rescreen_after_revise = True
+
+    def decide(self, view, mask):
+        if view.epoch == "E1" and view.budget_index == 2:
+            self.calls.append(dict(mask))
+            action = "revise" if len(self.calls) == 1 else self.second
+            detail = {"skip_reason": "prior_no_gain"} if action == "skip" else {}
+            return ControlDecision(action=action, controller_version=self.version, input_hash=view.input_hash(),
+                                   detail=detail)
+        return ControlDecision(action="continue", controller_version=self.version, input_hash=view.input_hash())
+
+
+def _revise_campaign(tmp, controller):
+    spec = _spec()
+    node = Path(tmp) / "node"
+    shutil.copytree(ROOT / "nodes" / "lr_synthetic", node)
+    backend = RevisableBackend(spec)
+    records_path, events_path = Path(tmp) / "trials.jsonl", Path(tmp) / "events.jsonl"
+    run_real_campaign(node_spec=spec, campaign_id="h", budget=3, manager_mode="baseline_manager",
+                      memory_mode="append_only_summary", records_path=records_path,
+                      worker=Worker(node, [0.80, 0.85, 0.86]), proposal_backend=backend, controller=controller,
+                      event_store=CampaignEventStore(events_path))
+    return TrialAppendStore(records_path).read_all(), [json.loads(x) for x in events_path.read_text().splitlines()]
+
+
+class TestRescreenAfterRevise(unittest.TestCase):
+    def test_opt_in_rescreen_can_skip_the_revision(self):
+        ctl = ReviseThenController("skip", rescreen=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            records, events = _revise_campaign(tmp, ctl)
+        self.assertEqual([r.decision.value for r in records], ["kept", "skipped", "kept"])
+        control = records[1].extra["control"]
+        self.assertEqual((control["action"], control["skip_reason"], control["rescreened_after_revise"]),
+                         ("skip", "prior_no_gain", True))
+        self.assertIn("revision", control)
+        self.assertTrue(records[1].proposal_summary.endswith("(revised)"))
+        self.assertEqual(len(ctl.calls), 2)
+        self.assertTrue(ctl.calls[0]["revise"])
+        self.assertFalse(ctl.calls[1]["revise"])  # at most one revision per trial
+        self.assertEqual(sum(1 for e in events if e["event_type"] == "worker_started"), 2)
+
+    def test_rescreen_continue_runs_the_revision(self):
+        ctl = ReviseThenController("continue", rescreen=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            records, _ = _revise_campaign(tmp, ctl)
+        self.assertEqual(records[1].extra["control"]["action"], "revise")
+        self.assertNotEqual(records[1].decision.value, "skipped")
+
+    def test_without_the_attribute_revise_is_historical(self):
+        ctl = ReviseThenController("skip", rescreen=False)
+        with tempfile.TemporaryDirectory() as tmp:
+            records, events = _revise_campaign(tmp, ctl)
+        self.assertEqual(len(ctl.calls), 1)  # not asked again
+        self.assertEqual(records[1].extra["control"]["action"], "revise")
+        self.assertNotIn("rescreened_after_revise", records[1].extra["control"])
+        self.assertEqual(sum(1 for e in events if e["event_type"] == "worker_started"), 3)
