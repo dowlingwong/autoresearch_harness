@@ -18,6 +18,39 @@ class MemoryMode(StrEnum):
     APPEND_ONLY_SUMMARY_WITH_RATIONALE = "append_only_summary_with_rationale"
 
 
+# R1-SKIP-DISPLAY (PLAN §10, decided 25 Oct 2026): how a proposal skipped by
+# the control plane at E1 is shown in the manager's memory.  ``None`` (the
+# default) is the historical display (the generic record line); campaigns that
+# declare no display had no control-plane skips.  ``one_line/v1`` shows one
+# line with the fixed text below and no metric, delta, rationale or failure.
+# The display changes the proposal law, so it is recorded in every manifest.
+SKIP_DISPLAY_ONE_LINE = "one_line/v1"
+SKIP_DISPLAYS: tuple[str, ...] = (SKIP_DISPLAY_ONE_LINE,)
+SKIP_DISPLAY_TEXT = "skipped by the control plane: predicted no gain"
+
+
+def check_skip_display(skip_display: str | None) -> str | None:
+    if skip_display is not None and skip_display not in SKIP_DISPLAYS:
+        raise ValueError(f"unknown skip_display {skip_display!r}; declared: {SKIP_DISPLAYS}")
+    return skip_display
+
+
+def is_control_plane_skip(record: TrialRecord) -> bool:
+    """A trial the controller skipped at E1 (not a D25 inactive-key skip)."""
+    control = (record.extra or {}).get("control") or {}
+    return (
+        record.decision.value == "skipped"
+        and control.get("epoch") == "E1"
+        and control.get("action") == "skip"
+        and control.get("reason") != "inactive_key"
+    )
+
+
+def _skip_display_line(record: TrialRecord) -> str:
+    """``one_line/v1``: the trial id, the proposal summary and the fixed text; no metric."""
+    return f"{record.trial_id}: summary={record.proposal_summary}; {SKIP_DISPLAY_TEXT}"
+
+
 @dataclass(frozen=True)
 class MemoryContext:
     mode: MemoryMode
@@ -40,6 +73,7 @@ def build_memory_context(
     node_spec: NodeSpec,
     budget_index: int,
     rationale_max_tokens: int | None = None,
+    skip_display: str | None = None,
 ) -> MemoryContext:
     """Build a ``MemoryContext`` for injection into the manager.
 
@@ -55,8 +89,18 @@ def build_memory_context(
             injection.  ``None`` (default) means no truncation.
             Use this parameter to test the verbosity hypothesis: does shorter
             rationale improve or match summary-only performance?
+        skip_display: ``None`` (default, historical) or ``"one_line/v1"``
+            (R1-SKIP-DISPLAY): a control-plane E1 skip is shown as one line,
+            ``"<trial_id>: summary=<summary>; skipped by the control plane:
+            predicted no gain"``, with no metric.  Other records are unchanged.
     """
     memory_mode = MemoryMode(mode)
+    check_skip_display(skip_display)
+
+    def line_of(record: TrialRecord, **kwargs) -> str:
+        if skip_display == SKIP_DISPLAY_ONE_LINE and is_control_plane_skip(record):
+            return _skip_display_line(record)
+        return _summary_line(record, **kwargs)
     raw_text = "\n".join(json.dumps(record.to_dict(), sort_keys=True) for record in records)
     repeated = compute_repeated_bad_stats(records)
 
@@ -71,12 +115,12 @@ def build_memory_context(
         )
     elif memory_mode == MemoryMode.APPEND_ONLY_SUMMARY:
         context = "\n".join(
-            _summary_line(record, include_rationale=False, metric_name=node_spec.metric_name)
+            line_of(record, include_rationale=False, metric_name=node_spec.metric_name)
             for record in records
         )
     else:
         lines = [
-            _summary_line(
+            line_of(
                 record,
                 include_rationale=True,
                 rationale_max_tokens=rationale_max_tokens,

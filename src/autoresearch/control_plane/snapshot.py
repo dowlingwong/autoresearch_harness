@@ -106,6 +106,9 @@ class CampaignSnapshot:
     # D4 amendment: declared action versions of the campaign; ``None`` means
     # historical behaviour and keeps the manifest free of the field.
     action_versions: dict[str, str] | None = None
+    # R1-SKIP-DISPLAY: the campaign's memory display of control-plane skips;
+    # ``None`` means historical and keeps the manifest free of the field.
+    skip_display: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +284,7 @@ def capture_snapshot(
         seen_effective_hashes=tuple(context.seen_effective_hashes),
         seen_active_hashes=tuple(context.seen_active_hashes),
         action_versions=(dict(context.action_versions) if context.action_versions is not None else None),
+        skip_display=getattr(context, "skip_display", None),
     )
     snapshot.layer_hashes = _layer_hashes(snapshot)
     return snapshot
@@ -377,6 +381,8 @@ def write_snapshot(snapshot: CampaignSnapshot, out_dir: str | Path) -> Path:
     }
     if snapshot.action_versions is not None:
         manifest["action_versions"] = dict(snapshot.action_versions)
+    if snapshot.skip_display is not None:
+        manifest["skip_display"] = snapshot.skip_display
     manifest_path = out / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return manifest_path
@@ -446,6 +452,7 @@ def read_snapshot(out_dir: str | Path) -> CampaignSnapshot:
         action_versions=(
             dict(manifest["action_versions"]) if manifest.get("action_versions") is not None else None
         ),
+        skip_display=(str(manifest["skip_display"]) if manifest.get("skip_display") is not None else None),
     )
 
 
@@ -721,7 +728,8 @@ def _complete_captured_trial(
     budget_state = BudgetState(total_trials=restored.budget_total, consumed_trials=restored.budget_consumed)
 
     memory_context = build_memory_context(
-        list(snapshot.ledger_prefix), MemoryMode(snapshot.memory_mode), node_spec, budget_index
+        list(snapshot.ledger_prefix), MemoryMode(snapshot.memory_mode), node_spec, budget_index,
+        **({"skip_display": snapshot.skip_display} if snapshot.skip_display is not None else {}),
     )
     status = _campaign._manager_status(
         campaign_id=campaign_id, budget_index=budget_index,
@@ -916,6 +924,8 @@ def resume_campaign(
     versions_kwargs: dict[str, Any] = (
         {"action_versions": action_versions, "keep_prior": keep_prior} if action_versions is not None else {}
     )
+    if snapshot.skip_display is not None:
+        versions_kwargs["skip_display"] = snapshot.skip_display
 
     # D27 F3 fix: seed the novelty seen-sets from the snapshot.  A snapshot
     # taken before the sets existed (old format, both ``None``) resumes with

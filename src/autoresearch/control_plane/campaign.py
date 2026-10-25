@@ -88,7 +88,7 @@ from autoresearch.memory.provenance import build_trial_provenance
 from autoresearch.memory.research_context import load_node_research_context_ref
 from autoresearch.memory.schemas import ExecutionStatus, FailureCategory, TrialDecision, TrialRecord, ValidityStatus
 from autoresearch.memory.similarity import compute_repeated_bad_stats
-from autoresearch.memory.summarizer import MemoryMode, build_memory_context
+from autoresearch.memory.summarizer import MemoryMode, build_memory_context, check_skip_display
 from autoresearch.nodes.active_keys import inactive_key_in_proposal, resolve_active_keys
 from autoresearch.nodes.spec import NodeSpec
 from autoresearch.worker.base import DryRunWorker, Worker, WorkerResult
@@ -281,6 +281,16 @@ def _controller_hook(
     )
     mask = compute_mask(view, **feasibility)  # type: ignore[arg-type]
     decision = controller.decide(view, mask)
+    for event_type, event_payload in decision.events:
+        # R1 Track H: controller-side events (e.g. ``prior_unavailable``); only
+        # whitelisted types reach here (``ControlDecision.__post_init__``).
+        emit(
+            event_store,
+            campaign_id=campaign_id,
+            trial_id=trial_id,
+            event_type=event_type,
+            payload={"epoch": epoch, "controller_version": decision.controller_version, **event_payload},
+        )
     if (not isinstance(controller, ContinueController)) or log_default_decisions:
         emit(
             event_store,
@@ -295,6 +305,7 @@ def _controller_hook(
                 "controller_version": decision.controller_version,
                 "input_hash": decision.input_hash,
                 "llm_calls": decision.llm_calls,
+                **({"detail": dict(decision.detail)} if decision.detail else {}),
             },
         )
     return decision, mask
@@ -404,6 +415,9 @@ class SnapshotContext:
     # D4 amendment: the campaign's declared action versions (``None`` = the
     # historical behaviour; snapshots then carry no ``action_versions`` field).
     action_versions: dict[str, str] | None = None
+    # R1-SKIP-DISPLAY: the manager-memory display of control-plane skips
+    # (``None`` = historical; snapshots then carry no ``skip_display`` field).
+    skip_display: str | None = None
 
 
 def _invoke_snapshot_hook(snapshot_hook: object | None, **kwargs: object) -> None:
@@ -1120,6 +1134,7 @@ def run_real_campaign(
     seen_before_resume_unknown: bool = False,
     action_versions: ActionVersions | None = None,
     keep_prior: KeepPriorProvider | None = None,
+    skip_display: str | None = None,
 ) -> CampaignRunResult:
     """Run a fixed-budget campaign with a real worker.
 
@@ -1179,7 +1194,14 @@ def run_real_campaign(
     (μ, τ, σ) per decision: a constant :class:`KeepPrior` or a callable that
     receives the leak-safe E2 ``ControlView``.  The rule and its prior are
     recorded in the ``decision_made`` event and ``extra.keep_rule``.
+
+    **Skip display (R1-SKIP-DISPLAY, 25 Oct 2026).**  *skip_display* ``None``
+    (default) keeps the historical memory display; ``"one_line/v1"`` shows a
+    control-plane E1 skip as one line without any metric
+    (:func:`autoresearch.memory.summarizer.build_memory_context`).  A declared
+    display is recorded in the ``campaign_started`` event and in snapshots.
     """
+    check_skip_display(skip_display)
     if action_versions is not None:
         if verify_split_policy is not None and verify_split_policy != action_versions.verify_split_policy:
             raise ValueError(
@@ -1247,6 +1269,7 @@ def run_real_campaign(
             "memory_mode": memory_mode,
             "node_id": node_spec.name,
             **({"action_versions": action_versions_dict} if action_versions_dict is not None else {}),
+            **({"skip_display": skip_display} if skip_display is not None else {}),
         },
     )
     while not budget_state.exhausted and not compute_budget.exhausted:
@@ -1289,7 +1312,7 @@ def run_real_campaign(
             incumbent_stack=incumbent_stack, budget_state=budget_state, compute_budget=compute_budget,
             controller=controller, manager=manager, memory_mode=memory_mode, manager_mode=manager_mode,
             t_min=t_min, verify_runs=verify_runs, verify_split_policy=verify_split_policy,
-            action_versions=action_versions_dict,
+            action_versions=action_versions_dict, skip_display=skip_display,
             seen_effective_hashes=tuple(sorted(seen_effective_hashes)),
             seen_active_hashes=tuple(sorted(seen_active_hashes)),
         )
@@ -1325,6 +1348,7 @@ def run_real_campaign(
         memory_context = build_memory_context(
             existing_records + records, MemoryMode(memory_mode), node_spec, budget_index,
             rationale_max_tokens=rationale_max_tokens,
+            **({"skip_display": skip_display} if skip_display is not None else {}),
         )
         emit(
             event_store,
@@ -1480,7 +1504,7 @@ def run_real_campaign(
                 compute_budget=compute_budget, controller=controller, manager=manager,
                 memory_mode=memory_mode, manager_mode=manager_mode, t_min=t_min,
                 verify_runs=verify_runs, verify_split_policy=verify_split_policy,
-                action_versions=action_versions_dict,
+                action_versions=action_versions_dict, skip_display=skip_display,
                 seen_effective_hashes=tuple(sorted(seen_effective_hashes)),
                 seen_active_hashes=tuple(sorted(seen_active_hashes)),
             )
@@ -1521,6 +1545,10 @@ def run_real_campaign(
                 if e1_action == "skip":
                     skip_trial = True
                     control_meta = {"epoch": "E1", "action": "skip"}
+                    if e1_decision.detail.get("skip_reason") is not None:
+                        # R1 Track H: why the controller skipped (e.g. a rule skip or a
+                        # prior-driven skip); absent for controllers that give none.
+                        control_meta["skip_reason"] = str(e1_decision.detail["skip_reason"])
                 else:
                     if e1_action == "revise":
                         feedback = _revision_feedback(memory_context)
@@ -1732,7 +1760,7 @@ def run_real_campaign(
                 compute_budget=compute_budget, controller=controller, manager=manager,
                 memory_mode=memory_mode, manager_mode=manager_mode, t_min=t_min,
                 verify_runs=verify_runs, verify_split_policy=verify_split_policy,
-                action_versions=action_versions_dict,
+                action_versions=action_versions_dict, skip_display=skip_display,
                 seen_effective_hashes=tuple(sorted(seen_effective_hashes)),
                 seen_active_hashes=tuple(sorted(seen_active_hashes)),
             )

@@ -36,6 +36,9 @@ from typing import Any, Literal, Protocol
 
 Epoch = Literal["E0", "E1", "E2"]
 ACTIONS: tuple[str, ...] = ("continue", "skip", "revise", "verify", "demote", "stop")
+# Event types a controller may ask the control plane to log (R1 Track H): the
+# learned prior was unavailable and the controller fell back to its fallback prior.
+CONTROLLER_EVENT_TYPES: tuple[str, ...] = ("prior_unavailable",)
 
 DEFAULT_T_MIN = 3
 DEFAULT_VERIFY_RUNS = 2
@@ -125,12 +128,30 @@ class ControlDecision:
     # LLM calls the controller itself made for this decision (R1 L12: an LLM
     # self-control side query).  The campaign charges them to the LLM-call cap.
     llm_calls: int = 0
+    # R1 Track H (25 Oct 2026): optional JSON-serialisable record of how the
+    # decision was made (e.g. the prior's bin probabilities, pi, mu, tau, t*,
+    # V, g, prior version and digest).  Written to the ``control_decision``
+    # event as ``detail`` only when non-empty, so controllers that do not set
+    # it produce byte-identical events.  A ``skip_reason`` key on an E1 skip
+    # is also copied into the skipped record's ``extra.control``.
+    detail: dict[str, Any] = field(default_factory=dict)
+    # R1 Track H: controller-side events to log before the ``control_decision``
+    # event, as ``(event_type, payload)`` pairs.  Only the types in
+    # ``CONTROLLER_EVENT_TYPES`` are accepted (a controller cannot forge a
+    # control-plane event).
+    events: tuple[tuple[str, dict[str, Any]], ...] = ()
 
     def __post_init__(self) -> None:
         if self.action not in ACTIONS:
             raise ValueError(f"unknown control action: {self.action!r}")
         if not isinstance(self.llm_calls, int) or self.llm_calls < 0:
             raise ValueError("llm_calls must be a non-negative int")
+        if not isinstance(self.detail, dict):
+            raise ValueError("detail must be a dict")
+        for item in self.events:
+            if (not isinstance(item, tuple) or len(item) != 2 or item[0] not in CONTROLLER_EVENT_TYPES
+                    or not isinstance(item[1], dict)):
+                raise ValueError(f"controller events must be (type, payload) with type in {CONTROLLER_EVENT_TYPES}")
 
 
 class Controller(Protocol):
