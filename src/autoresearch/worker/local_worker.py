@@ -157,7 +157,12 @@ class LocalWorker:
                     edit_error = f"parameter '{param}' not found in any target file"
                     _log.warning("%s: %s", trial_label, edit_error)
                 else:
-                    edit_result = _apply_edit(target_file, param, old_val, new_val)
+                    if node_spec.name == "track_g_autoresearch":
+                        from autoresearch.nodes.autoresearch_macos.local_edit import apply_track_g_edit
+
+                        edit_result = apply_track_g_edit(target_file, param, old_val, new_val)
+                    else:
+                        edit_result = _apply_edit(target_file, param, old_val, new_val)
                     if isinstance(edit_result, str):
                         edit_error = edit_result
                         _log.warning("%s: edit failed: %s", trial_label, edit_error)
@@ -303,6 +308,14 @@ class LocalWorker:
             success = result.returncode == 0
             failure_msg = f"exit code {result.returncode}" if not success else None
             metrics = _parse_metrics_from_log(combined)
+            if node_spec.name == "track_g_autoresearch":
+                from autoresearch.nodes.autoresearch_macos.track_g_metric import parse_val_bpb
+
+                metrics.pop("val_bpb", None)
+                metrics.pop("val_auc", None)
+                value = parse_val_bpb(log_path)
+                if value is not None:
+                    metrics["val_bpb"] = value
             failure_category = _parse_failure_category_from_log(combined)
             return log_path, success, failure_msg, metrics, failure_category
         except subprocess.TimeoutExpired as exc:

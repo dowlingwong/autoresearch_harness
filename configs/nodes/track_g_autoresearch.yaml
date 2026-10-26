@@ -1,0 +1,65 @@
+{
+  "name": "track_g_autoresearch",
+  "description": "Track G local-worker adapter for the bundled autoresearch-macos train.py (CUDA on Linux); frozen prepare.py sets a 300-second training budget and the objective is lower val_bpb.",
+  "external_benchmark": {
+    "name": "autoresearch-macos",
+    "repository": "https://github.com/karpathy/autoresearch",
+    "fork_note": "Cross-platform fork; original by @karpathy, March 2026. Linux/CUDA support added May 2026.",
+    "license": "MIT"
+  },
+  "editable_paths": [
+    "train.py"
+  ],
+  "editable_symbols": [
+    "DEPTH",
+    "ASPECT_RATIO",
+    "HEAD_DIM",
+    "TOTAL_BATCH_SIZE",
+    "DEVICE_BATCH_SIZE",
+    "EMBEDDING_LR",
+    "MATRIX_LR",
+    "SCALAR_LR",
+    "WEIGHT_DECAY",
+    "WARMDOWN_RATIO",
+    "FINAL_LR_FRAC",
+    "WINDOW_PATTERN"
+  ],
+  "frozen_paths": [
+    "prepare.py",
+    "program.md",
+    "pyproject.toml",
+    "uv.lock",
+    "results.tsv",
+    "experiment_memory.jsonl",
+    "memory/",
+    "data/",
+    "artifacts/"
+  ],
+  "setup_command": "uv sync",
+  "run_command": "uv run train.py",
+  "metric_name": "val_bpb",
+  "metric_direction": "minimize",
+  "metric_parser": "autoresearch.nodes.autoresearch_macos.track_g_metric:parse_val_bpb",
+  "acceptance_rule": "candidate_metric < current_best_metric",
+  "validity_checks": [
+    "metric_present",
+    "finite_metric",
+    "editable_scope_only",
+    "command_exit_zero"
+  ],
+  "default_budget": {
+    "trials": 20,
+    "max_wall_clock_hours": 2.0
+  },
+  "expected_runtime": "300 seconds of training plus setup, compilation and evaluation per trial; use a worker timeout longer than 300 seconds.",
+  "one_time_setup": "Run `uv run prepare.py` once to download training data and train the BPE tokenizer before the first campaign.",
+  "failure_categories": [
+    "syntax_error",
+    "runtime_error",
+    "metric_missing",
+    "invalid_edit_scope",
+    "degraded_metric",
+    "no_op_patch",
+    "proposal_precondition_failed"
+  ]
+}

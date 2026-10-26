@@ -35,6 +35,7 @@ def node_spec_path(node_name: str, repo_root: str | Path | None = None) -> Path:
         "openml_climate": root / "configs" / "nodes" / "openml_climate.yaml",
         "autoresearch_macos": root / "configs" / "nodes" / "autoresearch_macos.yaml",
         "autoresearch_linux": root / "configs" / "nodes" / "autoresearch_linux.yaml",
+        "track_g_autoresearch": root / "configs" / "nodes" / "track_g_autoresearch.yaml",
     }
     try:
         return registry[node_name]
