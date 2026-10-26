@@ -138,7 +138,10 @@ class LangChainProposalBackend:
         }
 
 
-def _build_chat_model(config: LLMConfig, temperature: float, seed: int | None = None) -> Any:
+def _build_chat_model(config: LLMConfig, temperature: float, seed: int | None = None,
+                      *, response_format: dict | None = None) -> Any:
+    if response_format is not None and config.provider != "llamacpp":
+        raise ValueError("manager_proposal/v1 decoding requires the llamacpp provider")
     if config.provider in {"legacy", "ollama"}:
         try:
             from langchain_ollama import ChatOllama
@@ -179,6 +182,8 @@ def _build_chat_model(config: LLMConfig, temperature: float, seed: int | None = 
             # only retry, so every attempt is logged with the same D26 seed.
             kwargs.setdefault("api_key", LOCAL_NO_KEY)
             kwargs["max_retries"] = 0
+            if response_format is not None:
+                kwargs["model_kwargs"] = {"response_format": response_format}
         if config.provider == "deepseek":
             thinking = os.environ.get("DEEPSEEK_THINKING", "").strip().lower()
             if thinking:

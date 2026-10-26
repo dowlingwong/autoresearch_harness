@@ -13,6 +13,20 @@ class LLMConfig:
     model_id: str
 
 
+MANAGER_PROPOSAL_SCHEMA_VERSION = "manager_proposal/v1"
+
+
+def manager_response_format(version: str = MANAGER_PROPOSAL_SCHEMA_VERSION) -> dict:
+    """Structure only: D25 key/value validity remains the model's responsibility."""
+    if version != MANAGER_PROPOSAL_SCHEMA_VERSION:
+        raise ValueError(f"unsupported proposal schema {version!r}")
+    fields = ("rationale", "summary", "objective", "param", "old_value", "new_value")
+    return {"type": "json_schema", "json_schema": {
+        "name": "manager_proposal_v1", "strict": True,
+        "schema": {"type": "object", "properties": {k: {"type": "string"} for k in fields},
+                   "required": list(fields), "additionalProperties": False}}}
+
+
 _LOCAL_PROVIDERS = {
     "ollama": ("OLLAMA_BASE_URL", "http://localhost:11434", ""),
     "vllm": ("VLLM_BASE_URL", "http://localhost:8000", "VLLM_API_KEY"),

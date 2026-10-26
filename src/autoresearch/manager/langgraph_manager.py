@@ -26,7 +26,7 @@ from autoresearch.memory.summarizer import MemoryContext
 from autoresearch.nodes.active_keys import resolve_active_keys
 from autoresearch.nodes.spec import NodeSpec
 from autoresearch.llm.langchain_client import _build_chat_model
-from autoresearch.llm.providers import LLMConfig, resolve_llm_config
+from autoresearch.llm.providers import LLMConfig, resolve_llm_config, manager_response_format
 from autoresearch.llm.transport_retry import (
     DEFAULT_POLICY,
     POLICY_VERSION,
@@ -44,6 +44,7 @@ class _PlanState(TypedDict):
     raw_proposal: str    # raw LLM text output
     proposal: Any        # ManagerProposal | None, filled by validate_proposal
     revision_feedback: Any  # str | None — E1 revise feedback from the control plane
+    proposal_schema: Any  # optional structure-only JSON schema version
     llm_meta: Any        # dict | None — per-call latency/usage telemetry
     llm_seed: Any        # int | None — D26 deterministic sampling seed
     llm: Any             # LLM for this call (constructor-seeded, or the injected stub)
@@ -200,6 +201,7 @@ def _extract_structured_edit(
     objective: str,
     current_constants: dict[str, str],
     node_spec: NodeSpec,
+    *, strict: bool = False,
 ) -> dict[str, str] | None:
     """Try to extract {symbol, old, new, path} for the deterministic patch path.
 
@@ -238,6 +240,9 @@ def _extract_structured_edit(
                 "new": n_raw,
                 "path": edit_path,
             }
+
+    if strict:
+        return None
 
     # Strategy 2: regex on objective string
     # Values may contain dots (0.02), hyphens (5e-4), so capture non-whitespace
@@ -278,7 +283,16 @@ def _validate_proposal(state: _PlanState) -> _PlanState:
     parsed: dict[str, Any] = {}
     parse_ok = True
 
+    schema_version = state.get("proposal_schema")
     try:
+        if schema_version:
+            schema = manager_response_format(schema_version)["json_schema"]["schema"]
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict) or set(parsed) != set(schema["required"]) or any(
+                not isinstance(value, str) for value in parsed.values()
+            ):
+                raise ValueError("manager_proposal/v1 requires exactly six string fields")
+            summary, rationale, objective = parsed["summary"], parsed["rationale"], parsed["objective"]
         cleaned = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
         cleaned = re.sub(r"```\s*$", "", cleaned.strip(), flags=re.MULTILINE).strip()
         # Handle partial JSON — find first { ... } block
@@ -295,6 +309,9 @@ def _validate_proposal(state: _PlanState) -> _PlanState:
     except Exception:
         parse_ok = False
         rationale = f"parse-failed; raw={raw[:120]!r}"
+        if schema_version:
+            parsed, objective = {}, ""  # never substitute the free-path heuristic
+
 
     extra: dict[str, Any] = {
         "context_sha256": sha256(state.get("context_text", "").encode("utf-8")).hexdigest(),
@@ -303,6 +320,9 @@ def _validate_proposal(state: _PlanState) -> _PlanState:
     }
     llm_meta = dict(state.get("llm_meta") or {})
     llm_meta["parse_ok"] = parse_ok
+    if schema_version:
+        llm_meta.update(schema_version=schema_version, parse_failed=not parse_ok)
+        extra.update(schema_version=schema_version, parse_failed=not parse_ok)
     extra["llm_call"] = llm_meta
     if state.get("revision_feedback"):
         extra["revision_feedback"] = state["revision_feedback"]
@@ -310,10 +330,13 @@ def _validate_proposal(state: _PlanState) -> _PlanState:
     # Attempt to extract a structured edit so claw_style_worker can apply
     # the proposal via its deterministic patch path (no coding agent required).
     current_constants = getattr(status, "current_constants", {}) or {}
-    structured_edit = _extract_structured_edit(parsed, objective, current_constants, node_spec)
+    structured_edit = _extract_structured_edit(parsed, objective, current_constants, node_spec, strict=bool(schema_version))
     if structured_edit:
         extra["deterministic_patch"] = True
         extra["structured_edit"] = structured_edit
+
+    if schema_version and not structured_edit:
+        extra["proposal_precondition_failed"] = True
 
     if not structured_edit and getattr(node_spec, "active_keys", None):
         # D25: keep the key the manager named when it resolves to an editable
@@ -380,7 +403,11 @@ class LangGraphManager:
         repetition: int = 0,
         transport_retry: TransportRetryPolicy | None = DEFAULT_POLICY,
         sleep: Any = None,
+        proposal_schema: str | None = None,
     ) -> None:
+        if proposal_schema is not None:
+            manager_response_format(proposal_schema)
+        self.schema_version = proposal_schema
         self._injected_llm = llm
         self._model = model
         self._host = host
@@ -402,6 +429,7 @@ class LangGraphManager:
             model=cfg.get("model", "qwen2.5-coder:7b"),
             host=cfg.get("host", "http://localhost:11434"),
             temperature=cfg.get("temperature", 0.2),
+            proposal_schema=cfg.get("proposal_schema"),
         )
 
     # ------------------------------------------------------------------
@@ -472,6 +500,7 @@ class LangGraphManager:
                 "llm": call_llm,
                 "llm_seed_as_kwarg": seed_as_kwarg,
                 "transport_retry": self._transport_retry,
+                "proposal_schema": self.schema_version,
             }
         )
 
@@ -520,6 +549,11 @@ class LangGraphManager:
             )
             prompt_tokens, completion_tokens = _usage_from_response(response)
             content = getattr(response, "content", "") or ""
+            # Reasoning never enters the final JSON parser. Separate server reasoning
+            # fields are not part of content; inline thinking is removed only on the
+            # opt-in schema path, preserving the historical free path.
+            if self.schema_version:
+                content = re.sub(r"<think>.*?</think>\s*", "", content, flags=re.DOTALL).strip()
             llm_meta = {
                 "latency_ms": latency_ms,
                 "prompt_tokens": prompt_tokens,
@@ -527,6 +561,12 @@ class LangGraphManager:
                 "response_chars": len(content),
                 "seed": seed,
             }
+            if self.schema_version:
+                usage = getattr(response, "usage_metadata", None) or {}
+                token_usage = (getattr(response, "response_metadata", None) or {}).get("token_usage") or {}
+                details = token_usage.get("completion_tokens_details") or {}
+                reasoning = (usage.get("output_token_details") or {}).get("reasoning", details.get("reasoning_tokens"))
+                llm_meta.update(schema_version=self.schema_version, reasoning_tokens=reasoning)
             if policy.enabled:
                 # Every attempt is logged (attempt index, error class); a
                 # no-retry policy keeps the historical payload unchanged.
@@ -560,4 +600,5 @@ class LangGraphManager:
             # D26 is an Ollama sampling seed; Anthropic exposes no seed.  Keep
             # the pre-D26 unseeded behaviour for that provider (review F6).
             seed = None
-        return _build_chat_model(config, self._temperature, seed=seed)
+        kwargs = {"response_format": manager_response_format(self.schema_version)} if self.schema_version else {}
+        return _build_chat_model(config, self._temperature, seed=seed, **kwargs)

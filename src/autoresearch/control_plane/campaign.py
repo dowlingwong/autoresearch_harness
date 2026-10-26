@@ -587,10 +587,10 @@ def _active_config_sha256(
     return _config_sha256(_project_active_config(effective_config, node_spec))
 
 
-def _llm_cap_reached(compute_budget: ComputeBudget) -> bool:
+def _llm_cap_reached(compute_budget: ComputeBudget, *, reserve: int = 0) -> bool:
     return (
         compute_budget.max_llm_calls is not None
-        and compute_budget.llm_calls >= compute_budget.max_llm_calls
+        and compute_budget.llm_calls + reserve >= compute_budget.max_llm_calls
     )
 
 
@@ -912,6 +912,12 @@ def _precondition_failure_result(
     worker: Worker,
 ) -> WorkerResult | None:
     """Reject structured no-op/impossible edits before calling the worker."""
+    if proposal.extra.get("parse_failed"):
+        return _structured_failure_result(
+            worker, category=FailureCategory.PROPOSAL_PRECONDITION_FAILED,
+            message="parse_failed: manager_proposal/v1 response did not match its structure",
+            proposal=proposal,
+        )
     edit = proposal.extra.get("structured_edit")
     if not isinstance(edit, dict):
         if proposal.extra.get("proposal_precondition_failed"):
@@ -1135,6 +1141,7 @@ def run_real_campaign(
     action_versions: ActionVersions | None = None,
     keep_prior: KeepPriorProvider | None = None,
     skip_display: str | None = None,
+    proposal_observer: object | None = None,
 ) -> CampaignRunResult:
     """Run a fixed-budget campaign with a real worker.
 
@@ -1226,6 +1233,9 @@ def run_real_campaign(
 
     manager = proposal_backend or _manager(manager_mode, llm=manager_llm, temperature=manager_temperature)
     controller = controller or ContinueController()
+    observer_cost = int(getattr(proposal_observer, "llm_calls_per_observation", 1)) if proposal_observer else 0
+    if proposal_observer is not None and (not isinstance(controller, ContinueController) or observer_cost != 1):
+        raise ValueError("exam observer requires an always-continue controller and one charged call")
     compute_budget = compute_budget or ComputeBudget()
     store = TrialAppendStore(records_path)
     existing_records = store.read_all()
@@ -1268,11 +1278,21 @@ def run_real_campaign(
             "manager_mode": manager_mode,
             "memory_mode": memory_mode,
             "node_id": node_spec.name,
+            **({"proposal_schema": manager.schema_version} if getattr(manager, "schema_version", None) else {}),
+            **({"proposal_observer": proposal_observer.version} if proposal_observer is not None else {}),
             **({"action_versions": action_versions_dict} if action_versions_dict is not None else {}),
             **({"skip_display": skip_display} if skip_display is not None else {}),
         },
     )
     while not budget_state.exhausted and not compute_budget.exhausted:
+        if proposal_observer is not None:
+            left = compute_budget.remaining()["llm_calls_remaining"]
+            required = observer_cost + int(not getattr(manager, "deterministic", False))
+            if left is not None and left < required:
+                emit(event_store, campaign_id=campaign_id, trial_id=None,
+                     event_type="exam_observer_call_pair_unavailable",
+                     payload={"remaining_calls": left, "required_calls": required})
+                break
         budget_index = budget_state.next_budget_index
         trial_id = f"{campaign_id}-trial-{budget_index:03d}"
         emit(
@@ -1401,7 +1421,7 @@ def run_real_campaign(
                 and revisions_used < MAX_INACTIVE_KEY_REVISIONS
                 and _accepts_revision_feedback(manager)
                 and not getattr(manager, "deterministic", False)
-                and not _llm_cap_reached(compute_budget)
+                and not _llm_cap_reached(compute_budget, reserve=observer_cost)
             ):
                 emit(
                     event_store,
@@ -1474,6 +1494,7 @@ def run_real_campaign(
                 payload={"guard_path": str(guard)},
             )
         ts_start = _iso_now()
+        worker_runs_before_observation = compute_budget.worker_runs
         worker_started = time.perf_counter()
         editable_snapshot = _snapshot_editable_state(worker, node_spec)
         precondition_result = _precondition_failure_result(proposal, node_spec, worker)
@@ -1534,7 +1555,7 @@ def run_real_campaign(
                     manager_deterministic=bool(getattr(manager, "deterministic", False)),
                     revision_feedback_supported=_accepts_revision_feedback(manager),
                     revisions_this_trial=0,
-                    llm_cap_reached=_llm_cap_reached(compute_budget),
+                    llm_cap_reached=_llm_cap_reached(compute_budget, reserve=observer_cost),
                 )
                 if e1_decision.llm_calls:
                     compute_budget = compute_budget.consume_llm_call(e1_decision.llm_calls)
@@ -1604,7 +1625,7 @@ def run_real_campaign(
                                 manager_deterministic=bool(getattr(manager, "deterministic", False)),
                                 revision_feedback_supported=_accepts_revision_feedback(manager),
                                 revisions_this_trial=1,
-                                llm_cap_reached=_llm_cap_reached(compute_budget),
+                                llm_cap_reached=_llm_cap_reached(compute_budget, reserve=observer_cost),
                             )
                             if e1b_decision.llm_calls:
                                 compute_budget = compute_budget.consume_llm_call(e1b_decision.llm_calls)
@@ -1652,6 +1673,25 @@ def run_real_campaign(
                         )
         ts_end = _iso_now()
 
+        # An observer sees only pre-execution status and the proposed edit, never
+        # metrics or decisions. Its answer is an event, not controller/ledger input.
+        if proposal_observer is not None and not skip_trial and compute_budget.worker_runs > worker_runs_before_observation:
+            need = int(getattr(proposal_observer, "llm_calls_per_observation", 1))
+            left = compute_budget.remaining()["llm_calls_remaining"]
+            if left is None or left >= need:
+                compute_budget = compute_budget.consume_llm_call(need)
+                try:
+                    answer = proposal_observer.observe(proposal, status, node_spec)
+                except Exception as exc:
+                    answer = {"status": "query_failed", "error": f"{type(exc).__name__}: {exc}"}
+                emit(event_store, campaign_id=campaign_id, trial_id=trial_id,
+                     event_type="exam_self_forecast", payload=dict(answer))
+                emit(event_store, campaign_id=campaign_id, trial_id=trial_id,
+                     event_type="llm_call", payload={"purpose": "self_forecast", "llm_calls": need,
+                                                    "schema_version": proposal_observer.version, **dict(answer)})
+            else:
+                emit(event_store, campaign_id=campaign_id, trial_id=trial_id,
+                     event_type="exam_self_forecast", payload={"status": "llm_cap_exhausted", "llm_calls": 0})
         candidate_effective: dict[str, str] | None = None
         if skip_trial:
             record = _skipped_record(
@@ -1920,6 +1960,7 @@ def run_real_campaign(
         event_type="campaign_completed",
         payload={
             "records_written": len(records),
+            **({"compute_budget": compute_budget.to_dict()} if proposal_observer is not None else {}),
             "elapsed_seconds": max(time.perf_counter() - campaign_started, 0.0),
         },
     )
