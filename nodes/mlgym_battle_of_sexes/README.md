@@ -21,3 +21,12 @@ provisions the pinned upstream workspace, preserves the read-only evaluator,
 runs its environment, and captures the authentic evaluation result. Candidate
 and evaluator isolation, seed/reproducibility and compute must be checked in
 that environment. This synthetic smoke establishes none of those properties.
+
+The focused test uses `FakeMLGymWorker` with an injected fake evaluator and a
+fake manager. It runs the governed campaign loop for three trials; each proposed
+path is checked before the fake evaluator is called, and each returned value
+passes through `adapt_evaluation` and `parse_score`. Its synthetic patch is an
+illustrative record only and does not edit or execute a task workspace. The test
+uses the harness function named `run_real_campaign` solely to exercise the
+control plane with this explicitly fake worker. This does not implement or test
+MLGym container integration.

@@ -48,3 +48,26 @@ managed by the tests and removed, and the captured console output was truncated;
 we cannot establish the exact number or outcome of all other attempted node
 runs from the retained evidence. This list is based on the reviewed test paths,
 not a complete audit of every test in the broad suite. No further runs were made.
+
+## Review finding 2 follow-up
+
+The prior generic dry worker did not call the adapter. The focused follow-up
+replaces that smoke with an injected fake evaluator and a fake-only worker. Each
+of three task-targeted proposals is checked against the node scope; the fake
+worker calls `adapt_evaluation`, which invokes `parse_score`, and the governed
+campaign writes three synthetic results and decisions. A separate check rejects
+an out-of-scope proposal before evaluating and another rejects a non-finite
+fake score. The worker writes only illustrative test artifacts, never edits a
+candidate task, and runs no model or benchmark script. The test invokes the
+control-plane function `run_real_campaign` with this fake-only worker; its name
+does not indicate real MLGym execution. The disabled `run_mlgym.py` is unchanged.
+
+Inspected, focused command only:
+
+```
+/private/tmp/paper-b-local-20261026-venv/bin/python -m pytest -q -p no:cacheprovider tests/stage2/test_track_g_mlgym.py
+```
+
+Result: 6 passed. No broad suite was run in the follow-up. This does not
+resolve the original testing incident, the broader baseline comparison, or
+container access. Real MLGym integration remains unimplemented pending G.2.
