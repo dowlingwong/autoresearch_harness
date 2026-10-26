@@ -1,0 +1,7 @@
+
+Traceback (most recent call last):
+  File "/private/var/folders/mf/cqjfz_8x7tgbhvl955fzybtr0000gn/T/tmp66v0n7fu/node/train.py", line 10, in <module>
+    from benchmark import run_benchmark
+  File "/private/var/folders/mf/cqjfz_8x7tgbhvl955fzybtr0000gn/T/tmp66v0n7fu/node/benchmark.py", line 16, in <module>
+    import numpy as np
+ModuleNotFoundError: No module named 'numpy'. Did you mean: 'runpy'?

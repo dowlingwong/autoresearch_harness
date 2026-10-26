@@ -1,0 +1,17 @@
+{
+  "name": "mlgym_battle_of_sexes",
+  "description": "Experimental MLGym Battle of Sexes scaffold, unbound to a container; no real execution is enabled.",
+  "external_benchmark": {"name": "MLGym", "task": "battleOfSexes", "repository": "https://github.com/facebookresearch/MLGym", "source_commit": "9d40c1b5035202018cd7091fb4e83a9c68b377c0", "license": "CC-BY-NC-4.0"},
+  "editable_paths": ["strategy.py"],
+  "frozen_paths": ["evaluate.py", "target.py", "run_mlgym.py", "README.md"],
+  "setup_command": "",
+  "run_command": "python3 run_mlgym.py",
+  "metric_name": "Score",
+  "metric_direction": "maximize",
+  "metric_parser": "autoresearch.nodes.mlgym_battle_of_sexes.metric_parser:parse_score",
+  "acceptance_rule": "candidate_metric > current_best_metric",
+  "validity_checks": ["metric_present", "editable_scope_only", "no_pending_trial"],
+  "failure_categories": ["scope_violation", "runtime_error", "metric_missing"],
+  "default_budget": {"trials": 3},
+  "expected_runtime": "unknown; real task execution is disabled"
+}

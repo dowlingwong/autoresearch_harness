@@ -21,6 +21,7 @@ def node_spec_path(node_name: str, repo_root: str | Path | None = None) -> Path:
         "mlp_synthetic": root / "configs" / "nodes" / "mlp_synthetic.yaml",
         "digits_mlp": root / "configs" / "nodes" / "digits_mlp.yaml",
         "tabular_mlp": root / "configs" / "nodes" / "tabular_mlp.yaml",
+        "mlgym_battle_of_sexes": root / "configs" / "nodes" / "mlgym_battle_of_sexes.yaml",
         "mlagentbench_vectorization": root / "configs" / "nodes" / "mlagentbench_vectorization.yaml",
         "openml_credit_g": root / "configs" / "nodes" / "openml_credit_g.yaml",
         "openml_bank_marketing": root / "configs" / "nodes" / "openml_bank_marketing.yaml",
