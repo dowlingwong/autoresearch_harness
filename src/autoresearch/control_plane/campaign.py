@@ -1885,6 +1885,10 @@ def run_real_campaign(
                 )
                 compute_budget = verify_result["compute_budget"]
                 control_meta = {**control_meta, "verify": verify_result["verify"]}
+                # Verify can rescue a discard or veto a keep.  The persisted
+                # cumulative count must reflect that final decision.
+                rbs = compute_repeated_bad_stats(existing_records + records + [record])
+                record = replace(record, repeated_bad_count=rbs.repeated_bad_count)
             if control_meta:
                 record = replace(record, extra={**record.extra, "control": control_meta})
             records.append(record)

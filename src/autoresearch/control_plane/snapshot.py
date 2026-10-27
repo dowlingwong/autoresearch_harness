@@ -862,7 +862,13 @@ def _complete_captured_trial(
         # its hashes before the non-keep restore below.
         captured_hashes = _evaluated_hashes()
 
-    record = _campaign.replace(record, extra={**record.extra, "control": control_meta})
+    # The committed count describes the final decision, including any verify
+    # response, over the captured prefix and this trial.
+    rbs = _campaign.compute_repeated_bad_stats(list(snapshot.ledger_prefix) + [record])
+    record = _campaign.replace(
+        record, repeated_bad_count=rbs.repeated_bad_count,
+        extra={**record.extra, "control": control_meta},
+    )
     TrialAppendStore(restored.records_path).append_many([record])
     # Commit semantics of the live loop (campaign.py): a non-keep restores the
     # incumbent's editable files; a keep pushes the incumbent onto the stack.
