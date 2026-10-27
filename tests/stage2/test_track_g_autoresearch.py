@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import dataclasses
+import importlib.util
+import shlex
 import sys
 from pathlib import Path
 
@@ -68,6 +70,44 @@ def test_three_trial_stub_campaign(tmp_path):
     )
     records = TrialAppendStore(records_path).read_all()
     assert len(records) == 3
+    assert [r.parsed_metrics["val_bpb"] for r in records] == [1.0, 0.9, 1.1]
+    assert [r.decision for r in records] == [TrialDecision.KEPT, TrialDecision.KEPT, TrialDecision.DISCARDED]
+    assert all(r.extra["scope_validation"]["valid"] for r in records)
+    assert (node / "prepare.py").read_text() == "TIME_BUDGET = 300\n"
+
+
+def test_cli_local_worker_three_trial_stub(tmp_path, monkeypatch):
+    """Exercise the CLI's local-worker route exclusively against a fake node."""
+    module_spec = importlib.util.spec_from_file_location("track_g_cli_fixture", ROOT / "scripts/run_campaign.py")
+    cli = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(cli)
+
+    node = tmp_path / "fake_node"
+    node.mkdir()
+    (node / "train.py").write_text(
+        'DEPTH = 4\nprint("val_bpb: %.2f" % {5: 1.0, 6: 0.9, 7: 1.1}[DEPTH])\n'
+    )
+    (node / "prepare.py").write_text("TIME_BUDGET = 300\n")
+    spec = load_registered_node("track_g_autoresearch", repo_root=ROOT)
+    spec = dataclasses.replace(spec, run_command=f"{shlex.quote(sys.executable)} train.py")
+    monkeypatch.setattr(cli, "load_registered_node", lambda name, repo_root: spec)
+
+    def run_fake_campaign(**kwargs):
+        assert isinstance(kwargs["worker"], LocalWorker)
+        assert kwargs["node_spec"] is spec
+        kwargs["proposal_backend"] = StubProposals()
+        return run_real_campaign(**kwargs)
+
+    monkeypatch.setattr(cli, "run_real_campaign", run_fake_campaign)
+    records_path = tmp_path / "trials.jsonl"
+    monkeypatch.setattr(sys, "argv", [
+        "run_campaign.py", "--node", "track_g_autoresearch", "--campaign-id", "fake-cli",
+        "--budget", "3", "--node-root", str(node), "--worker", "local",
+        "--records", str(records_path), "--artifacts-dir", str(tmp_path / "artifacts"),
+        "--tables-dir", str(tmp_path / "tables"), "--no-events",
+    ])
+    assert cli.main() == 0
+    records = TrialAppendStore(records_path).read_all()
     assert [r.parsed_metrics["val_bpb"] for r in records] == [1.0, 0.9, 1.1]
     assert [r.decision for r in records] == [TrialDecision.KEPT, TrialDecision.KEPT, TrialDecision.DISCARDED]
     assert all(r.extra["scope_validation"]["valid"] for r in records)
