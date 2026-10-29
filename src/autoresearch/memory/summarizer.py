@@ -25,8 +25,22 @@ class MemoryMode(StrEnum):
 # line with the fixed text below and no metric, delta, rationale or failure.
 # The display changes the proposal law, so it is recorded in every manifest.
 SKIP_DISPLAY_ONE_LINE = "one_line/v1"
-SKIP_DISPLAYS: tuple[str, ...] = (SKIP_DISPLAY_ONE_LINE,)
+# Track S (S4a display ablation, 29 Oct 2026; opt-in, ENGINEERING_ONLY):
+# ``hidden/v1`` omits control-plane skip rows from the memory lines (the other
+# rows keep their trial ids, so the numbering is unchanged); ``reason/v1``
+# shows one metric-free line whose text names the controller's skip reason.
+SKIP_DISPLAY_HIDDEN = "hidden/v1"
+SKIP_DISPLAY_REASON = "reason/v1"
+SKIP_DISPLAYS: tuple[str, ...] = (SKIP_DISPLAY_ONE_LINE, SKIP_DISPLAY_HIDDEN, SKIP_DISPLAY_REASON)
 SKIP_DISPLAY_TEXT = "skipped by the control plane: predicted no gain"
+# ``reason/v1`` texts by ``extra.control.skip_reason``.  A skip without a known
+# reason is shown without one (never mislabelled as "predicted no gain").
+SKIP_REASON_TEXTS: dict[str, str] = {
+    "rule_duplicate": "skipped by the control plane: duplicate of an evaluated configuration",
+    "rule_noop": "skipped by the control plane: no-op (active configuration unchanged)",
+    "prior_no_gain": SKIP_DISPLAY_TEXT,
+}
+SKIP_REASON_UNKNOWN_TEXT = "skipped by the control plane"
 
 
 def check_skip_display(skip_display: str | None) -> str | None:
@@ -49,6 +63,17 @@ def is_control_plane_skip(record: TrialRecord) -> bool:
 def _skip_display_line(record: TrialRecord) -> str:
     """``one_line/v1``: the trial id, the proposal summary and the fixed text; no metric."""
     return f"{record.trial_id}: summary={record.proposal_summary}; {SKIP_DISPLAY_TEXT}"
+
+
+def skip_reason_text(record: TrialRecord) -> str:
+    """The ``reason/v1`` text of a control-plane skip (by ``extra.control.skip_reason``)."""
+    reason = ((record.extra or {}).get("control") or {}).get("skip_reason")
+    return SKIP_REASON_TEXTS.get(str(reason), SKIP_REASON_UNKNOWN_TEXT) if reason is not None else SKIP_REASON_UNKNOWN_TEXT
+
+
+def _skip_reason_line(record: TrialRecord) -> str:
+    """``reason/v1``: the trial id, the proposal summary and the reason text; no metric."""
+    return f"{record.trial_id}: summary={record.proposal_summary}; {skip_reason_text(record)}"
 
 
 @dataclass(frozen=True)
@@ -93,6 +118,10 @@ def build_memory_context(
             (R1-SKIP-DISPLAY): a control-plane E1 skip is shown as one line,
             ``"<trial_id>: summary=<summary>; skipped by the control plane:
             predicted no gain"``, with no metric.  Other records are unchanged.
+            Track S (opt-in): ``"hidden/v1"`` omits control-plane skips (no
+            renumbering of the other rows); ``"reason/v1"`` shows one
+            metric-free line naming the skip reason (duplicate / no-op /
+            predicted no gain; no reason claimed when none is recorded).
     """
     memory_mode = MemoryMode(mode)
     check_skip_display(skip_display)
@@ -100,7 +129,16 @@ def build_memory_context(
     def line_of(record: TrialRecord, **kwargs) -> str:
         if skip_display == SKIP_DISPLAY_ONE_LINE and is_control_plane_skip(record):
             return _skip_display_line(record)
+        if skip_display == SKIP_DISPLAY_REASON and is_control_plane_skip(record):
+            return _skip_reason_line(record)
         return _summary_line(record, **kwargs)
+
+    # ``hidden/v1``: control-plane skips get no memory line (other rows keep their trial ids).
+    shown = (
+        [record for record in records if not is_control_plane_skip(record)]
+        if skip_display == SKIP_DISPLAY_HIDDEN
+        else records
+    )
     raw_text = "\n".join(json.dumps(record.to_dict(), sort_keys=True) for record in records)
     repeated = compute_repeated_bad_stats(records)
 
@@ -116,7 +154,7 @@ def build_memory_context(
     elif memory_mode == MemoryMode.APPEND_ONLY_SUMMARY:
         context = "\n".join(
             line_of(record, include_rationale=False, metric_name=node_spec.metric_name)
-            for record in records
+            for record in shown
         )
     else:
         lines = [
@@ -126,7 +164,7 @@ def build_memory_context(
                 rationale_max_tokens=rationale_max_tokens,
                 metric_name=node_spec.metric_name,
             )
-            for record in records
+            for record in shown
         ]
         if repeated.repeated_bad_count:
             lines.append(f"repeated_bad_warnings={','.join(repeated.flagged_trial_ids)}")

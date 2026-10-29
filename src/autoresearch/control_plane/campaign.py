@@ -1142,6 +1142,7 @@ def run_real_campaign(
     keep_prior: KeepPriorProvider | None = None,
     skip_display: str | None = None,
     proposal_observer: object | None = None,
+    controller_ledger_view: Any | None = None,
 ) -> CampaignRunResult:
     """Run a fixed-budget campaign with a real worker.
 
@@ -1207,8 +1208,20 @@ def run_real_campaign(
     control-plane E1 skip as one line without any metric
     (:func:`autoresearch.memory.summarizer.build_memory_context`).  A declared
     display is recorded in the ``campaign_started`` event and in snapshots.
+
+    **Controller ledger view (Track S, 29 Oct 2026; opt-in).**
+    *controller_ledger_view* ``None`` (default) gives every controller call the
+    ledger prefix unchanged.  A callable maps the ledger prefix to the prefix
+    the controller (and the keep-prior provider) sees; the manager's memory,
+    the ledger, the novelty flags and snapshots keep the true ledger.  It is
+    used by ``resume_campaign``'s ``ctrl_only`` arm, whose captured trial is a
+    skip in the ledger but an executed, discarded trial for the controller.
     """
     check_skip_display(skip_display)
+
+    def _controller_prefix(prefix: list[TrialRecord]) -> list[TrialRecord]:
+        return prefix if controller_ledger_view is None else list(controller_ledger_view(prefix))
+
     if action_versions is not None:
         if verify_split_policy is not None and verify_split_policy != action_versions.verify_split_policy:
             raise ValueError(
@@ -1311,7 +1324,7 @@ def run_real_campaign(
             trial_id=trial_id,
             epoch="E0",
             budget_index=budget_index,
-            ledger_prefix=existing_records + records,
+            ledger_prefix=_controller_prefix(existing_records + records),
             current_best=current_best,
             incumbent_stack_depth=len(incumbent_stack),
             proposal=None,
@@ -1543,7 +1556,7 @@ def run_real_campaign(
                     trial_id=trial_id,
                     epoch="E1",
                     budget_index=budget_index,
-                    ledger_prefix=existing_records + records,
+                    ledger_prefix=_controller_prefix(existing_records + records),
                     current_best=current_best,
                     incumbent_stack_depth=len(incumbent_stack),
                     proposal=proposal,
@@ -1613,7 +1626,7 @@ def run_real_campaign(
                                 trial_id=trial_id,
                                 epoch="E1",
                                 budget_index=budget_index,
-                                ledger_prefix=existing_records + records,
+                                ledger_prefix=_controller_prefix(existing_records + records),
                                 current_best=current_best,
                                 incumbent_stack_depth=len(incumbent_stack),
                                 proposal=proposal,
@@ -1738,7 +1751,7 @@ def run_real_campaign(
             ):
                 decision_prior = resolve_keep_prior(keep_prior, build_control_view(
                     epoch="E2", budget_index=budget_index,
-                    ledger_prefix=existing_records + records, current_best=current_best,
+                    ledger_prefix=_controller_prefix(existing_records + records), current_best=current_best,
                     incumbent_stack_depth=len(incumbent_stack), proposal=proposal,
                     provisional=record, budget=_budget_view(budget_state, compute_budget),
                     node=node_spec,
@@ -1851,7 +1864,7 @@ def run_real_campaign(
                 trial_id=trial_id,
                 epoch="E2",
                 budget_index=budget_index,
-                ledger_prefix=existing_records + records,
+                ledger_prefix=_controller_prefix(existing_records + records),
                 current_best=current_best,
                 incumbent_stack_depth=len(incumbent_stack),
                 proposal=proposal,

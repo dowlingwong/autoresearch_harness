@@ -479,6 +479,9 @@ class RestoredCampaign:
     budget_consumed: int
     compute_budget: ComputeBudget
     snapshot: CampaignSnapshot
+    # Track S arms ``ghost`` / ``ctrl_only``: the executed (non-kept) result of
+    # the captured trial, kept outside the ledger.  ``None`` otherwise.
+    shadow_record: TrialRecord | None = None
 
 
 def _build_manager(snapshot: CampaignSnapshot, manager_override: Any | None) -> Any:
@@ -619,6 +622,92 @@ class SnapshotRecorder:
 
 
 # ---------------------------------------------------------------------------
+# Arm overrides of the captured trial (Track S, 29 Oct 2026; opt-in)
+# ---------------------------------------------------------------------------
+
+E1_ARMS: tuple[str, ...] = ("skip", "execute", "ghost", "ctrl_only")
+E2_ARMS: tuple[str, ...] = ("keep", "discard")
+SHADOW_FILE = "branch_shadow.jsonl"
+
+
+@dataclass(frozen=True)
+class ArmOverride:
+    """What the captured trial of a resumed branch does (Track S fork arms).
+
+    E1 snapshots:
+
+    * ``skip`` — the trial is skipped (first action ``skip``).
+    * ``execute`` — the captured proposal runs (first action ``continue``).
+    * ``ghost`` — the worker runs and the run is debited, but the ledger gets
+      exactly the skip record a ``skip`` would write: the manager's memory,
+      the controller's view (hence its seen-set), the trial's keep and the
+      harness novelty set never see the result.  The executed result is kept
+      outside the ledger, in ``branch_shadow.jsonl`` and
+      ``ResumeResult.shadow_record``, with the decision forced to non-keep.
+    * ``ctrl_only`` — as ``ghost``, but every later controller call sees the
+      executed (non-kept) record in place of the skip record
+      (``run_real_campaign(controller_ledger_view=...)``), so the controller's
+      forecasts and its duplicate seen-set get the result.  The manager still
+      sees the skip line; the harness novelty set is not updated.
+
+    E2 snapshots: ``keep`` / ``discard`` force the captured trial's keep
+    decision (only that trial; later trials follow the policy).
+
+    ``skip_reason`` is written into the skip record's ``extra.control`` of the
+    ``skip``, ``ghost`` and ``ctrl_only`` arms (it is what a ``reason/v1``
+    display shows; ``one_line/v1`` and the historical display ignore it).
+    Every arm is recorded as ``extra.control.arm``.
+    """
+
+    arm: str
+    skip_reason: str | None = "prior_no_gain"
+
+    def __post_init__(self) -> None:
+        if self.arm not in E1_ARMS + E2_ARMS:
+            raise ValueError(f"unknown arm {self.arm!r}; declared: {E1_ARMS + E2_ARMS}")
+
+    @property
+    def epoch(self) -> str:
+        return "E1" if self.arm in E1_ARMS else "E2"
+
+    @property
+    def first_action(self) -> str:
+        return "skip" if self.arm == "skip" else "continue"
+
+    @property
+    def hides_result(self) -> bool:
+        return self.arm in ("ghost", "ctrl_only")
+
+
+def _as_arm(arm: "ArmOverride | str | None") -> "ArmOverride | None":
+    if arm is None or isinstance(arm, ArmOverride):
+        return arm
+    return ArmOverride(arm=str(arm))
+
+
+def _forced_decision(record: TrialRecord, *, keep: bool, arm: str, metric_name: str) -> TrialRecord:
+    """*record* with its keep decision forced by an arm (valid trials only for a keep)."""
+    from autoresearch.memory.schemas import FailureCategory, ValidityStatus
+
+    original = record.decision
+    if record.validity_status != ValidityStatus.VALID or metric_name not in record.parsed_metrics:
+        if keep:
+            raise ValueError(f"arm {arm!r} cannot keep an invalid trial")
+        return _campaign.replace(record, extra={**record.extra, "arm_override": {
+            "arm": arm, "original_decision": original.value, "forced": False}})
+    if keep:
+        decision, failure = TrialDecision.KEPT, None
+        rationale = f"Keep forced by branch arm {arm!r} (original decision: {original.value})."
+    else:
+        decision, failure = TrialDecision.DISCARDED, FailureCategory.DEGRADED_METRIC
+        rationale = f"Non-keep forced by branch arm {arm!r} (original decision: {original.value})."
+    return _campaign.replace(
+        record, decision=decision, failure_category=failure, decision_rationale=rationale,
+        extra={**record.extra, "arm_override": {"arm": arm, "original_decision": original.value, "forced": True}},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Resume
 # ---------------------------------------------------------------------------
 
@@ -706,8 +795,16 @@ def _complete_captured_trial(
     event_store: object | None = None,
     action_versions: Any | None = None,
     keep_prior: Any | None = None,
+    arm: ArmOverride | None = None,
 ) -> tuple[TrialRecord, tuple[str, str] | None]:
     """Execute the captured epoch's forced first action and append one record.
+
+    *arm* (Track S, optional) overrides the captured trial as described in
+    :class:`ArmOverride`; ``None`` is the historical behaviour.  For
+    ``ghost``/``ctrl_only`` the executed result is stored in
+    ``restored.shadow_record`` and ``branch_shadow.jsonl``, the returned record
+    is the ledger's skip record and no evaluated hashes are returned (the
+    harness novelty set does not see the configuration).
 
     At E1 the captured proposal is replayed through the worker (the manager is
     *not* called again for it).  At E2 the worker already ran, so the captured
@@ -760,6 +857,15 @@ def _complete_captured_trial(
         root=restored.into_dir, contents=dict(snapshot.incumbent_files)
     )
     control_meta: dict[str, Any] = {"epoch": snapshot.epoch, "action": effective, "resumed": True}
+    if arm is not None:
+        if effective != arm.first_action:
+            raise ValueError(f"arm {arm.arm!r} needs first action {arm.first_action!r}; the mask gave {effective!r}")
+        if arm.hides_result:
+            # The ledger (manager memory, controller view) sees exactly a skip.
+            control_meta["action"] = "skip"
+        control_meta["arm"] = arm.arm
+        if (arm.arm == "skip" or arm.hides_result) and arm.skip_reason is not None:
+            control_meta["skip_reason"] = arm.skip_reason
     ts_start = _campaign._iso_now()
 
     def _evaluated_hashes() -> tuple[str, str] | None:
@@ -861,7 +967,23 @@ def _complete_captured_trial(
         # The worker just left the evaluated candidate in the workspace; take
         # its hashes before the non-keep restore below.
         captured_hashes = _evaluated_hashes()
+        if arm is not None and arm.hides_result:
+            # Track S ghost / ctrl_only: the run happened and is debited; its
+            # result leaves the ledger.  The shadow is the executed record with a
+            # forced non-keep; the ledger gets the skip record a skip writes.
+            shadow = _forced_decision(record, keep=False, arm=arm.arm, metric_name=node_spec.metric_name)
+            shadow = _campaign.replace(shadow, extra={**shadow.extra, "control": {**control_meta, "action": "continue"}})
+            restored.shadow_record = shadow
+            TrialAppendStore(restored.into_dir / SHADOW_FILE).append_many([shadow])
+            record = _campaign._skipped_record(
+                campaign_id=campaign_id, budget_index=budget_index, node_spec=node_spec,
+                proposal=proposal, memory_mode=snapshot.memory_mode, current_best=restored.current_best,
+                timestamp_start=ts_start, timestamp_end=_campaign._iso_now(), control=control_meta,
+            )
+            captured_hashes = None
 
+    if arm is not None and arm.epoch == "E2":
+        record = _forced_decision(record, keep=arm.arm == "keep", arm=arm.arm, metric_name=node_spec.metric_name)
     record = _campaign.replace(record, extra={**record.extra, "control": control_meta})
     TrialAppendStore(restored.records_path).append_many([record])
     # Commit semantics of the live loop (campaign.py): a non-keep restores the
@@ -880,7 +1002,8 @@ def _complete_captured_trial(
     if event_store is not None:
         _campaign.emit(
             event_store, campaign_id=campaign_id, trial_id=trial_id,
-            event_type="branch_trial_committed", payload={"action": effective, "epoch": snapshot.epoch},
+            event_type="branch_trial_committed",
+            payload={"action": effective, "epoch": snapshot.epoch, **({"arm": arm.arm} if arm is not None else {})},
         )
     return record, captured_hashes
 
@@ -890,18 +1013,21 @@ class ResumeResult:
     restored: RestoredCampaign
     first_record: TrialRecord | None
     continuation: Any
+    # Track S ghost / ctrl_only: the captured trial's executed result (outside the ledger).
+    shadow_record: TrialRecord | None = None
 
 
 def resume_campaign(
     snapshot: CampaignSnapshot,
     into_dir: str | Path,
     *,
-    first_action: str,
+    first_action: str | None = None,
     policy: Controller | None = None,
     horizon: int = 0,
     worker: Any | None = None,
     manager: Any | None = None,
     keep_prior: Any | None = None,
+    arm: ArmOverride | str | None = None,
 ) -> ResumeResult:
     """Restore *snapshot* into a fresh dir and continue it.
 
@@ -913,7 +1039,22 @@ def resume_campaign(
     mask forbids it); then *policy* runs for *horizon* further trials.  At E1
     or E2 the captured proposal is used and the manager is not called again for
     it.
+
+    *arm* (Track S, 29 Oct 2026; optional) overrides the captured trial with
+    one of the fork arms of :class:`ArmOverride` (``skip``/``execute``/
+    ``ghost``/``ctrl_only`` at E1, ``keep``/``discard`` at E2) and implies the
+    first action; *first_action* may then be omitted (if given it must agree).
+    Without *arm* every path is the historical one.
     """
+    arm = _as_arm(arm)
+    if arm is not None:
+        if arm.epoch != snapshot.epoch:
+            raise ValueError(f"arm {arm.arm!r} is an {arm.epoch} arm; the snapshot is at {snapshot.epoch}")
+        if first_action is not None and first_action != arm.first_action:
+            raise ValueError(f"first_action={first_action!r} contradicts arm {arm.arm!r} ({arm.first_action!r})")
+        first_action = arm.first_action
+    if first_action is None:
+        raise ValueError("resume_campaign needs first_action or arm")
     restored = restore_snapshot(snapshot, into_dir, worker=worker, manager=manager)
     event_store = CampaignEventStore(restored.events_path)
     action_versions = (
@@ -967,7 +1108,16 @@ def resume_campaign(
     first_record, captured_hashes = _complete_captured_trial(
         restored, first_action=first_action, event_store=event_store,
         action_versions=action_versions, keep_prior=keep_prior,
+        **({"arm": arm} if arm is not None else {}),
     )
+    if arm is not None and arm.arm == "ctrl_only" and restored.shadow_record is not None:
+        # Every later controller call sees the executed (non-kept) record in place of the skip record.
+        shadow = restored.shadow_record
+
+        def _ctrl_only_view(prefix: list[TrialRecord]) -> list[TrialRecord]:
+            return [shadow if record.trial_id == shadow.trial_id else record for record in prefix]
+
+        versions_kwargs["controller_ledger_view"] = _ctrl_only_view
     continuation = None
     # Review F9: the captured trial was evaluated inside this resumed segment.
     # Count its configuration among the ones seen before the continuation, so
@@ -1004,7 +1154,8 @@ def resume_campaign(
             **resume_seeds,
             **versions_kwargs,
         )
-    return ResumeResult(restored=restored, first_record=first_record, continuation=continuation)
+    return ResumeResult(restored=restored, first_record=first_record, continuation=continuation,
+                        shadow_record=restored.shadow_record)
 
 
 AUDIT_SCHEMA = "r1.restore_audit/1"
