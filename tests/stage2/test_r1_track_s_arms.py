@@ -417,3 +417,29 @@ class TestSkipDisplays(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSeedKey(unittest.TestCase):
+    def _seeds(self, campaign_id, **kwargs):
+        from autoresearch.manager.base import ManagerStatus
+        from autoresearch.manager.langgraph_manager import manager_seed
+        spec = load_registered_node(NODE, repo_root=ROOT)
+        llm = PromptLLM()
+        manager = LangGraphManager(llm=llm, repetition=3, **kwargs)
+        status = ManagerStatus(campaign_id=campaign_id, budget_index=5, current_best_metric=0.9,
+                               metric_name=spec.metric_name, metric_direction=spec.metric_direction,
+                               current_constants={"ALPHA": "1e-4"})
+        context = build_memory_context([], MemoryMode.NONE, spec, 5)
+        manager.propose_next_trial(status, context, spec)
+        return llm.calls[0][1], manager_seed
+
+    def test_default_seed_is_keyed_by_the_campaign_id(self) -> None:
+        seed, manager_seed = self._seeds("policy-a")
+        self.assertEqual(seed, manager_seed("policy-a", 5, 3, 0))
+
+    def test_seed_key_overrides_the_campaign_id(self) -> None:
+        a, manager_seed = self._seeds("policy-a", seed_key="instance-7")
+        b, _ = self._seeds("policy-b", seed_key="instance-7")
+        self.assertEqual(a, b)
+        self.assertEqual(a, manager_seed("instance-7", 5, 3, 0))
+        self.assertNotEqual(a, manager_seed("policy-a", 5, 3, 0))

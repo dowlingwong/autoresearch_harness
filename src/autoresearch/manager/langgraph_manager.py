@@ -404,6 +404,7 @@ class LangGraphManager:
         transport_retry: TransportRetryPolicy | None = DEFAULT_POLICY,
         sleep: Any = None,
         proposal_schema: str | None = None,
+        seed_key: str | None = None,
     ) -> None:
         if proposal_schema is not None:
             manager_response_format(proposal_schema)
@@ -415,6 +416,10 @@ class LangGraphManager:
         # D26: repetition index used in the deterministic per-call seed.  The
         # default 0 is the root campaign; branch repetitions set it.
         self._repetition = int(repetition)
+        # Track S (29 Oct 2026; opt-in): the key of the D26 seed in place of the
+        # campaign id, so campaigns of one instance under different policies
+        # draw the same seeds at the same repetition.  ``None`` = the campaign id.
+        self._seed_key = seed_key
         # Bounded transport retry (19 Oct 2026): up to 3 attempts for
         # transport/server-loss errors only.  ``None`` or ``max_attempts=1``
         # is the historical no-retry behaviour.
@@ -458,7 +463,7 @@ class LangGraphManager:
         revision is not a repeat of the rejected call under the same seed.
         """
         seed = manager_seed(
-            status.campaign_id,
+            self._seed_key if self._seed_key is not None else status.campaign_id,
             status.budget_index,
             self._repetition,
             int(revision_attempt or 0),
