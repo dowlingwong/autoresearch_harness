@@ -139,9 +139,17 @@ class LangChainProposalBackend:
 
 
 def _build_chat_model(config: LLMConfig, temperature: float, seed: int | None = None,
-                      *, response_format: dict | None = None) -> Any:
+                      *, response_format: dict | None = None, cache_prompt: bool | None = None) -> Any:
+    """``cache_prompt`` (Track S, 30 Oct 2026; opt-in, llamacpp only): sent as llama-server's request field
+    ``cache_prompt``. ``False`` makes the server re-process the whole prompt instead of reusing the slot's KV
+    prefix from the previous request, so a repeated call does not depend on its predecessor (bit-identical
+    replays). ``None`` (default) sends no field: the request body is unchanged."""
     if response_format is not None and config.provider != "llamacpp":
         raise ValueError("manager_proposal/v1 decoding requires the llamacpp provider")
+    if cache_prompt is not None and config.provider != "llamacpp":
+        raise ValueError("cache_prompt is a llama-server request field (llamacpp provider only)")
+    if cache_prompt is not None and not isinstance(cache_prompt, bool):
+        raise TypeError("cache_prompt must be True, False or None")
     if config.provider in {"legacy", "ollama"}:
         try:
             from langchain_ollama import ChatOllama
@@ -184,6 +192,9 @@ def _build_chat_model(config: LLMConfig, temperature: float, seed: int | None = 
             kwargs["max_retries"] = 0
             if response_format is not None:
                 kwargs["model_kwargs"] = {"response_format": response_format}
+            if cache_prompt is not None:
+                # extra_body: the OpenAI client merges it into the JSON body at the top level.
+                kwargs["extra_body"] = {"cache_prompt": cache_prompt}
         if config.provider == "deepseek":
             thinking = os.environ.get("DEEPSEEK_THINKING", "").strip().lower()
             if thinking:

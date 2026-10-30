@@ -38,6 +38,9 @@ from autoresearch.nodes.registry import load_registered_node
 ROOT = Path(__file__).resolve().parents[2]
 GOOD = json.dumps({"summary": "s", "rationale": "r", "objective": "o", "param": "x", "new_value": "1"})
 FAST = TransportRetryPolicy(max_attempts=3, backoff_seconds=(0.0, 0.0))
+# openai < 3 raises APIConnectionError; openai 3.x (the Track S host pin, 3.41.0) its subclass-like
+# OpenAIConnectionError. The transport classification is what matters; either class name is accepted.
+CONNECTION_ERROR_TYPES = {"APIConnectionError", "OpenAIConnectionError"}
 NO_KEYS = {k: v for k, v in os.environ.items()
            if k not in ("OPENAI_API_KEY", "LLAMACPP_API_KEY", "OPENAI_BASE_URL", "LLAMACPP_BASE_URL")}
 
@@ -160,7 +163,7 @@ class TestLlamaCppManagerRequests(unittest.TestCase):
         self.assertEqual([r["body"]["seed"] for r in requests], [self.seed, self.seed])
         attempts = proposal.extra["llm_call"]["transport_attempts"]
         self.assertEqual([a["error_class"] for a in attempts], ["server_disconnected", None])
-        self.assertEqual(attempts[0]["error_type"], "APIConnectionError")
+        self.assertIn(attempts[0]["error_type"], CONNECTION_ERROR_TYPES)
 
     def test_server_5xx_is_a_transport_error(self):
         with _Server(["503", "503", "503"]) as url:
@@ -179,7 +182,7 @@ class TestLlamaCppManagerRequests(unittest.TestCase):
         attempts = ctx.exception.llm_call_attempts
         self.assertEqual(len(attempts), 3)
         self.assertEqual({a["error_class"] for a in attempts}, {"connection_refused"})  # as for Ollama
-        self.assertEqual({a["error_type"] for a in attempts}, {"APIConnectionError"})
+        self.assertLessEqual({a["error_type"] for a in attempts}, CONNECTION_ERROR_TYPES)
 
     def test_openai_timeouts_and_client_errors_are_not_retried(self):
         import httpx

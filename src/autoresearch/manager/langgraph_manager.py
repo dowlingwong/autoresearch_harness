@@ -405,9 +405,12 @@ class LangGraphManager:
         sleep: Any = None,
         proposal_schema: str | None = None,
         seed_key: str | None = None,
+        cache_prompt: bool | None = None,
     ) -> None:
         if proposal_schema is not None:
             manager_response_format(proposal_schema)
+        if cache_prompt is not None and not isinstance(cache_prompt, bool):
+            raise TypeError("cache_prompt must be True, False or None")
         self.schema_version = proposal_schema
         self._injected_llm = llm
         self._model = model
@@ -420,6 +423,10 @@ class LangGraphManager:
         # campaign id, so campaigns of one instance under different policies
         # draw the same seeds at the same repetition.  ``None`` = the campaign id.
         self._seed_key = seed_key
+        # Track S (30 Oct 2026; opt-in, llamacpp only): llama-server's ``cache_prompt``
+        # request field; False = no KV-prefix reuse across calls (bit-identical
+        # replays).  ``None`` = no field sent, the historical request body.
+        self._cache_prompt = cache_prompt
         # Bounded transport retry (19 Oct 2026): up to 3 attempts for
         # transport/server-loss errors only.  ``None`` or ``max_attempts=1``
         # is the historical no-retry behaviour.
@@ -435,6 +442,7 @@ class LangGraphManager:
             host=cfg.get("host", "http://localhost:11434"),
             temperature=cfg.get("temperature", 0.2),
             proposal_schema=cfg.get("proposal_schema"),
+            cache_prompt=cfg.get("cache_prompt"),
         )
 
     # ------------------------------------------------------------------
@@ -566,6 +574,8 @@ class LangGraphManager:
                 "response_chars": len(content),
                 "seed": seed,
             }
+            if self._cache_prompt is not None:
+                llm_meta["cache_prompt"] = self._cache_prompt
             if self.schema_version:
                 usage = getattr(response, "usage_metadata", None) or {}
                 token_usage = (getattr(response, "response_metadata", None) or {}).get("token_usage") or {}
@@ -606,4 +616,6 @@ class LangGraphManager:
             # the pre-D26 unseeded behaviour for that provider (review F6).
             seed = None
         kwargs = {"response_format": manager_response_format(self.schema_version)} if self.schema_version else {}
+        if self._cache_prompt is not None:
+            kwargs["cache_prompt"] = self._cache_prompt
         return _build_chat_model(config, self._temperature, seed=seed, **kwargs)
