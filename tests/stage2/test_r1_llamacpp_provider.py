@@ -38,8 +38,9 @@ from autoresearch.nodes.registry import load_registered_node
 ROOT = Path(__file__).resolve().parents[2]
 GOOD = json.dumps({"summary": "s", "rationale": "r", "objective": "o", "param": "x", "new_value": "1"})
 FAST = TransportRetryPolicy(max_attempts=3, backoff_seconds=(0.0, 0.0))
-# openai < 3 raises APIConnectionError; openai 3.x (the Track S host pin, 3.41.0) its subclass-like
-# OpenAIConnectionError. The transport classification is what matters; either class name is accepted.
+# The client error's class name depends on the library versions: openai's APIConnectionError, or
+# langchain-openai 1.7.x's OpenAIConnectionError wrapper (the Track S host pin, langchain-openai 1.7.3).
+# The transport classification is what matters; either class name is accepted.
 CONNECTION_ERROR_TYPES = {"APIConnectionError", "OpenAIConnectionError"}
 NO_KEYS = {k: v for k, v in os.environ.items()
            if k not in ("OPENAI_API_KEY", "LLAMACPP_API_KEY", "OPENAI_BASE_URL", "LLAMACPP_BASE_URL")}

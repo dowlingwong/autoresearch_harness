@@ -95,6 +95,23 @@ class TestCachePromptValidation(unittest.TestCase):
                     with self.assertRaises(TypeError):
                         LangGraphManager(model="llamacpp/qwen", cache_prompt=bad)
 
+    def test_manager_refuses_non_llamacpp_models_at_construction(self):
+        with mock.patch.dict(os.environ, NO_KEYS, clear=True):
+            for model in ("ollama/qwen2.5-coder:7b", "qwen2.5-coder:7b", "openai/gpt-4.1"):
+                with self.subTest(model=model):
+                    with self.assertRaises(ValueError):
+                        LangGraphManager(model=model, cache_prompt=False)
+            LangGraphManager(model="ollama/qwen2.5-coder:7b")   # unset: unchanged
+
+    def test_injected_llm_records_no_cache_prompt(self):
+        # An injected LLM (the --llm-stub path) is not built by _build_chat_model, so nothing is sent and
+        # nothing may be recorded.
+        from tests.stage2.test_r1_d26_seed import _SeedRecordingLLM, _response
+        spec = load_registered_node("lr_synthetic", repo_root=ROOT)
+        manager = LangGraphManager(llm=_SeedRecordingLLM(_response()), cache_prompt=False)
+        proposal = _propose(manager, spec)
+        self.assertNotIn("cache_prompt", proposal.extra["llm_call"])
+
     def test_unset_leaves_the_client_without_extra_body(self):
         with mock.patch.dict(os.environ, NO_KEYS, clear=True):
             llm = _build_chat_model(resolve_llm_config("llamacpp/qwen"), 0.2, seed=1)

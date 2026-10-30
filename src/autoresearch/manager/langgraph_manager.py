@@ -411,6 +411,8 @@ class LangGraphManager:
             manager_response_format(proposal_schema)
         if cache_prompt is not None and not isinstance(cache_prompt, bool):
             raise TypeError("cache_prompt must be True, False or None")
+        if cache_prompt is not None and llm is None and resolve_llm_config(model).provider != "llamacpp":
+            raise ValueError("cache_prompt is a llama-server request field (llamacpp/<model> only)")
         self.schema_version = proposal_schema
         self._injected_llm = llm
         self._model = model
@@ -574,7 +576,8 @@ class LangGraphManager:
                 "response_chars": len(content),
                 "seed": seed,
             }
-            if self._cache_prompt is not None:
+            if self._cache_prompt is not None and self._injected_llm is None:
+                # Recorded only when the client was built here (an injected LLM sends no such field).
                 llm_meta["cache_prompt"] = self._cache_prompt
             if self.schema_version:
                 usage = getattr(response, "usage_metadata", None) or {}
