@@ -485,6 +485,9 @@ class LangGraphManager:
             if getattr(exc, "llm_call_attempts", None) is not None:
                 try:
                     exc.llm_call_seed = seed  # type: ignore[attr-defined]
+                    # R1-CACHEPROMPT-FALSE (31 Oct 2026): the failed-call record states the setting too.
+                    if self._injected_llm is None:
+                        exc.llm_call_cache_prompt = resolve_llm_config(self._model).cache_prompt  # type: ignore[attr-defined]
                 except Exception:  # pragma: no cover
                     pass
             raise

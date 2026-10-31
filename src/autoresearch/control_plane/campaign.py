@@ -343,6 +343,9 @@ def _propose_logged(
                     "transport_attempts": list(attempts),
                     "transport_retry_policy": getattr(exc, "llm_call_retry_policy", None),
                     "seed": getattr(exc, "llm_call_seed", None),
+                    # R1-CACHEPROMPT-FALSE: recorded only when the backend carries the setting.
+                    **({"cache_prompt": exc.llm_call_cache_prompt}
+                       if getattr(exc, "llm_call_cache_prompt", None) is not None else {}),
                 },
             )
         raise
