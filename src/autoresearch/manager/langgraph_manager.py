@@ -567,8 +567,11 @@ class LangGraphManager:
                 "completion_tokens": completion_tokens,
                 "response_chars": len(content),
                 "seed": seed,
-                "cache_prompt": llm_cache_prompt,
             }
+            # R1-CACHEPROMPT-FALSE: recorded only when the backend actually carries the setting, so a
+            # provider that does not (or an injected stub) does not gain a misleading null.
+            if llm_cache_prompt is not None:
+                llm_meta["cache_prompt"] = llm_cache_prompt
             if self.schema_version:
                 usage = getattr(response, "usage_metadata", None) or {}
                 token_usage = (getattr(response, "response_metadata", None) or {}).get("token_usage") or {}

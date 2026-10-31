@@ -83,7 +83,9 @@ class LangChainProposalBackend:
                 "provider": self.config.provider,
                 "model_name": self.config.model_name,
                 "base_url": self.config.base_url,
-                "cache_prompt": self.config.cache_prompt,
+                # R1-CACHEPROMPT-FALSE: recorded only when this backend really sends it.
+                **({"cache_prompt": self.config.cache_prompt}
+                   if (self._llm is None and self.config.cache_prompt is not None) else {}),
                 "prompt_sha256": sha256(prompt.encode("utf-8")).hexdigest(),
                 "raw_response_sha256": sha256(response_text.encode("utf-8")).hexdigest(),
                 "raw_response_chars": len(response_text),

@@ -166,13 +166,49 @@ class TestCachePromptOnEveryRequestPath(unittest.TestCase):
         self.assertIs(_StandIn.requests[0]["body"]["cache_prompt"], True)
         self.assertIs(proposal.extra["llm_call"]["cache_prompt"], True)
 
-    def test_injected_llm_records_none(self):
-        # An injected stub never sends the field; the record must not claim a value it did not use.
+    def test_injected_llm_records_nothing(self):
+        # An injected stub never sends the field, so the record must omit the key rather than claim a value.
         from types import SimpleNamespace
         manager = LangGraphManager(model="llamacpp/qwen-manager", transport_retry=FAST,
                                    llm=SimpleNamespace(invoke=lambda messages, **kw: SimpleNamespace(content=GOOD)))
         proposal = self._propose(manager)
-        self.assertIsNone(proposal.extra["llm_call"]["cache_prompt"])
+        self.assertNotIn("cache_prompt", proposal.extra["llm_call"])
+
+    def test_manager_proposal_schema_variant_carries_it_on_the_wire(self):
+        # C3 uses the manager_proposal/v1 response_format; the field must ride along with it.
+        from autoresearch.llm.providers import manager_response_format
+        from types import SimpleNamespace
+        schema_manager = LangGraphManager(model="llamacpp/qwen-manager", transport_retry=FAST,
+                                          proposal_schema="manager_proposal/v1")
+        with _Server() as url:
+            env = dict(NO_KEYS, LLAMACPP_BASE_URL=url)
+            with mock.patch.dict(os.environ, env, clear=True):
+                self._propose(schema_manager)
+        body = _StandIn.requests[0]["body"]
+        self.assertIs(body["cache_prompt"], False)
+        self.assertEqual(body["response_format"]["json_schema"]["name"], "manager_proposal_v1")
+
+    def test_the_llm_call_event_persists_the_value(self):
+        # R7: not just proposal.extra -- the emitted llm_call event payload must carry it.
+        import json as _json
+        from autoresearch.control_plane.campaign import _emit_llm_call
+        from autoresearch.manager.base import ManagerProposal
+
+        class _Store:
+            def __init__(self):
+                self.events = []
+
+            def append(self, event):
+                self.events.append(event)
+
+        store = _Store()
+        proposal = ManagerProposal(manager_mode="langgraph_manager", proposal_summary="s",
+                                   proposal_rationale="r", target_files=[], objective="o",
+                                   extra={"llm_call": {"seed": 1, "cache_prompt": False}})
+        _emit_llm_call(store, campaign_id="c", trial_id="t", proposal=proposal)
+        event = store.events[-1]
+        self.assertEqual(event.event_type, "llm_call")
+        self.assertIs(event.payload["cache_prompt"], False)
 
     def test_side_query_backend_carries_it(self):
         # The proposal-backend / side-query path builds its own model from the same config.
