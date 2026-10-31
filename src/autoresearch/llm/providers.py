@@ -11,6 +11,10 @@ class LLMConfig:
     base_url: str
     api_key: str
     model_id: str
+    # R1-CACHEPROMPT-FALSE (31 Oct 2026): llama-server's prompt cache is on by default and makes
+    # run-to-run output non-identical, so the value is now explicit. ``None`` = the provider does not
+    # carry the setting (everything except ``llamacpp``).
+    cache_prompt: bool | None = None
 
 
 MANAGER_PROPOSAL_SCHEMA_VERSION = "manager_proposal/v1"
@@ -37,6 +41,22 @@ _LOCAL_PROVIDERS = {
 # Placeholder key for local OpenAI-compatible servers that need none (llama-server
 # without ``--api-key``): the OpenAI client refuses to start without some key.
 LOCAL_NO_KEY = "sk-no-key-required"
+
+# R1-CACHEPROMPT-FALSE (31 Oct 2026): ``cache_prompt`` is sent explicitly on every llama-server
+# request. The default is ``False`` because llama-server's prompt cache otherwise reuses the slot's KV
+# prefix from the previous request, so identical (prompt, seed) calls are not bit-identical. Set
+# ``LLAMACPP_CACHE_PROMPT=true`` to opt back into the server default.
+LLAMACPP_CACHE_PROMPT_ENV = "LLAMACPP_CACHE_PROMPT"
+
+
+def llamacpp_cache_prompt() -> bool:
+    """The ``cache_prompt`` value for the llamacpp provider (default ``False``)."""
+    raw = os.environ.get(LLAMACPP_CACHE_PROMPT_ENV, "").strip().lower()
+    if raw in {"", "0", "false", "no", "off"}:
+        return False
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    raise ValueError(f"{LLAMACPP_CACHE_PROMPT_ENV} must be a boolean (true/false), got {raw!r}")
 
 
 def openai_v1_base_url(base_url: str) -> str:
@@ -98,6 +118,7 @@ def resolve_llm_config(model_id: str) -> LLMConfig:
             base_url=base_url,
             api_key=api_key,
             model_id=raw,
+            cache_prompt=llamacpp_cache_prompt() if prefix == "llamacpp" else None,
         )
 
     if prefix in _CLOUD_PROVIDERS:

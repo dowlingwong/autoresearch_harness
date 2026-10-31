@@ -528,6 +528,8 @@ class LangGraphManager:
             ) from exc
 
         llm = self._resolve_llm()
+        # R1-CACHEPROMPT-FALSE (31 Oct 2026): the value the real backend sends, recorded per call.
+        llm_cache_prompt = None if self._injected_llm is not None else resolve_llm_config(self._model).cache_prompt
 
         def _generate_proposal(state: _PlanState) -> _PlanState:
             from langchain_core.messages import HumanMessage
@@ -565,6 +567,7 @@ class LangGraphManager:
                 "completion_tokens": completion_tokens,
                 "response_chars": len(content),
                 "seed": seed,
+                "cache_prompt": llm_cache_prompt,
             }
             if self.schema_version:
                 usage = getattr(response, "usage_metadata", None) or {}

@@ -83,6 +83,7 @@ class LangChainProposalBackend:
                 "provider": self.config.provider,
                 "model_name": self.config.model_name,
                 "base_url": self.config.base_url,
+                "cache_prompt": self.config.cache_prompt,
                 "prompt_sha256": sha256(prompt.encode("utf-8")).hexdigest(),
                 "raw_response_sha256": sha256(response_text.encode("utf-8")).hexdigest(),
                 "raw_response_chars": len(response_text),
@@ -184,6 +185,16 @@ def _build_chat_model(config: LLMConfig, temperature: float, seed: int | None = 
             kwargs["max_retries"] = 0
             if response_format is not None:
                 kwargs["model_kwargs"] = {"response_format": response_format}
+            # R1-CACHEPROMPT-FALSE (31 Oct 2026): llama-server defaults ``cache_prompt`` to true, which
+            # makes identical (prompt, seed) calls non-identical, so the explicit value rides in
+            # ``extra_body`` -- the OpenAI SDK merges it into the JSON body of every request, including
+            # transport retries and any side query built from this model. (It must NOT go through
+            # ``model_kwargs``: those are passed as ``create()`` keyword arguments and an unknown name
+            # raises ``TypeError``.)
+            if config.cache_prompt is not None:
+                extra_body: dict[str, Any] = dict(kwargs.get("extra_body") or {})
+                extra_body["cache_prompt"] = bool(config.cache_prompt)
+                kwargs["extra_body"] = extra_body
         if config.provider == "deepseek":
             thinking = os.environ.get("DEEPSEEK_THINKING", "").strip().lower()
             if thinking:
