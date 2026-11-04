@@ -29,6 +29,70 @@ class BudgetSpec:
         return asdict(self)
 
 
+FIXED_BUDGET_KINDS = ("steps", "tokens")
+FIXED_BUDGET_ENV = {"steps": "AR_FIXED_STEPS", "tokens": "AR_FIXED_TOKENS"}
+
+
+@dataclass(frozen=True)
+class FixedBudgetSpec:
+    """Track G (R1-BX-D5): a run's training budget as a fixed step or token count, never wall-clock.
+
+    The worker passes ``value`` to the node's run command in the environment
+    variable ``env`` (default ``AR_FIXED_STEPS`` / ``AR_FIXED_TOKENS``); the
+    node's fixed-budget wrapper honours it and prints ``budget_reached: <n>``
+    when it has spent the budget.
+    """
+
+    kind: str
+    value: int
+    env: str = ""
+
+    @classmethod
+    def from_mapping(cls, payload: dict[str, Any]) -> "FixedBudgetSpec":
+        if not isinstance(payload, dict):
+            raise NodeSpecError("fixed_budget must be a mapping")
+        kind = str(payload.get("kind", ""))
+        if kind not in FIXED_BUDGET_KINDS:
+            raise NodeSpecError(
+                f"fixed_budget.kind must be one of {FIXED_BUDGET_KINDS} (never wall-clock), got {kind!r}"
+            )
+        unknown = set(payload) - {"kind", "value", "env"}
+        if unknown:
+            raise NodeSpecError(f"fixed_budget has unknown keys: {sorted(unknown)}")
+        raw = payload.get("value")
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+            raise NodeSpecError("fixed_budget.value must be an int >= 1")
+        env = str(payload.get("env") or FIXED_BUDGET_ENV[kind])
+        return cls(kind=kind, value=int(raw), env=env)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class SelectionSpec:
+    """Track G (R1-TRACKG-ROLE): which split selection may use; test metrics are never selection inputs."""
+
+    split: str = "validation"
+    test_metric_names: tuple[str, ...] = ()
+
+    @classmethod
+    def from_mapping(cls, payload: dict[str, Any]) -> "SelectionSpec":
+        if not isinstance(payload, dict):
+            raise NodeSpecError("selection must be a mapping")
+        unknown = set(payload) - {"split", "test_metric_names"}
+        if unknown:
+            raise NodeSpecError(f"selection has unknown keys: {sorted(unknown)}")
+        split = str(payload.get("split", "validation"))
+        if split != "validation":
+            raise NodeSpecError("selection.split must be 'validation' (test-scored tasks select on validation only)")
+        names = tuple(str(name).lower() for name in payload.get("test_metric_names", ()))
+        return cls(split=split, test_metric_names=names)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"split": self.split, "test_metric_names": list(self.test_metric_names)}
+
+
 @dataclass(frozen=True)
 class NodeSpec:
     name: str
@@ -53,6 +117,13 @@ class NodeSpec:
     # current ``model_type`` and exclude keys at dataset level.  Kept out of
     # ``to_dict`` when empty so hashes of undeclared nodes do not drift.
     active_keys: dict[str, object] | None = None
+    # Track G (M10, 4 Nov 2026): optional T1/T2 node fields.  Each is kept out
+    # of ``to_dict`` when unset, so T0 node-spec and research-context hashes do
+    # not drift.  ``loss_names`` are the log keys the base metric parser checks
+    # for non-finite values (divergence, R1-BX-REVISIONS (c)).
+    fixed_budget: FixedBudgetSpec | None = None
+    selection: SelectionSpec | None = None
+    loss_names: tuple[str, ...] = field(default_factory=tuple)
 
     @classmethod
     def from_mapping(cls, payload: dict[str, Any]) -> "NodeSpec":
@@ -105,6 +176,17 @@ class NodeSpec:
             branch_state_paths=tuple(str(path) for path in payload.get("branch_state_paths", ())),
             held_out=bool(payload.get("held_out", False)),
             active_keys=_active_keys_from_mapping(payload.get("active_keys")),
+            fixed_budget=(
+                FixedBudgetSpec.from_mapping(payload["fixed_budget"])
+                if payload.get("fixed_budget") is not None
+                else None
+            ),
+            selection=(
+                SelectionSpec.from_mapping(payload["selection"])
+                if payload.get("selection") is not None
+                else None
+            ),
+            loss_names=tuple(str(name).lower() for name in payload.get("loss_names", ())),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -120,6 +202,19 @@ class NodeSpec:
             # D25: an undeclared (or empty) declaration must not change
             # node-spec hashes or research-context hashes.
             payload.pop("active_keys", None)
+        # Track G fields: absent unless declared (T0 hashes unchanged).
+        if self.fixed_budget is None:
+            payload.pop("fixed_budget", None)
+        else:
+            payload["fixed_budget"] = self.fixed_budget.to_dict()
+        if self.selection is None:
+            payload.pop("selection", None)
+        else:
+            payload["selection"] = self.selection.to_dict()
+        if not self.loss_names:
+            payload.pop("loss_names", None)
+        else:
+            payload["loss_names"] = list(self.loss_names)
         return payload
 
 
