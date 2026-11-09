@@ -19,6 +19,11 @@ TRAIN_PY = textwrap.dedent('''\
 
     def main():
         steps = int(os.environ.get("AR_BUDGET_VALUE", "5"))
+        if os.path.exists("ckpt.txt"):
+            print("resumed_from_checkpoint")
+        if MODE == "writeout":
+            open("ckpt.txt", "w").write("step 5")
+            open(os.path.join("model", "weights.bin"), "wb").write(bytes([0xff, 0xfe, 0x00, 0x80]))
         if MODE == "sleep":
             time.sleep(60)
         if MODE == "affinity":

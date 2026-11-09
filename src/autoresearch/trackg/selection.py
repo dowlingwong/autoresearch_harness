@@ -40,6 +40,14 @@ def check_selection_policy(spec: Any) -> None:
     test_regex = spec.metric.test_metric_regex
     if test_regex is not None and test_regex == spec.metric.metric_regex:
         raise SelectionPolicyError("metric_regex and test_metric_regex must differ")
+    # Load-time sanity check: the selection regex must not match typical test-metric lines.
+    # (At run time any selection match overlapping a test-metric match is divergent.)
+    name = policy.test_metric_name
+    for sample in (f"{name}: 0.5", f"{name}=0.5", f"{name} 0.5", f"{name}: 0.5\n"):
+        if re.search(spec.metric.metric_regex, sample, re.MULTILINE):
+            raise SelectionPolicyError(
+                f"metric_regex {spec.metric.metric_regex!r} matches the test-metric line {sample.strip()!r}; "
+                "anchor it on the validation metric")
 
 
 def selection_value(outcome: RunOutcome) -> float | None:

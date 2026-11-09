@@ -18,8 +18,17 @@
    trailing whitespace, blank lines and ``#`` comment lines removed.  An inert
    diff is not written;
 5. **duplicate detection** against an :class:`EvaluatedStates` registry: the
-   normalised diff hash, and the hash of the resulting code state (the same
-   normalisation over every editable file of the copy);
+   normalised diff hash (per hunk, the context, removed and added lines in
+   order, normalised; line numbers ignored) *against the same incumbent*, and
+   the hash of the resulting code state (the same normalisation over every
+   editable file of the copy; files that are not UTF-8 are hashed by their
+   bytes).  The same diff against a *different* incumbent reaches a new code
+   state and is not a duplicate; it is reported in
+   ``seen_diff_other_incumbent`` so a campaign policy can tell it apart;
+5b. **new files** are refused unless the caller allows them
+   (``allow_new_files``, from the node spec); even then a new module or
+   package whose name could shadow an import (a standard-library or installed
+   top-level module, ``sitecustomize``, ``usercustomize``) is refused;
 6. **provenance**: the diff text and its hash, the normalised diff hash, the
    files touched, the hunks with any offsets, and the incumbent and resulting
    code-state hashes (normalised and raw).
@@ -30,9 +39,11 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import importlib.util
 import json
 import os
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
@@ -103,6 +114,8 @@ def parse_unified_diff(diff_text: str) -> list[FilePatch]:
         line = lines[i]
         if line.startswith(_REFUSED_GIT_HEADERS):
             raise DiffRefused("unsupported_diff_feature", line.strip())
+        if line.startswith("new file mode") and line.split()[-1] != "100644":
+            raise DiffRefused("unsupported_diff_feature", f"file mode {line.split()[-1]} (only 100644)")
         if line.strip() == "" or line.startswith(_ALLOWED_GIT_HEADERS):
             i += 1
             continue
@@ -192,7 +205,10 @@ def _mark_no_eol(hunk: Hunk, last_tag: str) -> None:
 
 
 def _sha256_text(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return hashlib.sha256(text.encode("utf-8", errors="surrogateescape")).hexdigest()
+
+
+_CODING_RE = re.compile(r"^[ \t\f]*#.*?coding[:=][ \t]*([-\w.]+)")
 
 
 def _normalise_line(line: str, suffix: str) -> str | None:
@@ -205,9 +221,29 @@ def _normalise_line(line: str, suffix: str) -> str | None:
 
 
 def normalised_text(text: str, suffix: str) -> str:
-    """Whitespace- and comment-insensitive form of a non-Python file (or unparsable Python)."""
-    out = [n for n in (_normalise_line(line, suffix) for line in text.split("\n")) if n is not None]
+    """Whitespace- and comment-insensitive form of a non-Python file (or unparsable Python).
+
+    A shebang on line 1 is kept: it selects the interpreter, so it is not a comment.
+    """
+    lines = text.split("\n")
+    out = []
+    for index, line in enumerate(lines):
+        if index == 0 and line.startswith("#!"):
+            out.append(line.rstrip())
+            continue
+        norm = _normalise_line(line, suffix)
+        if norm is not None:
+            out.append(norm)
     return "\n".join(out)
+
+
+def _python_header(text: str) -> str:
+    """Shebang and PEP 263 coding lines (lines 1-2), which the AST does not see."""
+    head = []
+    for index, line in enumerate(text.split("\n")[:2]):
+        if (index == 0 and line.startswith("#!")) or _CODING_RE.match(line):
+            head.append(line.rstrip())
+    return "\n".join(head)
 
 
 def semantic_form(path: str, text: str | None) -> str:
@@ -217,30 +253,39 @@ def semantic_form(path: str, text: str | None) -> str:
     suffix = PurePosixPath(path).suffix
     if suffix == ".py":
         try:
-            return "AST:" + ast.dump(ast.parse(text), include_attributes=False)
+            return "AST:" + _python_header(text) + "\n" + ast.dump(ast.parse(text), include_attributes=False)
         except (SyntaxError, ValueError):
             return "TEXT:" + normalised_text(text, suffix)
     return "TEXT:" + normalised_text(text, suffix)
 
 
+def semantic_form_bytes(path: str, raw: bytes) -> str:
+    """:func:`semantic_form` for file bytes; files that are not UTF-8 are hashed by their bytes."""
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return "BYTES:" + hashlib.sha256(raw).hexdigest()
+    return semantic_form(path, text)
+
+
 def normalised_diff_sha256(patches: Iterable[FilePatch]) -> str:
-    """Hash of the diff's removed and added lines per file, without headers, line numbers,
-    context, blank lines, comment lines or trailing whitespace."""
+    """Hash of the diff per file and per hunk: the context, removed and added lines in
+    order, each normalised (trailing whitespace, blank lines and comment lines dropped),
+    without headers or line numbers.  Context is kept so the same change at two
+    different places hashes differently (review T2 round 1, finding 1)."""
     payload = []
     for patch in sorted(patches, key=lambda p: p.path):
         suffix = PurePosixPath(patch.path).suffix
-        removed, added = [], []
+        hunks = []
         for hunk in patch.hunks:
+            lines = []
             for tag, text in hunk.lines:
                 norm = _normalise_line(text, suffix)
-                if norm is None:
-                    continue
-                if tag == "-":
-                    removed.append(norm)
-                elif tag == "+":
-                    added.append(norm)
+                if norm is not None:
+                    lines.append([tag, norm])
+            hunks.append(lines)
         kind = "create" if patch.old_path is None else "delete" if patch.new_path is None else "modify"
-        payload.append([patch.path, kind, removed, added])
+        payload.append([patch.path, kind, hunks])
     return _sha256_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
 
 
@@ -272,12 +317,13 @@ def code_state_hashes(work_dir: Path, node_spec: NodeSpec,
     for rel in sorted(files):
         if rel in overrides:
             text = overrides[rel]
+            if text is None:
+                continue
+            data = text.encode("utf-8", errors="surrogateescape")
         else:
-            text = (Path(work_dir) / rel).read_bytes().decode("utf-8", errors="surrogateescape")
-        if text is None:
-            continue
-        semantic.append([rel, _sha256_text(semantic_form(rel, text))])
-        raw.append([rel, hashlib.sha256(text.encode("utf-8", errors="surrogateescape")).hexdigest()])
+            data = (Path(work_dir) / rel).read_bytes()
+        semantic.append([rel, _sha256_text(semantic_form_bytes(rel, data))])
+        raw.append([rel, hashlib.sha256(data).hexdigest()])
     return (_sha256_text(json.dumps(semantic, separators=(",", ":"))),
             _sha256_text(json.dumps(raw, separators=(",", ":"))))
 
@@ -287,31 +333,73 @@ def code_state_hashes(work_dir: Path, node_spec: NodeSpec,
 
 @dataclass
 class EvaluatedStates:
-    """Every evaluated state of a campaign: normalised diff hashes and code-state hashes."""
+    """Every evaluated state of a campaign.
+
+    - ``by_state``: resulting code-state hash -> first trial id;
+    - ``by_diff``: ``"<incumbent code-state hash>:<normalised diff hash>"`` -> first
+      trial id, so a diff is a duplicate only against the same incumbent;
+    - ``diff_any``: normalised diff hash -> first trial id (any incumbent), reported
+      as ``seen_diff_other_incumbent`` and never treated as a duplicate.
+    """
 
     by_diff: dict[str, str] = field(default_factory=dict)
     by_state: dict[str, str] = field(default_factory=dict)
+    diff_any: dict[str, str] = field(default_factory=dict)
 
-    def register(self, trial_id: str, *, code_state_sha256: str, normalised_diff_sha256: str | None = None) -> None:
+    @staticmethod
+    def _key(incumbent: str | None, diff_hash: str) -> str:
+        return f"{incumbent or '?'}:{diff_hash}"
+
+    def register(self, trial_id: str, *, code_state_sha256: str, normalised_diff_sha256: str | None = None,
+                 incumbent_code_state_sha256: str | None = None) -> None:
         self.by_state.setdefault(code_state_sha256, trial_id)
         if normalised_diff_sha256 is not None:
-            self.by_diff.setdefault(normalised_diff_sha256, trial_id)
+            self.by_diff.setdefault(self._key(incumbent_code_state_sha256, normalised_diff_sha256), trial_id)
+            self.diff_any.setdefault(normalised_diff_sha256, trial_id)
 
-    def check(self, *, normalised_diff_sha256: str | None, code_state_sha256: str | None) -> dict[str, Any]:
-        if normalised_diff_sha256 is not None and normalised_diff_sha256 in self.by_diff:
-            return {"duplicate": True, "duplicate_kind": "normalised_diff",
-                    "duplicate_of": self.by_diff[normalised_diff_sha256]}
+    def check(self, *, normalised_diff_sha256: str | None, code_state_sha256: str | None,
+              incumbent_code_state_sha256: str | None = None) -> dict[str, Any]:
+        verdict: dict[str, Any] = {"duplicate": False, "duplicate_kind": None, "duplicate_of": None,
+                                   "seen_diff_other_incumbent": None}
+        if normalised_diff_sha256 is not None:
+            key = self._key(incumbent_code_state_sha256, normalised_diff_sha256)
+            if key in self.by_diff:
+                verdict.update(duplicate=True, duplicate_kind="normalised_diff", duplicate_of=self.by_diff[key])
+                return verdict
+            verdict["seen_diff_other_incumbent"] = self.diff_any.get(normalised_diff_sha256)
         if code_state_sha256 is not None and code_state_sha256 in self.by_state:
-            return {"duplicate": True, "duplicate_kind": "code_state",
-                    "duplicate_of": self.by_state[code_state_sha256]}
-        return {"duplicate": False, "duplicate_kind": None, "duplicate_of": None}
+            verdict.update(duplicate=True, duplicate_kind="code_state", duplicate_of=self.by_state[code_state_sha256])
+        return verdict
 
     def to_dict(self) -> dict[str, Any]:
-        return {"by_diff": dict(self.by_diff), "by_state": dict(self.by_state)}
+        return {"by_diff": dict(self.by_diff), "by_state": dict(self.by_state), "diff_any": dict(self.diff_any)}
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "EvaluatedStates":
-        return cls(by_diff=dict(payload.get("by_diff", {})), by_state=dict(payload.get("by_state", {})))
+        return cls(by_diff=dict(payload.get("by_diff", {})), by_state=dict(payload.get("by_state", {})),
+                   diff_any=dict(payload.get("diff_any", {})))
+
+
+SHADOW_ALWAYS = frozenset({"sitecustomize", "usercustomize"})
+
+
+def shadowing_name(rel: str) -> str | None:
+    """The first path component (or ``.py`` stem) of a new file that could shadow an import."""
+    pure = PurePosixPath(rel)
+    names = list(pure.parts[:-1])
+    if pure.suffix in {".py", ".pyc", ".so", ".pth"} or pure.name == "__init__.py":
+        names.append(pure.stem)
+    for name in names:
+        if not name.isidentifier() or name == "__init__":
+            continue
+        if name in SHADOW_ALWAYS or name in sys.stdlib_module_names:
+            return name
+        try:
+            if importlib.util.find_spec(name) is not None:
+                return name
+        except (ImportError, ValueError):
+            continue
+    return None
 
 
 # --------------------------------------------------------------------------- application
@@ -334,6 +422,7 @@ def apply_diff(
     *,
     evaluated: EvaluatedStates | None = None,
     write: bool = True,
+    allow_new_files: bool = False,
 ) -> DiffApplication:
     """Apply *diff_text* inside the per-run copy *work_dir*; see the module docstring.
 
@@ -359,6 +448,7 @@ def apply_diff(
         "duplicate": False,
         "duplicate_kind": None,
         "duplicate_of": None,
+        "seen_diff_other_incumbent": None,
         "refusal": None,
         "refusal_detail": None,
     }
@@ -383,6 +473,15 @@ def apply_diff(
         provenance["scope"] = {"valid": scope.valid, "violations": list(scope.violations)}
         if not scope.valid:
             raise DiffRefused("scope_violation", "; ".join(scope.violations))
+        for patch in patches:
+            if patch.old_path is None:
+                if not allow_new_files:
+                    raise DiffRefused("new_file_not_allowed",
+                                      f"{patch.path}: the node does not allow new files (allow_new_files)")
+                name = shadowing_name(patch.path)
+                if name is not None:
+                    raise DiffRefused("shadowing_module",
+                                      f"{patch.path}: {name!r} could shadow an importable module")
 
         new_contents: dict[str, str | None] = {}
         old_contents: dict[str, str | None] = {}
@@ -409,7 +508,8 @@ def apply_diff(
 
     if evaluated is not None:
         verdict = evaluated.check(normalised_diff_sha256=provenance["normalised_diff_sha256"],
-                                  code_state_sha256=resulting[0])
+                                  code_state_sha256=resulting[0],
+                                  incumbent_code_state_sha256=incumbent[0])
         provenance.update(verdict)
         if verdict["duplicate"]:
             return DiffApplication("duplicate", provenance)

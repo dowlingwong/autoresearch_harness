@@ -5,7 +5,10 @@ plain diffs).  The loop runs the baseline, then each diff against the current
 incumbent through :class:`WorkingCopyRunner` (scope, inert and duplicate
 checks; limits; outcome class), keeps a diff only if its run is ``ok`` and
 strictly better on the validation metric, and appends one ledger line per
-step to ``<runs_root>/smoke_ledger.jsonl``.
+step to ``<runs_root>/smoke_ledger.jsonl``.  The next incumbent is the kept
+run's code snapshot taken before the run (``<run_dir>/code``), never the
+work directory after the run, so checkpoints and other outputs are not
+carried into the next run.
 
 It is a smoke harness for ports, not the label-sweep or closed-loop code: no
 noise-aware keep rule, no controller, no LLM.
@@ -53,7 +56,7 @@ def run_smoke_campaign(
         "s000_baseline", limits, train_seed=train_seed, split_seed=split_seed, evaluated=evaluated)
     best = baseline.outcome.value if baseline.outcome and baseline.outcome.kind == OK else None
     if best is not None:
-        incumbent_dir = baseline.work_dir
+        incumbent_dir = baseline.code_dir  # the code before the run: no run outputs are promoted
     append({"schema": SMOKE_LEDGER_SCHEMA, "step": 0, "run_id": "s000_baseline", "decision": "baseline",
             "record": manager_view(baseline.record)})
 
@@ -71,7 +74,7 @@ def run_smoke_campaign(
             better = best is None or (value > best if spec.metric_direction == "maximize" else value < best)
             decision = "kept" if better else "discarded"
             if better:
-                best, incumbent_dir = value, result.work_dir
+                best, incumbent_dir = value, result.code_dir
         entry = {"schema": SMOKE_LEDGER_SCHEMA, "step": index, "run_id": run_id, "decision": decision,
                  "incumbent_after": str(incumbent_dir), "record": manager_view(result.record)}
         if isinstance(proposal, DiffProposal):

@@ -5,13 +5,18 @@ Every run is classified as **exactly one** of:
 - ``ok(value)``: exit code 0, no non-finite loss in the log, a finite metric
   reported, and (if the node declares ``steps_regex``) the fixed budget was
   reached;
-- ``divergent``: a non-finite loss, or no (finite) metric at the fixed budget
+- ``divergent``: a non-finite loss (also a non-numeric token containing
+  ``nan``/``inf`` such as ``tensor(nan)``), or no (finite) metric at the fixed budget
   (R1-BX-PROPOSED-CONFIRM, REVISIONS (c) (E5)).  A run that exits non-zero
   without being killed is in this class (the proposal broke the run);
 - ``infrastructure_failure``: the run timed out, was killed by a signal (or
   an exit code the node declares as a kill, default 137 and 143), could not
   be launched, or its log matches one of the node's infrastructure patterns
   (for example ``No space left on device``).
+
+A selection-metric match that overlaps a test-metric match (test-scored
+nodes) is ``divergent`` with reason ``metric_regex_matches_test_line``, so a
+loose ``metric_regex`` can never select on the test metric.
 
 Infrastructure is checked first, so a run that was killed is never reported
 as divergent even if its partial log shows a NaN.  The three constructors
@@ -40,6 +45,7 @@ DEFAULT_INFRASTRUCTURE_LOG_PATTERNS = (
     r"\bDUE TO PREEMPTION\b",
 )
 
+_NON_FINITE_IN_TOKEN = re.compile(r"(?i)(?<![A-Za-z])(nan|[+-]?inf(inity)?)(?![A-Za-z])")
 _FLOAT_TOKEN = re.compile(r"^[+-]?(nan|inf|infinity|\d+(\.\d*)?([eE][+-]?\d+)?|\.\d+([eE][+-]?\d+)?)$", re.I)
 
 
@@ -108,6 +114,7 @@ def classify_run(
     loss_regex: str | None = None,
     steps_regex: str | None = None,
     budget_steps: int | None = None,
+    test_metric_regex: str | None = None,
     kill_exit_codes: Iterable[int] = DEFAULT_KILL_EXIT_CODES,
     infrastructure_log_patterns: Iterable[str] = DEFAULT_INFRASTRUCTURE_LOG_PATTERNS,
 ) -> RunOutcome:
@@ -128,15 +135,27 @@ def classify_run(
             return RunOutcome.infrastructure_failure("infrastructure_log_pattern", pattern=pattern,
                                                      returncode=process.returncode)
 
-    # 2. divergence: a non-finite loss anywhere in the log.
+    # 2. divergence: a non-finite loss anywhere in the log.  A token that is not a plain
+    #    number (``tensor(nan)``, ``nan%``) counts as non-finite if it contains nan/inf.
     if loss_regex:
         for match in re.finditer(loss_regex, log_text, re.MULTILINE):
-            value = parse_float_token(match.group(1))
-            if value is not None and not math.isfinite(value):
-                return RunOutcome.divergent("non_finite_loss", token=match.group(1).strip())
+            token = match.group(1)
+            value = parse_float_token(token)
+            if (value is not None and not math.isfinite(value)) or (
+                    value is None and _NON_FINITE_IN_TOKEN.search(token)):
+                return RunOutcome.divergent("non_finite_loss", token=token.strip())
 
-    # 3. divergence: no finite metric at the budget.
-    metrics = [m.group(1) for m in re.finditer(metric_regex, log_text, re.MULTILINE)]
+    # 3. divergence: no finite metric at the budget.  A selection-metric match that
+    #    overlaps a test-metric line is refused loudly (validation-only selection).
+    test_spans = []
+    if test_metric_regex:
+        test_spans = [m.span() for m in re.finditer(test_metric_regex, log_text, re.MULTILINE)]
+    metric_matches = list(re.finditer(metric_regex, log_text, re.MULTILINE))
+    for match in metric_matches:
+        start, end = match.span()
+        if any(start < t_end and t_start < end for t_start, t_end in test_spans):
+            return RunOutcome.divergent("metric_regex_matches_test_line", line=match.group(0).strip())
+    metrics = [m.group(1) for m in metric_matches]
     if process.returncode != 0:
         return RunOutcome.divergent("nonzero_exit", returncode=process.returncode,
                                     metric_reported=bool(metrics))
@@ -168,5 +187,6 @@ def parse_run_log(log_path: str | Path, process: ProcessExit, spec: Any) -> RunO
         loss_regex=spec.metric.loss_regex,
         steps_regex=spec.metric.steps_regex,
         budget_steps=budget_steps,
+        test_metric_regex=spec.metric.test_metric_regex if spec.selection.test_scored else None,
         infrastructure_log_patterns=patterns,
     )

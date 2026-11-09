@@ -17,6 +17,13 @@ Limits recorded rather than hidden:
   as ``divergent``; a node whose baseline needs it may declare
   ``determinism.deterministic_warn_only: true`` (recorded as ``warn_only``),
   decided in the port's review and the census determinism check;
+- the shim imports ``torch`` at start-up in every Python interpreter of the
+  run: the import time is part of the measured run time (the timeout basis),
+  and environment variables a task sets in-script before ``import torch``
+  (for example ``PYTORCH_CUDA_ALLOC_CONF``) no longer take effect -- set them
+  in the run command or the wrapper's environment instead;
+- the data-loader worker count is only advertised (``AR_NUM_WORKERS``); it is
+  always listed as ``not_forced``;
 - the shim runs at interpreter start; a task script that later sets
   ``cudnn.benchmark = True`` overrides it (the port checklist forbids that);
 - a non-Python run command, or an environment whose own ``sitecustomize``
@@ -142,5 +149,8 @@ def read_record(record_path: Path, env: dict[str, str]) -> dict[str, Any]:
         record["warn_only"] = bool(shim.get("warn_only", False))
         if "torch_version" in shim:
             record["torch_version"] = shim["torch_version"]
+    # The data-loader worker count is only advertised to the task; nothing enforces it.
+    record["settings"].append({"setting": "dataloader_workers", "status": "not_forced",
+                               "reason": "advertised via AR_NUM_WORKERS only"})
     record["not_forced"] = sorted(s["setting"] for s in record["settings"] if s.get("status") != "forced")
     return record

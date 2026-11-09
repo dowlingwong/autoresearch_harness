@@ -14,7 +14,7 @@ from autoresearch.trackg.runner import ResourceLimits, RunnerError, WorkingCopyR
 
 from .fixtures import make_node, spec_mapping
 
-LIMITS = ResourceLimits(measured_run_seconds=10.0)
+LIMITS = ResourceLimits(uncapped_reason="test fixture", measured_run_seconds=10.0)
 
 
 def runner_for(tmp_path, mode="ok", **spec_overrides):
@@ -41,12 +41,14 @@ def test_ok_run_records_outcome_limits_and_determinism(tmp_path):
     assert det["shim_loaded"] is True
     statuses = {s["setting"]: s for s in det["settings"]}
     assert set(statuses) == {"cudnn.benchmark=False", "torch.use_deterministic_algorithms(True)",
-                             "torch.set_num_threads"}
+                             "torch.set_num_threads", "dataloader_workers"}
+    assert statuses["dataloader_workers"]["reason"] == "advertised via AR_NUM_WORKERS only"
     try:
         import torch  # noqa: F401
     except ImportError:
         # torch absent: recorded as not forced, and the run still succeeds
-        assert all(s["status"] == "not_forced" and s["reason"].startswith("torch_absent") for s in statuses.values())
+        assert all(s["status"] == "not_forced" and s["reason"].startswith("torch_absent")
+                   for name, s in statuses.items() if name != "dataloader_workers")
         assert det["not_forced"] == sorted(statuses)
     # the test metric is sealed, not the selection value
     assert record["sealed"] == {"test_accuracy": 0.4242}
@@ -72,7 +74,7 @@ def test_no_metric_and_short_runs_are_divergent(tmp_path):
 
 def test_timeout_is_infrastructure_failure_and_the_process_group_is_killed(tmp_path):
     runner, _ = runner_for(tmp_path, mode="sleep")
-    limits = ResourceLimits(measured_run_seconds=0.2, timeout_factor=3.0, kill_grace_seconds=2.0)
+    limits = ResourceLimits(uncapped_reason="test fixture", measured_run_seconds=0.2, timeout_factor=3.0, kill_grace_seconds=2.0)
     start = time.monotonic()
     result = runner.run("r1", limits)
     assert time.monotonic() - start < 20
@@ -83,7 +85,7 @@ def test_timeout_is_infrastructure_failure_and_the_process_group_is_killed(tmp_p
 def test_cpu_and_memory_caps_are_applied(tmp_path):
     runner, _ = runner_for(tmp_path, mode="affinity")
     cpu = sorted(os.sched_getaffinity(0))[0]
-    limits = ResourceLimits(measured_run_seconds=10, cpu_list=(cpu,), memory_bytes=2 * 1024 ** 3)
+    limits = ResourceLimits(uncapped_reason="test fixture", measured_run_seconds=10, cpu_list=(cpu,), memory_bytes=2 * 1024 ** 3)
     result = runner.run("r1", limits)
     log = (result.run_dir / "run.log").read_text()
     assert f"affinity: [{cpu}]" in log
@@ -94,17 +96,17 @@ def test_cpu_and_memory_caps_are_applied(tmp_path):
 def test_gpu_uuid_is_exported_and_indices_are_refused(tmp_path):
     runner, _ = runner_for(tmp_path, mode="env")
     uuid = "GPU-12345678-90ab-cdef-1234-567890abcdef"
-    result = runner.run("r1", ResourceLimits(gpu_uuids=(uuid,), measured_run_seconds=10))
+    result = runner.run("r1", ResourceLimits(uncapped_reason="test fixture", gpu_uuids=(uuid,), measured_run_seconds=10))
     assert f"env CUDA_VISIBLE_DEVICES='{uuid}'" in (result.run_dir / "run.log").read_text()
     for bad in ("0", "1", "cuda:0", "GPU-1"):
         with pytest.raises(RunnerError):
-            ResourceLimits(gpu_uuids=(bad,), measured_run_seconds=10)
+            ResourceLimits(uncapped_reason="test fixture", gpu_uuids=(bad,), measured_run_seconds=10)
 
 
 def test_timeout_basis_is_required_and_run_ids_are_never_reused(tmp_path):
     with pytest.raises(RunnerError):
         ResourceLimits()
-    provisional = ResourceLimits(provisional_timeout_seconds=30)
+    provisional = ResourceLimits(uncapped_reason="test fixture", provisional_timeout_seconds=30)
     assert provisional.timeout() == (30.0, "provisional (measuring run)")
     runner, _ = runner_for(tmp_path)
     runner.run("r1", LIMITS)
@@ -177,25 +179,27 @@ def test_determinism_settings_are_forced_when_torch_is_present_and_failures_are_
     assert statuses["cudnn.benchmark=False"] == ("forced", "")
     assert statuses["torch.use_deterministic_algorithms(True)"] == ("forced", "warn_only=True")
     assert statuses["torch.set_num_threads"] == ("forced", "1")
-    assert det["not_forced"] == []
+    assert det["not_forced"] == ["dataloader_workers"]
     monkeypatch.setenv("FAKE_TORCH_REFUSE", "1")
     runner2, _ = runner_for(tmp_path / "b")
     det2 = runner2.run("r2", LIMITS).record["determinism"]
-    assert det2["not_forced"] == ["torch.use_deterministic_algorithms(True)"]
+    assert det2["not_forced"] == ["dataloader_workers", "torch.use_deterministic_algorithms(True)"]
 
 
 def test_non_python_command_records_shim_not_loaded(tmp_path):
-    metric = {"metric_regex": r"^val_accuracy:\s*(\S+)", "test_metric_regex": r"^test_accuracy:\s*(\S+)"}
+    metric = {"metric_regex": r"^val_accuracy:\s*(\S+)", "loss_regex": r"^step\s+\d+\s+loss:\s*(\S+)",
+              "test_metric_regex": r"^test_accuracy:\s*(\S+)"}
     runner, _ = runner_for(tmp_path, run_command="echo val_accuracy: 0.5", metric=metric)
     record = runner.run("r1", LIMITS).record
     assert record["outcome"]["kind"] == "ok"
     assert record["determinism"]["shim_loaded"] is False
-    assert all(s["reason"] == "shim_not_loaded" for s in record["determinism"]["settings"])
+    assert all(s["reason"] == "shim_not_loaded" for s in record["determinism"]["settings"]
+               if s["setting"] != "dataloader_workers")
 
 
 def test_infrastructure_failure_is_not_registered_as_an_evaluated_state(tmp_path):
     runner, _ = runner_for(tmp_path, mode="sleep")
     evaluated = EvaluatedStates()
-    result = runner.run("r1", ResourceLimits(measured_run_seconds=0.1, kill_grace_seconds=1.0), evaluated=evaluated)
+    result = runner.run("r1", ResourceLimits(uncapped_reason="test fixture", measured_run_seconds=0.1, kill_grace_seconds=1.0), evaluated=evaluated)
     assert result.outcome.kind == INFRASTRUCTURE_FAILURE
     assert evaluated.by_state == {}

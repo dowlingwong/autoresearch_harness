@@ -31,7 +31,7 @@ def test_smoke_campaign_refuses_frozen_edits_detects_classes_and_keeps_improveme
         nan,                                      # divergent
         lr("0.2", "0.2  # same"),                 # inert
     ]
-    records = run_smoke_campaign(spec, node, tmp_path / "runs", proposals, ResourceLimits(measured_run_seconds=10))
+    records = run_smoke_campaign(spec, node, tmp_path / "runs", proposals, ResourceLimits(uncapped_reason="test fixture", measured_run_seconds=10))
     decisions = [r["decision"] for r in records]
     assert decisions == ["baseline", "not_run_refused", "kept", "not_run_refused", "discarded",
                          "not_run_duplicate", "discarded_divergent", "not_run_inert"]
@@ -43,4 +43,4 @@ def test_smoke_campaign_refuses_frozen_edits_detects_classes_and_keeps_improveme
     assert [e["decision"] for e in ledger] == decisions
     assert "LEARNING_RATE = 0.1" in (node / "train.py").read_text()
     with pytest.raises(FileExistsError):
-        run_smoke_campaign(spec, node, tmp_path / "runs", [], ResourceLimits(measured_run_seconds=10))
+        run_smoke_campaign(spec, node, tmp_path / "runs", [], ResourceLimits(uncapped_reason="test fixture", measured_run_seconds=10))

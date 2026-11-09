@@ -20,6 +20,11 @@ frozen_paths:
   - prepare.py
   - run_fixed_budget.py                 # the fixed-step wrapper is frozen too
 
+# A frozen script must not live in an editable directory (a new file there
+# could shadow its imports). New files are refused unless this is true; even
+# then new modules named like importable modules are refused.
+allow_new_files: false
+
 setup_command: ""                       # run once per host, not per run
 # {budget} is replaced by run_budget.value; the wrapper also gets
 # AR_BUDGET_KIND / AR_BUDGET_VALUE, AR_TRAIN_SEED / AR_SPLIT_SEED,
@@ -29,13 +34,16 @@ run_command: "python3 run_fixed_budget.py --steps {budget}"
 metric_name: val_accuracy               # the SELECTION metric (validation split)
 metric_direction: maximize              # maximize | minimize
 metric:
-  metric_regex: '^val_accuracy:\s*(\S+)'          # one capture group; last match counts
-  loss_regex: '^step\s+\d+\s+loss:\s*(\S+)'       # any non-finite match -> divergent
+  metric_regex: '^val_accuracy:\s*(\S+)'          # one capture group; last match counts; ANCHOR it
+                                                  # (best: a frozen-wrapper prefix such as '^AR_METRIC val_accuracy=(\S+)')
+  loss_regex: '^step\s+\d+\s+loss:\s*(\S+)'       # REQUIRED; any non-finite match -> divergent
   steps_regex: '^step\s+(\d+)\b'                  # optional: budget must be reached
   test_metric_regex: '^test_accuracy:\s*(\S+)'    # test-scored tasks only; sealed, never selected on
   infrastructure_log_patterns: []                 # extra patterns that mean infrastructure_failure
 
-# Fixed budget: kind steps or tokens, a positive integer. Never wall-clock.
+# Fixed budget: kind steps or tokens, a positive integer. Never wall-clock:
+# keys naming a time quantity (anywhere, also under notes) and run commands
+# with time flags (--time-budget, --timeout, --max-time, TIME_BUDGET=...) are refused.
 run_budget:
   kind: steps
   value: 2000

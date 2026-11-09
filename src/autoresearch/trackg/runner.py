@@ -60,6 +60,11 @@ class RunnerError(ValueError):
 
 @dataclass(frozen=True)
 class ResourceLimits:
+    """Per-run limits.  CPU and memory caps are required: give ``cpu_list`` and either
+    ``memory_bytes`` (enforced by an rlimit) or ``memory_method="external"`` with
+    ``external_limit`` naming what enforces it (for example ``"slurm --mem=64G"``).
+    A run without a cap needs an explicit ``uncapped_reason``, which is recorded."""
+
     gpu_uuids: tuple[str, ...] = ()
     cpu_list: tuple[int, ...] | None = None
     memory_bytes: int | None = None
@@ -68,6 +73,8 @@ class ResourceLimits:
     timeout_factor: float = 3.0
     provisional_timeout_seconds: float | None = None
     kill_grace_seconds: float = 10.0
+    external_limit: str | None = None
+    uncapped_reason: str | None = None
 
     def __post_init__(self) -> None:
         for uuid in self.gpu_uuids:
@@ -86,6 +93,21 @@ class ResourceLimits:
                               "first measuring run only, provisional_timeout_seconds")
         if self.measured_run_seconds is not None and self.measured_run_seconds <= 0:
             raise RunnerError("measured_run_seconds must be positive")
+        if self.memory_method == "external" and not self.external_limit:
+            raise RunnerError("memory_method 'external' needs external_limit (what enforces it)")
+        if self.memory_method != "external" and self.external_limit:
+            raise RunnerError("external_limit is only for memory_method 'external'")
+        missing = self.missing_caps()
+        if missing and not self.uncapped_reason:
+            raise RunnerError(f"no {' and no '.join(missing)} cap: give one, or an explicit uncapped_reason")
+
+    def missing_caps(self) -> list[str]:
+        missing = []
+        if self.cpu_list is None:
+            missing.append("CPU")
+        if self.memory_bytes is None and self.memory_method != "external":
+            missing.append("memory")
+        return missing
 
     def timeout(self) -> tuple[float, str]:
         if self.measured_run_seconds is not None:
@@ -97,6 +119,7 @@ class ResourceLimits:
         payload = asdict(self)
         payload["gpu_uuids"] = list(self.gpu_uuids)
         payload["cpu_list"] = list(self.cpu_list) if self.cpu_list is not None else None
+        payload["uncapped"] = self.missing_caps()
         return payload
 
 
@@ -107,6 +130,7 @@ class RunResult:
     work_dir: Path
     outcome: RunOutcome | None
     record: dict[str, Any] = field(default_factory=dict)
+    code_dir: Path | None = None
 
 
 class WorkingCopyRunner:
@@ -143,8 +167,19 @@ class WorkingCopyRunner:
         diff_text: str | None = None,
         evaluated: EvaluatedStates | None = None,
         register_evaluated: bool = True,
+        keep_code_snapshot: bool = True,
     ) -> RunResult:
-        """Copy, optionally apply a diff, run under limits, classify and record."""
+        """Copy, optionally apply a diff, run under limits, classify and record.
+
+        With *keep_code_snapshot* the copy is snapshotted to ``<run_dir>/code``
+        after the diff is applied and before the run, so the code without any
+        run outputs can be promoted as the next incumbent.
+        """
+        if limits.cpu_list is not None:
+            available = os.sched_getaffinity(0)
+            outside = sorted(set(limits.cpu_list) - available)
+            if outside:
+                raise RunnerError(f"cpu_list {outside} not in this process's CPU set {sorted(available)}")
         run_dir, work = self.prepare(run_id)
         record: dict[str, Any] = {
             "schema": RUN_RECORD_SCHEMA,
@@ -161,7 +196,8 @@ class WorkingCopyRunner:
         record["incumbent_code_state_sha256"], record["incumbent_code_state_raw_sha256"] = normalised, raw
         application: DiffApplication | None = None
         if diff_text is not None:
-            application = apply_diff(work, diff_text, self.base_spec, evaluated=evaluated)
+            application = apply_diff(work, diff_text, self.base_spec, evaluated=evaluated,
+                                     allow_new_files=self.spec.allow_new_files)
             record["diff"] = {"status": application.status, **application.provenance}
             if not application.applied:
                 record["executed"] = False
@@ -170,8 +206,13 @@ class WorkingCopyRunner:
                 return RunResult(run_id, run_dir, work, None, record)
         state, state_raw = code_state_hashes(work, self.base_spec)
         record["code_state_sha256"], record["code_state_raw_sha256"] = state, state_raw
+        code_dir = run_dir / "code"
+        if keep_code_snapshot:
+            shutil.copytree(work, code_dir, symlinks=True, ignore=_COPY_IGNORE)
+            record["code_snapshot"] = "code"
 
-        process, env_applied, det_record, elapsed = self._execute(run_dir, work, limits, train_seed, split_seed)
+        process, env_applied, det_record, elapsed, kill_info = self._execute(
+            run_dir, work, limits, train_seed, split_seed)
         log_path = run_dir / "run.log"
         outcome = parse_run_log(log_path, process, self.spec)
         record.update({
@@ -180,7 +221,7 @@ class WorkingCopyRunner:
             "environment_applied": env_applied,
             "determinism": det_record,
             "process": {"returncode": process.returncode, "timed_out": process.timed_out,
-                        "launch_error": process.launch_error},
+                        "launch_error": process.launch_error, **kill_info},
             "elapsed_seconds_info_only": round(elapsed, 3),
             "log_sha256": hashlib.sha256(log_path.read_bytes()).hexdigest() if log_path.exists() else None,
             "outcome": outcome.to_dict(),
@@ -192,9 +233,10 @@ class WorkingCopyRunner:
         if evaluated is not None and register_evaluated and outcome.kind != INFRASTRUCTURE_FAILURE:
             evaluated.register(
                 run_id, code_state_sha256=state,
-                normalised_diff_sha256=application.provenance["normalised_diff_sha256"] if application else None)
+                normalised_diff_sha256=application.provenance["normalised_diff_sha256"] if application else None,
+                incumbent_code_state_sha256=record["incumbent_code_state_sha256"])
         self._write_record(run_dir, record)
-        return RunResult(run_id, run_dir, work, outcome, record)
+        return RunResult(run_id, run_dir, work, outcome, record, code_dir if keep_code_snapshot else None)
 
     # ------------------------------------------------------------------ internals
     def build_environment(self, run_dir: Path, limits: ResourceLimits, train_seed: int | None,
@@ -222,7 +264,7 @@ class WorkingCopyRunner:
         return env, applied
 
     def _execute(self, run_dir: Path, work: Path, limits: ResourceLimits, train_seed: int | None,
-                 split_seed: int | None) -> tuple[ProcessExit, dict[str, str], dict[str, Any], float]:
+                 split_seed: int | None) -> tuple[ProcessExit, dict[str, str], dict[str, Any], float, dict]:
         env, applied = self.build_environment(run_dir, limits, train_seed, split_seed)
         timeout, basis = limits.timeout()
         applied["timeout_seconds"] = f"{timeout:g} ({basis})"
@@ -235,19 +277,24 @@ class WorkingCopyRunner:
                     stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                     start_new_session=True, preexec_fn=_limits_preexec(limits),
                 )
-            except OSError as error:
+            except (OSError, subprocess.SubprocessError) as error:
+                # includes a failure inside preexec_fn (for example a CPU id the host lacks)
                 return (ProcessExit(None, launch_error=repr(error)), applied,
-                        determinism.read_record(run_dir / "determinism_shim.json", env), 0.0)
+                        determinism.read_record(run_dir / "determinism_shim.json", env), 0.0,
+                        {"killed_with": None, "leftover_processes_killed": False})
             timed_out = False
             try:
                 returncode = proc.wait(timeout=timeout)
+                kill_info = {"killed_with": None,
+                             "leftover_processes_killed": _kill_leftovers(proc.pid)}
             except subprocess.TimeoutExpired:
                 timed_out = True
-                _kill_group(proc, limits.kill_grace_seconds)
+                killed_with = _kill_group(proc, limits.kill_grace_seconds)
                 returncode = proc.returncode
+                kill_info = {"killed_with": killed_with, "leftover_processes_killed": killed_with == "SIGKILL"}
         elapsed = time.monotonic() - start
         det_record = determinism.read_record(run_dir / "determinism_shim.json", env)
-        return ProcessExit(returncode, timed_out=timed_out), applied, det_record, elapsed
+        return ProcessExit(returncode, timed_out=timed_out), applied, det_record, elapsed, kill_info
 
     @staticmethod
     def _write_record(run_dir: Path, record: dict[str, Any]) -> None:
@@ -272,16 +319,63 @@ def _limits_preexec(limits: ResourceLimits):
     return apply
 
 
-def _kill_group(proc: subprocess.Popen, grace: float) -> None:
+def _group_alive(pgid: int) -> bool:
+    """Whether any non-zombie process is in process group *pgid*."""
+    proc_root = Path("/proc")
+    if proc_root.is_dir():
+        for entry in proc_root.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                stat = (entry / "stat").read_text()
+            except OSError:
+                continue
+            fields = stat[stat.rfind(")") + 2:].split()
+            if len(fields) > 2 and fields[0] != "Z" and fields[2] == str(pgid):
+                return True
+        return False
     try:
-        os.killpg(proc.pid, signal.SIGTERM)
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _sigkill_group(pgid: int) -> None:
+    try:
+        os.killpg(pgid, signal.SIGKILL)
     except ProcessLookupError:
         pass
+
+
+def _kill_group(proc: subprocess.Popen, grace: float) -> str:
+    """SIGTERM the run's process group; after *grace* seconds SIGKILL it if any member is
+    still alive, whatever the shell's state (a child may ignore SIGTERM)."""
+    pgid = proc.pid  # start_new_session: the shell leads its own session and group
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    deadline = time.monotonic() + grace
     try:
         proc.wait(timeout=grace)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        proc.wait()
+        pass
+    while time.monotonic() < deadline and _group_alive(pgid):
+        time.sleep(0.05)
+    killed_with = "SIGTERM"
+    if _group_alive(pgid):
+        _sigkill_group(pgid)
+        killed_with = "SIGKILL"
+    proc.wait()
+    return killed_with
+
+
+def _kill_leftovers(pgid: int) -> bool:
+    """After a normal exit, SIGKILL any process left in the run's group (orphaned workers)."""
+    if _group_alive(pgid):
+        _sigkill_group(pgid)
+        return True
+    return False

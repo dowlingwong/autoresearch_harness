@@ -15,10 +15,13 @@ Both runs use the same working directory path (the first run's directory is
 renamed before the second starts), so absolute paths in the records are
 identical by construction.  The comparison is byte for byte:
 
-- ``requests/<n>.json``: every request body the manager sent to the server,
-  **unnormalised**;
-- ``final_train.py``: the node's editable file after the campaign, unnormalised;
-- ``trials.jsonl`` and ``events.jsonl``: byte for byte after replacing only the
+- ``out/requests/<n>.json``: every request body the manager sent to the
+  server, **unnormalised**;
+- every other file of the run directory -- the worker artifacts
+  (``artifacts/trial-*/run.log``, ``patch.diff``, …), the node copy (including
+  ``node/.autoresearch_baseline/**`` and the final ``train.py``) and
+  ``out/final_train.py`` -- **unnormalised** (``__pycache__`` excluded);
+- ``out/trials.jsonl`` and ``out/events.jsonl``: byte for byte after replacing only the
   values of the documented run-to-run nondeterministic fields, which differ
   between two runs of the *same* commit: ``timestamp``, ``timestamp_start``,
   ``timestamp_end``, ``event_id`` (random), ``latency_ms``,
@@ -27,6 +30,14 @@ identical by construction.  The comparison is byte for byte:
   other byte are still compared.
 
 The node files and the node config come from each tree itself.
+
+A second, structural test covers the T0 configurations the probe does not
+exercise (keep rules, D27 skips, observers, ``seed_key``, transport retry):
+no file that exists at the base commit differs at HEAD, and no module outside
+``src/autoresearch/trackg/`` imports ``autoresearch.trackg``.
+
+After a rebase onto a newer harness base, set ``TRACKG_T0_BASE_COMMIT`` to the
+new merge base, or legitimate upstream T0 changes will fail these tests.
 """
 from __future__ import annotations
 
@@ -82,8 +93,12 @@ def run_probe(tree: Path, work: Path) -> None:
         check=True, env=env, capture_output=True, timeout=300)
 
 
-def files(out: Path) -> dict[str, bytes]:
-    return {p.relative_to(out).as_posix(): p.read_bytes() for p in sorted(out.rglob("*")) if p.is_file()}
+def files(root: Path) -> dict[str, bytes]:
+    return {p.relative_to(root).as_posix(): p.read_bytes() for p in sorted(root.rglob("*"))
+            if p.is_file() and "__pycache__" not in p.parts}
+
+
+NORMALISED_FILES = ("out/trials.jsonl", "out/events.jsonl")
 
 
 def test_manager_proposal_v1_campaign_is_byte_identical_to_the_base_commit(tmp_path):
@@ -93,19 +108,49 @@ def test_manager_proposal_v1_campaign_is_byte_identical_to_the_base_commit(tmp_p
     work.rename(tmp_path / "base_run")
     run_probe(ROOT, work)
     work.rename(tmp_path / "head_run")
-    base, head = files(tmp_path / "base_run" / "out"), files(tmp_path / "head_run" / "out")
+    base, head = files(tmp_path / "base_run"), files(tmp_path / "head_run")
 
     assert sorted(base) == sorted(head)
-    requests = [k for k in base if k.startswith("requests/")]
+    requests = [k for k in base if k.startswith("out/requests/")]
     assert len(requests) == 5, "every proposal goes through the fake llama-server"
-    for name in requests + ["final_train.py"]:
+    artifacts = [k for k in base if k.startswith("artifacts/")]
+    assert any(k.endswith("run.log") for k in artifacts) and any(k.endswith("patch.diff") for k in artifacts)
+    for name in sorted(set(base) - set(NORMALISED_FILES)):
         assert base[name] == head[name], f"{name} differs (unnormalised comparison)"
-    for name in ("trials.jsonl", "events.jsonl"):
+    for name in NORMALISED_FILES:
         assert base[name].count(b"\n") == head[name].count(b"\n") > 0
         assert normalise(base[name]) == normalise(head[name]), f"{name} differs beyond the documented fields"
     # the fixture exercises the v1 schema on the wire and a malformed reply
     assert b'"manager_proposal_v1"' in base[requests[0]]
-    assert b'"parse_failed": true' in base["trials.jsonl"] or b'"parse_failed":true' in base["trials.jsonl"]
+    assert b'"parse_failed": true' in base["out/trials.jsonl"] or b'"parse_failed":true' in base["out/trials.jsonl"]
+
+
+def test_no_base_file_differs_and_no_t0_module_imports_trackg():
+    try:
+        changed = subprocess.run(
+            ["git", "-C", str(ROOT), "diff", "--diff-filter=MDRT", "--name-only", BASE_COMMIT, "HEAD"],
+            check=True, capture_output=True, text=True).stdout.split()
+    except (OSError, subprocess.CalledProcessError) as error:  # pragma: no cover - environment
+        if os.environ.get("TRACKG_T0_ALLOW_SKIP") == "1":
+            pytest.skip(str(error))
+        pytest.fail(f"cannot diff against {BASE_COMMIT}: {error}")
+    assert changed == [], f"files of the base commit changed: {changed}"
+    import ast
+
+    offenders = []
+    for path in sorted((ROOT / "src" / "autoresearch").rglob("*.py")):
+        if "trackg" in path.relative_to(ROOT / "src" / "autoresearch").parts:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            names = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names = [node.module] + [f"{node.module}.{alias.name}" for alias in node.names]
+            if any(n == "autoresearch.trackg" or n.startswith("autoresearch.trackg.") for n in names):
+                offenders.append(str(path.relative_to(ROOT)))
+    assert offenders == []
 
 
 def test_normalisation_touches_only_the_documented_fields():

@@ -154,7 +154,8 @@ def test_duplicates_by_normalised_diff_and_by_resulting_code_state(env, tmp_path
     first = apply_diff(node, LR, base, evaluated=evaluated, write=False)
     assert first.status == "applied"
     evaluated.register("t1", code_state_sha256=first.provenance["code_state_sha256"],
-                       normalised_diff_sha256=first.provenance["normalised_diff_sha256"])
+                       normalised_diff_sha256=first.provenance["normalised_diff_sha256"],
+                       incumbent_code_state_sha256=first.provenance["incumbent_code_state_sha256"])
     variant = LR.replace("@@ -8,1 +8,1 @@", "@@ -9,1 +9,1 @@").replace("+LEARNING_RATE = 0.2", "+LEARNING_RATE = 0.2  ")
     dup = apply_diff(node, variant, base, evaluated=evaluated)
     assert (dup.status, dup.provenance["duplicate_kind"], dup.provenance["duplicate_of"]) == (
@@ -173,13 +174,14 @@ def test_duplicates_by_normalised_diff_and_by_resulting_code_state(env, tmp_path
 def test_create_and_delete_inside_editable_paths(env):
     node, base = env
     create = "--- /dev/null\n+++ b/model/extra.py\n@@ -0,0 +1,2 @@\n+def f():\n+    return 1\n"
-    assert apply_diff(node, create, base).status == "applied"
+    assert apply_diff(node, create, base).provenance["refusal"] == "new_file_not_allowed"
+    assert apply_diff(node, create, base, allow_new_files=True).status == "applied"
     assert (node / "model" / "extra.py").read_text() == "def f():\n    return 1\n"
     delete = "--- a/model/extra.py\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-def f():\n-    return 1\n"
     assert apply_diff(node, delete, base).status == "applied"
     assert not (node / "model" / "extra.py").exists()
     frozen_create = "--- /dev/null\n+++ b/data/new.csv\n@@ -0,0 +1,1 @@\n+x\n"
-    assert apply_diff(node, frozen_create, base).provenance["refusal"] == "scope_violation"
+    assert apply_diff(node, frozen_create, base, allow_new_files=True).provenance["refusal"] == "scope_violation"
 
 
 def test_no_newline_at_end_of_file_marker(env):
