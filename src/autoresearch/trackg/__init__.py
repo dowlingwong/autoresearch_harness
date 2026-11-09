@@ -16,4 +16,6 @@ Modules
 - :mod:`diff_support` -- unified-diff application through the existing scope
   validator, inert and duplicate detection, provenance (G.2).
 - :mod:`proposal_v2_diff` -- the ``manager_proposal/v2-diff`` schema.
+- :mod:`declared_edits` -- checks and hashes a node's 3-5 representative edits
+  before any measurement (``scripts/trackg_declare_edits.py``).
 """
