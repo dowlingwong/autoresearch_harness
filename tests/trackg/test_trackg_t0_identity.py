@@ -6,7 +6,9 @@ local fake llama-server, twice:
 
 - with the harness ``src`` of the **base commit** (default ``a3fedbb``, the B1
   pin; override with ``TRACKG_T0_BASE_COMMIT``), exported with ``git archive``
-  into a temporary directory (no worktree, no change to the repository);
+  into a temporary directory (no worktree, no change to the repository).  If
+  the commit cannot be exported the test fails, unless
+  ``TRACKG_T0_ALLOW_SKIP=1`` asks for an explicit skip;
 - with the harness ``src`` of the current checkout.
 
 Both runs use the same working directory path (the first run's directory is
@@ -59,9 +61,15 @@ def export_base_tree(target: Path) -> Path:
              "src", "nodes/lr_synthetic", "configs/nodes/lr_synthetic.yaml"],
             check=True, capture_output=True).stdout
     except (OSError, subprocess.CalledProcessError) as error:  # pragma: no cover - environment
-        pytest.skip(f"cannot export base commit {BASE_COMMIT}: {error}")
+        message = f"cannot export base commit {BASE_COMMIT}: {error}"
+        if os.environ.get("TRACKG_T0_ALLOW_SKIP") == "1":
+            pytest.skip(message)
+        pytest.fail(message + " (set TRACKG_T0_ALLOW_SKIP=1 to skip explicitly)")
     with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
-        tar.extractall(target, filter="data")
+        try:
+            tar.extractall(target, filter="data")
+        except TypeError:  # pragma: no cover - Python without extraction filters
+            tar.extractall(target)
     return target
 
 
