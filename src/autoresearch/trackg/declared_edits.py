@@ -46,19 +46,22 @@ def declare_edits(spec: TrackGNodeSpec, node_dir: str | Path, edit_paths: Sequen
             text = raw.decode("utf-8")
             work = Path(tmp) / f"e{index}"
             shutil.copytree(node, work, symlinks=True, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-            result = apply_diff(work, text, base, evaluated=evaluated, write=False)
+            result = apply_diff(work, text, base, evaluated=evaluated, write=False,
+                                allow_new_files=spec.allow_new_files)
             prov = result.provenance
             if result.status != "applied":
                 detail = prov.get("refusal_detail") or prov.get("inert_reason") or prov.get("duplicate_of")
                 raise DeclaredEditsError(f"{Path(path).name}: {result.status} ({detail})")
             evaluated.register(Path(path).name, code_state_sha256=prov["code_state_sha256"],
-                               normalised_diff_sha256=prov["normalised_diff_sha256"])
+                               normalised_diff_sha256=prov["normalised_diff_sha256"],
+                               incumbent_code_state_sha256=prov["incumbent_code_state_sha256"])
             entries.append({
                 "id": f"E{index}",
                 "file": Path(path).name,
                 "sha256": hashlib.sha256(raw).hexdigest(),
                 "normalised_diff_sha256": prov["normalised_diff_sha256"],
                 "files_touched": prov["files_touched"],
+                "incumbent_code_state_sha256": prov["incumbent_code_state_sha256"],
                 "code_state_sha256": prov["code_state_sha256"],
             })
     return {
@@ -68,6 +71,7 @@ def declare_edits(spec: TrackGNodeSpec, node_dir: str | Path, edit_paths: Sequen
         "run_budget": {"kind": spec.run_budget.kind, "value": spec.run_budget.value},
         "baseline_code_state_sha256": baseline[0],
         "baseline_code_state_raw_sha256": baseline[1],
+        "allow_new_files": spec.allow_new_files,
         "edits": entries,
         "measured": False,
     }

@@ -319,21 +319,34 @@ def _limits_preexec(limits: ResourceLimits):
     return apply
 
 
-def _group_alive(pgid: int) -> bool:
-    """Whether any non-zombie process is in process group *pgid*."""
+def _run_members(leader: int) -> list[int] | None:
+    """Non-zombie processes in the run's process group **or session** (both have the id of the
+    session leader, because the shell starts with ``start_new_session``).  A child that left
+    the group with ``setpgid`` but stayed in the session is included; one that called
+    ``setsid`` is not.  ``None`` if ``/proc`` is unavailable."""
     proc_root = Path("/proc")
-    if proc_root.is_dir():
-        for entry in proc_root.iterdir():
-            if not entry.name.isdigit():
-                continue
-            try:
-                stat = (entry / "stat").read_text()
-            except OSError:
-                continue
-            fields = stat[stat.rfind(")") + 2:].split()
-            if len(fields) > 2 and fields[0] != "Z" and fields[2] == str(pgid):
-                return True
-        return False
+    if not proc_root.is_dir():
+        return None
+    members = []
+    me = os.getpid()
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit() or int(entry.name) == me:
+            continue
+        try:
+            stat = (entry / "stat").read_text()
+        except OSError:
+            continue
+        fields = stat[stat.rfind(")") + 2:].split()
+        if len(fields) > 3 and fields[0] != "Z" and str(leader) in (fields[2], fields[3]):
+            members.append(int(entry.name))
+    return members
+
+
+def _group_alive(pgid: int) -> bool:
+    """Whether any non-zombie process is in the run's process group or session."""
+    members = _run_members(pgid)
+    if members is not None:
+        return bool(members)
     try:
         os.killpg(pgid, 0)
     except ProcessLookupError:
@@ -348,6 +361,11 @@ def _sigkill_group(pgid: int) -> None:
         os.killpg(pgid, signal.SIGKILL)
     except ProcessLookupError:
         pass
+    for pid in _run_members(pgid) or []:  # session members outside the group
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 def _kill_group(proc: subprocess.Popen, grace: float) -> str:

@@ -53,7 +53,7 @@ _WALL_CLOCK_KEY_RE = re.compile(
 )
 # A run command that passes a time budget to the task is refused too.
 _WALL_CLOCK_COMMAND_RE = re.compile(
-    r"(?i)(time[_-]?budget|--time(?![\w-])|--timeout\b|--?max[_-]?time|wall[_-]?clock|--duration\b|"
+    r"(?i)(\b[A-Z_]*(TIMEOUT|SECONDS|MINUTES|HOURS|TIME_LIMIT|MAX_TIME|WALLCLOCK)[A-Z_]*=|time[_-]?budget|--time(?![\w-])|--timeout\b|--?max[_-]?time|wall[_-]?clock|--duration\b|"
     r"--?(seconds|minutes|hours)\b|\btimeout\s+\d)"
 )
 _WALL_CLOCK_KIND_RE = re.compile(
@@ -290,10 +290,12 @@ class TrackGNodeSpec:
         if any(not f for f in norm_frozen):
             raise TrackGNodeSpecError("frozen_paths: '.' would freeze the whole node")
         command = str(payload["run_command"])
-        if _WALL_CLOCK_COMMAND_RE.search(command):
+        found = _WALL_CLOCK_COMMAND_RE.search(command)
+        if found:
             raise WallClockBudgetError(
-                f"run_command {command!r} passes a time budget; use run_budget (steps or tokens) and "
-                "{budget} (R1-BX-D5)")
+                f"run_command {command!r} contains {found.group(0)!r}, which looks like a time budget; "
+                "use run_budget (steps or tokens) and {budget} (R1-BX-D5). Move a flag that is not a "
+                "time budget into the wrapper")
         trials = 1
         if "default_budget" in payload:
             budget = payload["default_budget"]
@@ -305,6 +307,8 @@ class TrackGNodeSpec:
         seed_env = payload.get("seed_env", {"train": "AR_TRAIN_SEED", "split": "AR_SPLIT_SEED"})
         if not isinstance(seed_env, Mapping) or set(seed_env) != {"train", "split"}:
             raise TrackGNodeSpecError("seed_env must be a mapping {train, split}")
+        if str(seed_env["train"]) == str(seed_env["split"]):
+            raise TrackGNodeSpecError("seed_env.train and seed_env.split must be different variables")
         selection = SelectionPolicy.from_mapping(payload["selection"])
         metric = MetricRules.from_mapping(payload["metric"])
         spec = cls(
@@ -364,10 +368,12 @@ def refuse_wall_clock_keys(payload: object, *, _path: str = "") -> None:
     if isinstance(payload, Mapping):
         for key, value in payload.items():
             here = f"{_path}.{key}" if _path else str(key)
-            if _WALL_CLOCK_KEY_RE.search(str(key)):
+            found = _WALL_CLOCK_KEY_RE.search(str(key))
+            if found:
                 raise WallClockBudgetError(
-                    f"{here}: a wall-clock budget is refused; use run_budget with kind steps or "
-                    "tokens (R1-BX-D5)"
+                    f"{here}: key contains the time word {found.group(0)!r}; a wall-clock budget is "
+                    "refused (R1-BX-D5). Use run_budget (steps or tokens); rename a key that is not a "
+                    "time budget (for example min_lr -> lr_min) or move it into prose"
                 )
             refuse_wall_clock_keys(value, _path=here)
     elif isinstance(payload, (list, tuple)):

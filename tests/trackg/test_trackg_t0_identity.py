@@ -135,6 +135,11 @@ def test_no_base_file_differs_and_no_t0_module_imports_trackg():
             pytest.skip(str(error))
         pytest.fail(f"cannot diff against {BASE_COMMIT}: {error}")
     assert changed == [], f"files of the base commit changed: {changed}"
+    # the same against the working tree, so uncommitted edits of base files are caught too
+    worktree_changed = subprocess.run(
+        ["git", "-C", str(ROOT), "diff", "--diff-filter=MDRT", "--name-only", BASE_COMMIT],
+        check=True, capture_output=True, text=True).stdout.split()
+    assert worktree_changed == [], f"files of the base commit changed in the working tree: {worktree_changed}"
     import ast
 
     offenders = []

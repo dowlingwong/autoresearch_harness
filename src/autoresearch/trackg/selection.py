@@ -48,6 +48,13 @@ def check_selection_policy(spec: Any) -> None:
             raise SelectionPolicyError(
                 f"metric_regex {spec.metric.metric_regex!r} matches the test-metric line {sample.strip()!r}; "
                 "anchor it on the validation metric")
+    # Mirror check: the test regex must not match the validation metric's line either.
+    if test_regex is not None:
+        for sample in (f"{spec.metric_name}: 0.5", f"{spec.metric_name}=0.5", f"{spec.metric_name} 0.5"):
+            if re.search(test_regex, sample, re.MULTILINE):
+                raise SelectionPolicyError(
+                    f"test_metric_regex {test_regex!r} matches the validation-metric line {sample!r}; "
+                    "anchor it on the test metric")
 
 
 def selection_value(outcome: RunOutcome) -> float | None:

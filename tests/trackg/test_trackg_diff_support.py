@@ -150,7 +150,8 @@ def test_duplicates_by_normalised_diff_and_by_resulting_code_state(env, tmp_path
     node, base = env
     evaluated = EvaluatedStates()
     evaluated.register("baseline", code_state_sha256=code_state_hashes(node, base)[0])
-    # same diff text modulo trailing whitespace and line numbers -> same normalised diff hash
+    # same diff text modulo trailing whitespace and line numbers -> same normalised diff hash and
+    # same resulting code state; the code state decides (review round 2, finding 1)
     first = apply_diff(node, LR, base, evaluated=evaluated, write=False)
     assert first.status == "applied"
     evaluated.register("t1", code_state_sha256=first.provenance["code_state_sha256"],
@@ -159,7 +160,8 @@ def test_duplicates_by_normalised_diff_and_by_resulting_code_state(env, tmp_path
     variant = LR.replace("@@ -8,1 +8,1 @@", "@@ -9,1 +9,1 @@").replace("+LEARNING_RATE = 0.2", "+LEARNING_RATE = 0.2  ")
     dup = apply_diff(node, variant, base, evaluated=evaluated)
     assert (dup.status, dup.provenance["duplicate_kind"], dup.provenance["duplicate_of"]) == (
-        "duplicate", "normalised_diff", "t1")
+        "duplicate", "code_state", "t1")
+    assert dup.provenance["normalised_diff_sha256"] == first.provenance["normalised_diff_sha256"]
     # a different diff text that reaches the same code state (inline comment) -> code-state duplicate
     other = "--- a/train.py\n+++ b/train.py\n@@ -8,1 +8,1 @@\n-LEARNING_RATE = 0.1\n+LEARNING_RATE = 0.2  # faster\n"
     dup2 = apply_diff(node, other, base, evaluated=evaluated)

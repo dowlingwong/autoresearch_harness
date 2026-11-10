@@ -17,18 +17,24 @@
    ignores whitespace and comments; for other files, lines are compared with
    trailing whitespace, blank lines and ``#`` comment lines removed.  An inert
    diff is not written;
-5. **duplicate detection** against an :class:`EvaluatedStates` registry: the
-   normalised diff hash (per hunk, the context, removed and added lines in
-   order, normalised; line numbers ignored) *against the same incumbent*, and
-   the hash of the resulting code state (the same normalisation over every
-   editable file of the copy; files that are not UTF-8 are hashed by their
-   bytes).  The same diff against a *different* incumbent reaches a new code
-   state and is not a duplicate; it is reported in
-   ``seen_diff_other_incumbent`` so a campaign policy can tell it apart;
+5. **duplicate detection** against an :class:`EvaluatedStates` registry.  The
+   **resulting code-state hash** (the same normalisation over every editable
+   file of the copy; files that are not UTF-8 are hashed by their bytes) is
+   authoritative: a diff is a duplicate if and only if its resulting code
+   state was already evaluated.  The normalised diff hash (per hunk, the
+   context, removed and added lines in order; line numbers ignored) is
+   information only: ``same_diff_hash_other_state`` (same incumbent, same
+   diff hash, different resulting code, for example the same edit to another
+   copy of a repeated block) and ``seen_diff_other_incumbent`` (the same diff
+   evaluated against another incumbent);
 5b. **new files** are refused unless the caller allows them
-   (``allow_new_files``, from the node spec); even then a new module or
-   package whose name could shadow an import (a standard-library or installed
-   top-level module, ``sitecustomize``, ``usercustomize``) is refused;
+   (``allow_new_files``, from the node spec).  Even then a new file is refused
+   if a path component that does not exist yet in the copy, or the new
+   module's own name, could shadow an import: ``sitecustomize``,
+   ``usercustomize``, a standard-library or built-in module, or a top-level
+   module found on a **fixed import path** (the run interpreter's ``sys.path``
+   queried from ``/``, without ``''``, the current directory or the copy).
+   The basis used is recorded in the provenance (``shadow_check``);
 6. **provenance**: the diff text and its hash, the normalised diff hash, the
    files touched, the hunks with any offsets, and the incumbent and resulting
    code-state hashes (normalised and raw).
@@ -39,14 +45,16 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import importlib.machinery
 import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 from autoresearch.control_plane.permissions import validate_edit_scope
 from autoresearch.nodes.spec import NodeSpec
@@ -359,16 +367,23 @@ class EvaluatedStates:
 
     def check(self, *, normalised_diff_sha256: str | None, code_state_sha256: str | None,
               incumbent_code_state_sha256: str | None = None) -> dict[str, Any]:
+        """The resulting code state decides; diff-hash matches are reported as information.
+
+        (Review T2 round 2, finding 1: two different edits with identical context, for
+        example ``-U0`` diffs or edits to different copies of a repeated block, share a
+        diff hash but reach different code states; they are not duplicates.)
+        """
         verdict: dict[str, Any] = {"duplicate": False, "duplicate_kind": None, "duplicate_of": None,
-                                   "seen_diff_other_incumbent": None}
+                                   "same_diff_hash_other_state": None, "seen_diff_other_incumbent": None}
+        if code_state_sha256 is not None and code_state_sha256 in self.by_state:
+            verdict.update(duplicate=True, duplicate_kind="code_state", duplicate_of=self.by_state[code_state_sha256])
         if normalised_diff_sha256 is not None:
             key = self._key(incumbent_code_state_sha256, normalised_diff_sha256)
             if key in self.by_diff:
-                verdict.update(duplicate=True, duplicate_kind="normalised_diff", duplicate_of=self.by_diff[key])
-                return verdict
-            verdict["seen_diff_other_incumbent"] = self.diff_any.get(normalised_diff_sha256)
-        if code_state_sha256 is not None and code_state_sha256 in self.by_state:
-            verdict.update(duplicate=True, duplicate_kind="code_state", duplicate_of=self.by_state[code_state_sha256])
+                if not verdict["duplicate"]:
+                    verdict["same_diff_hash_other_state"] = self.by_diff[key]
+            elif normalised_diff_sha256 in self.diff_any:
+                verdict["seen_diff_other_incumbent"] = self.diff_any[normalised_diff_sha256]
         return verdict
 
     def to_dict(self) -> dict[str, Any]:
@@ -383,19 +398,64 @@ class EvaluatedStates:
 SHADOW_ALWAYS = frozenset({"sitecustomize", "usercustomize"})
 
 
-def shadowing_name(rel: str) -> str | None:
-    """The first path component (or ``.py`` stem) of a new file that could shadow an import."""
+_IMPORT_PATH_CACHE: dict[str, tuple[str, ...]] = {}
+
+
+def fixed_import_path(interpreter: str = "python3", *, exclude: Iterable[str | Path] = ()) -> tuple[list[str], str]:
+    """The run interpreter's ``sys.path`` queried from ``/`` (so no working directory is on
+    it), without ``''``, ``/``, the harness's current directory and *exclude*.  Falls back to
+    this process's ``sys.path`` with the same exclusions.  Returns (path, basis)."""
+    basis = f"interpreter:{interpreter}"
+    entries = _IMPORT_PATH_CACHE.get(interpreter)
+    if entries is None:
+        try:
+            out = subprocess.run([interpreter, "-c", "import json, sys; print(json.dumps(sys.path))"],
+                                 cwd="/", capture_output=True, text=True, timeout=30, check=True).stdout
+            entries = tuple(str(e) for e in json.loads(out))
+            _IMPORT_PATH_CACHE[interpreter] = entries
+        except (OSError, subprocess.SubprocessError, ValueError):
+            entries = tuple(sys.path)
+            basis = "harness_sys_path"
+    banned = {os.path.realpath(os.getcwd()), os.path.realpath("/")}
+    banned_dirs = [os.path.realpath(str(e)) for e in exclude]
+    path = []
+    for entry in entries:
+        if not entry:
+            continue
+        real = os.path.realpath(entry)
+        if real in banned or any(real == d or real.startswith(d + os.sep) for d in banned_dirs):
+            continue
+        path.append(entry)
+    return path, basis
+
+
+def shadowing_name(rel: str, work_dir: str | Path | None = None, *,
+                   import_path: Sequence[str] | None = None) -> str | None:
+    """The first name of a new file's path that could newly shadow an import, or ``None``.
+
+    Only path components that do not exist yet in *work_dir* are checked (an existing
+    directory cannot newly shadow anything), plus the stem of a new module file.
+    """
     pure = PurePosixPath(rel)
-    names = list(pure.parts[:-1])
+    names: list[str] = []
+    current = Path(work_dir) if work_dir is not None else None
+    for part in pure.parts[:-1]:
+        if current is not None:
+            current = current / part
+            if current.exists():
+                continue
+        names.append(part)
     if pure.suffix in {".py", ".pyc", ".so", ".pth"} or pure.name == "__init__.py":
         names.append(pure.stem)
+    if import_path is None:
+        import_path, _ = fixed_import_path(exclude=[work_dir] if work_dir is not None else [])
     for name in names:
         if not name.isidentifier() or name == "__init__":
             continue
-        if name in SHADOW_ALWAYS or name in sys.stdlib_module_names:
+        if name in SHADOW_ALWAYS or name in sys.stdlib_module_names or name in sys.builtin_module_names:
             return name
         try:
-            if importlib.util.find_spec(name) is not None:
+            if importlib.machinery.PathFinder.find_spec(name, list(import_path)) is not None:
                 return name
         except (ImportError, ValueError):
             continue
@@ -423,6 +483,7 @@ def apply_diff(
     evaluated: EvaluatedStates | None = None,
     write: bool = True,
     allow_new_files: bool = False,
+    interpreter: str = "python3",
 ) -> DiffApplication:
     """Apply *diff_text* inside the per-run copy *work_dir*; see the module docstring.
 
@@ -448,7 +509,9 @@ def apply_diff(
         "duplicate": False,
         "duplicate_kind": None,
         "duplicate_of": None,
+        "same_diff_hash_other_state": None,
         "seen_diff_other_incumbent": None,
+        "shadow_check": None,
         "refusal": None,
         "refusal_detail": None,
     }
@@ -478,7 +541,12 @@ def apply_diff(
                 if not allow_new_files:
                     raise DiffRefused("new_file_not_allowed",
                                       f"{patch.path}: the node does not allow new files (allow_new_files)")
-                name = shadowing_name(patch.path)
+                if provenance["shadow_check"] is None:
+                    import_path, basis = fixed_import_path(interpreter, exclude=[work])
+                    provenance["shadow_check"] = {"basis": basis, "import_path": import_path,
+                                                  "always": sorted(SHADOW_ALWAYS),
+                                                  "stdlib_and_builtin": True}
+                name = shadowing_name(patch.path, work, import_path=provenance["shadow_check"]["import_path"])
                 if name is not None:
                     raise DiffRefused("shadowing_module",
                                       f"{patch.path}: {name!r} could shadow an importable module")
