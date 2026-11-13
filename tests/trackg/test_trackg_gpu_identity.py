@@ -38,11 +38,22 @@ def test_no_assignment_is_refused():
         assigned_ids({"CUDA_VISIBLE_DEVICES": SHORT})
 
 
-def test_cuda_visible_devices_uuid_must_agree_index_is_ignored():
+def test_cuda_visible_devices_uuid_and_index_forms_are_checked():
     uuids, note = resolve({"NVIDIA_VISIBLE_DEVICES": SHORT, "CUDA_VISIBLE_DEVICES": "0"}, SMI)
-    assert uuids == (FULL,) and note["cuda_visible_devices_ignored"] == "0"
-    with pytest.raises(GpuIdentityError, match="CUDA_VISIBLE_DEVICES"):
+    assert uuids == (FULL,) and note["cuda_visible_devices_index_checked"] == "0"
+    with pytest.raises(GpuIdentityError, match="nvidia-smi order"):
+        resolve({"NVIDIA_VISIBLE_DEVICES": SHORT, "CUDA_VISIBLE_DEVICES": "1"}, SMI)
+    with pytest.raises(GpuIdentityError, match="nvidia-smi order"):
+        resolve({"NVIDIA_VISIBLE_DEVICES": SHORT, "CUDA_VISIBLE_DEVICES": "5"}, SMI)
+    with pytest.raises(GpuIdentityError, match="other GPUs"):
         resolve({"NVIDIA_VISIBLE_DEVICES": SHORT, "CUDA_VISIBLE_DEVICES": "GPU-9f8e7d6c"}, SMI)
+    with pytest.raises(GpuIdentityError, match="mixes"):
+        resolve({"NVIDIA_VISIBLE_DEVICES": SHORT, "CUDA_VISIBLE_DEVICES": f"{SHORT},1"}, SMI)
+
+
+def test_short_and_full_forms_of_one_gpu_agree():
+    env = {"NVIDIA_VISIBLE_DEVICES": SHORT, "_CONDOR_AssignedGPUs": FULL, "CUDA_VISIBLE_DEVICES": FULL}
+    assert resolve(env, SMI)[0] == (FULL,)
 
 
 def test_ambiguous_or_missing_prefix_is_refused():

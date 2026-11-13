@@ -10,12 +10,13 @@ Rules:
 
 * identity sources are ``NVIDIA_VISIBLE_DEVICES`` and ``_CONDOR_AssignedGPUs``: at least one must be
   set; every entry must be a UUID form (``GPU-…`` or ``MIG-…``); index forms (``0``), ``all``, ``none``,
-  ``void`` and empty values are refused; when both are set they must name the same GPUs;
-* ``CUDA_VISIBLE_DEVICES``, if it holds UUID forms, must agree as well; if it holds indices it is not an
-  identity source and is reported (``cuda_visible_devices_ignored``), since inside a container the
-  visible GPUs are renumbered from 0;
-* each assigned id must be a prefix of exactly one UUID listed by ``nvidia-smi -L``; no match or more
-  than one match is refused; two ids resolving to the same GPU are refused.
+  ``void`` and empty values are refused;
+* each source is resolved separately: each id must be a prefix of exactly one UUID listed by
+  ``nvidia-smi -L`` (short and full forms of one GPU therefore agree); no match, more than one match, or two
+  ids resolving to the same GPU are refused; the sources must resolve to the same set of GPUs;
+* ``CUDA_VISIBLE_DEVICES``, if set: UUID forms must resolve to the same GPUs; index forms are checked against
+  ``nvidia-smi -L`` order (the runner sets ``CUDA_DEVICE_ORDER=PCI_BUS_ID``; inside a container only the
+  assigned GPUs are listed, renumbered from 0); a list mixing both forms is refused.
 """
 from __future__ import annotations
 
@@ -59,40 +60,54 @@ def parse_nvidia_smi_l(text: str) -> list[str]:
     return uuids
 
 
-def assigned_ids(env: Mapping[str, str]) -> tuple[list[str], dict]:
-    present = {name: env[name] for name in SOURCES if name in env}
-    if not present:
-        raise GpuIdentityError(f"none of {SOURCES} is set: no HTCondor GPU assignment to resolve")
-    lists = {name: _uuid_list(name, value) for name, value in present.items()}
-    first = next(iter(lists.values()))
-    for name, items in lists.items():
-        if set(items) != set(first):
-            raise GpuIdentityError(f"GPU assignment sources disagree: {present}")
-    note = {"sources": present}
-    cuda = env.get("CUDA_VISIBLE_DEVICES")
-    if cuda is not None:
-        parts = _split(cuda)
-        if all(_UUID_FORM.match(p) for p in parts):
-            if set(parts) != set(first):
-                raise GpuIdentityError(f"CUDA_VISIBLE_DEVICES={cuda!r} disagrees with {present}")
-            note["cuda_visible_devices"] = cuda
-        else:
-            note["cuda_visible_devices_ignored"] = cuda
-    return first, note
-
-
-def resolve(env: Mapping[str, str], smi_text: str) -> tuple[tuple[str, ...], dict]:
-    ids, note = assigned_ids(env)
-    listed = parse_nvidia_smi_l(smi_text)
+def _resolve_ids(name: str, ids: list[str], listed: list[str]) -> list[str]:
     full = []
     for gid in ids:
         matches = [u for u in listed if u.startswith(gid)]
         if len(matches) != 1:
-            raise GpuIdentityError(f"assigned GPU {gid!r} matches {len(matches)} UUIDs in nvidia-smi -L ({listed})")
+            raise GpuIdentityError(f"{name}: assigned GPU {gid!r} matches {len(matches)} UUIDs in nvidia-smi -L ({listed})")
         full.append(matches[0])
     if len(set(full)) != len(full):
-        raise GpuIdentityError(f"assigned ids {ids} resolve to the same GPU")
-    note.update(assigned=ids, resolved=full, nvidia_smi_uuids=listed)
+        raise GpuIdentityError(f"{name}: ids {ids} resolve to the same GPU")
+    return full
+
+
+def assigned_ids(env: Mapping[str, str]) -> tuple[list[str], dict]:
+    """The assignment as written by the first identity source (UUID forms only), plus a note of all sources."""
+    present = {name: env[name] for name in SOURCES if name in env}
+    if not present:
+        raise GpuIdentityError(f"none of {SOURCES} is set: no HTCondor GPU assignment to resolve")
+    lists = {name: _uuid_list(name, value) for name, value in present.items()}
+    return next(iter(lists.values())), {"sources": present, "_lists": lists}
+
+
+def resolve(env: Mapping[str, str], smi_text: str) -> tuple[tuple[str, ...], dict]:
+    """Resolve every identity source separately to full UUIDs and require the same set; check CUDA_VISIBLE_DEVICES."""
+    first, note = assigned_ids(env)
+    lists = note.pop("_lists")
+    listed = parse_nvidia_smi_l(smi_text)
+    resolved = {name: _resolve_ids(name, ids, listed) for name, ids in lists.items()}
+    full = resolved[next(iter(resolved))]
+    for name, uuids in resolved.items():
+        if set(uuids) != set(full):
+            raise GpuIdentityError(f"GPU assignment sources disagree after resolution: {note['sources']}")
+    cuda = env.get("CUDA_VISIBLE_DEVICES")
+    if cuda is not None:
+        parts = _split(cuda)
+        uuid_parts = [bool(_UUID_FORM.match(x)) for x in parts]
+        if all(uuid_parts):
+            if set(_resolve_ids("CUDA_VISIBLE_DEVICES", parts, listed)) != set(full):
+                raise GpuIdentityError(f"CUDA_VISIBLE_DEVICES={cuda!r} names other GPUs than {note['sources']}")
+            note["cuda_visible_devices"] = cuda
+        elif all(x.isdigit() for x in parts):
+            # Index form: with CUDA_DEVICE_ORDER=PCI_BUS_ID (the runner sets it) the order is nvidia-smi's.
+            idx = [int(x) for x in parts]
+            if any(i >= len(listed) for i in idx) or {listed[i] for i in idx} != set(full):
+                raise GpuIdentityError(f"CUDA_VISIBLE_DEVICES={cuda!r} does not name the assigned GPUs in nvidia-smi order")
+            note["cuda_visible_devices_index_checked"] = cuda
+        else:
+            raise GpuIdentityError(f"CUDA_VISIBLE_DEVICES={cuda!r} mixes UUID and index forms")
+    note.update(assigned=first, resolved=full, nvidia_smi_uuids=listed)
     return tuple(full), note
 
 
