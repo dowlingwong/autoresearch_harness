@@ -36,6 +36,33 @@ POOL_22OCT = {
     "openml_climate": (1467, "climate-model-simulation-crashes", "Class"),
 }
 TEMPLATE_FILES = ("benchmark.py", "train.py", "config.yaml", "README.md")
+# D28 start configurations (paper PLAN §10 R1-D28-REPAIR, 27 Oct; harness commit 6adf385 "Apply predeclared D28 start
+# configurations"): the rule was predeclared before any repaired-node measurement and moved these two pool nodes'
+# start config away from the template. Their config.yaml must equal the template with exactly these lines changed;
+# every other file, and every other node's config.yaml, still equals the template byte for byte.
+D28_START_CONFIGS = {
+    "openml_sonar": {"C": "0.01", "max_iter": "100"},
+    "openml_blood_transfusion": {"C": "0.01", "max_iter": "100"},
+}
+
+
+def expected_config(node: str, template: bytes) -> bytes:
+    """The template's config.yaml with the node's recorded D28 values substituted (each key exactly once)."""
+    changes = D28_START_CONFIGS.get(node)
+    if not changes:
+        return template
+    lines = template.decode().splitlines(keepends=True)
+    seen = set()
+    for i, line in enumerate(lines):
+        key = line.split(":", 1)[0]
+        if key in changes:
+            if key in seen:
+                raise AssertionError(f"{key} appears twice in the template")
+            seen.add(key)
+            lines[i] = f"{key}: {changes[key]}\n"
+    if seen != set(changes):
+        raise AssertionError(f"template lacks {sorted(set(changes) - seen)}")
+    return "".join(lines).encode()
 
 
 def _load_benchmark(node_dir: Path):
@@ -111,8 +138,22 @@ class TestOpenmlPool22Oct(unittest.TestCase):
                 self.assertEqual(meta, {"node_name": name, "dataset_id": dataset_id,
                                         "dataset_name": dataset_name, "target": target})
                 for filename in TEMPLATE_FILES:
-                    self.assertEqual((node_dir / filename).read_bytes(),
-                                     (ROOT / "nodes" / "openml_template" / filename).read_bytes(), filename)
+                    template = (ROOT / "nodes" / "openml_template" / filename).read_bytes()
+                    want = expected_config(name, template) if filename == "config.yaml" else template
+                    self.assertEqual((node_dir / filename).read_bytes(), want, filename)
+
+    def test_d28_start_configs_differ_from_the_template_only_in_the_recorded_keys(self) -> None:
+        template = (ROOT / "nodes" / "openml_template" / "config.yaml").read_bytes()
+        self.assertTrue(set(D28_START_CONFIGS) <= set(POOL_22OCT))
+        for name, changes in D28_START_CONFIGS.items():
+            with self.subTest(node=name):
+                got = (ROOT / "nodes" / name / "config.yaml").read_bytes().decode().splitlines()
+                base = template.decode().splitlines()
+                self.assertEqual(len(got), len(base))
+                differing = {g.split(":", 1)[0] for g, b in zip(got, base) if g != b}
+                self.assertEqual(differing, set(changes))
+                # a recorded value that equals the template's would make the exception vacuous
+                self.assertNotEqual(expected_config(name, template), template)
 
     def test_data_cache_is_kept_but_ignored(self) -> None:
         for name in (*POOL_22OCT, "openml_credit_g"):
