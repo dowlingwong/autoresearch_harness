@@ -105,8 +105,10 @@ def resolve(env: Mapping[str, str], smi_text: str) -> tuple[tuple[str, ...], dic
             if any(i >= len(listed) for i in idx) or {listed[i] for i in idx} != set(full):
                 raise GpuIdentityError(f"CUDA_VISIBLE_DEVICES={cuda!r} does not name the assigned GPUs in nvidia-smi order")
             note["cuda_visible_devices_index_checked"] = cuda
-        else:
+        elif any(uuid_parts):
             raise GpuIdentityError(f"CUDA_VISIBLE_DEVICES={cuda!r} mixes UUID and index forms")
+        else:
+            raise GpuIdentityError(f"CUDA_VISIBLE_DEVICES={cuda!r} is empty, negative or not a GPU list")
     note.update(assigned=first, resolved=full, nvidia_smi_uuids=listed)
     return tuple(full), note
 
