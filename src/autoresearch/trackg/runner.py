@@ -168,6 +168,7 @@ class WorkingCopyRunner:
         evaluated: EvaluatedStates | None = None,
         register_evaluated: bool = True,
         keep_code_snapshot: bool = True,
+        interpreter: str = "python3",
     ) -> RunResult:
         """Copy, optionally apply a diff, run under limits, classify and record.
 
@@ -196,8 +197,9 @@ class WorkingCopyRunner:
         record["incumbent_code_state_sha256"], record["incumbent_code_state_raw_sha256"] = normalised, raw
         application: DiffApplication | None = None
         if diff_text is not None:
+            # ``interpreter``: the run's Python, for the new-file shadowing check (kit review round 3 note)
             application = apply_diff(work, diff_text, self.base_spec, evaluated=evaluated,
-                                     allow_new_files=self.spec.allow_new_files)
+                                     allow_new_files=self.spec.allow_new_files, interpreter=interpreter)
             record["diff"] = {"status": application.status, **application.provenance}
             if not application.applied:
                 record["executed"] = False

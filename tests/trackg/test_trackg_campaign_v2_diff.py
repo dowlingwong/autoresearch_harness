@@ -79,6 +79,7 @@ def test_repeated_timeout_becomes_divergent_after_two_and_is_never_rerun(tmp_pat
     chat = ScriptedChat([reply(MODE_SLEEP, "sleepy"), reply(MODE_SLEEP, "sleepy again")])
     entries = run_v2_diff_campaign(spec(), node, tmp_path / "runs", V2DiffManager(chat, "m"), fast, 2,
                                    enable_v2_diff=True)
+    assert entries[0]["runs"][0]["outcome"]["kind"] == "ok"            # a real ok baseline under the short timeout
     first = entries[1]
     assert [r["outcome"]["reason"] for r in first["runs"]] == ["timeout", "timeout"]
     assert first["final_outcome"]["kind"] == "divergent" and first["final_outcome"]["reason"] == "timeout_repeated"
@@ -87,35 +88,117 @@ def test_repeated_timeout_becomes_divergent_after_two_and_is_never_rerun(tmp_pat
     assert entries[2]["decision"] == "not_run_duplicate" and len(chat.payloads) == 2
 
 
+def _scripted_parse(monkeypatch, plan):
+    """Script outcomes at the log-parsing step: plan maps a run-id prefix to a list of outcomes, used in turn."""
+    from autoresearch.trackg import runner as runner_mod
+    real = runner_mod.parse_run_log
+    queues = {k: list(v) for k, v in plan.items()}
+
+    def fake(log_path, process, spec):
+        run_id = log_path.parent.name
+        for prefix, queue in queues.items():
+            if run_id.startswith(prefix) and queue:
+                return queue.pop(0)
+        return real(log_path, process, spec)
+
+    monkeypatch.setattr(runner_mod, "parse_run_log", fake)
+
+
 def test_other_infrastructure_failures_rerun_and_do_not_count_toward_the_cap(tmp_path, monkeypatch):
-    from autoresearch.trackg import campaign_v2_diff as camp
     from autoresearch.trackg.outcome import RunOutcome
     node = make_node(tmp_path)
-    real = camp.WorkingCopyRunner.run
-
-    def fake_run(self, run_id, limits, **kw):
-        result = real(self, run_id, limits, **kw)
-        if run_id.startswith("s001"):
-            result.outcome = RunOutcome.infrastructure_failure("htcondor_eviction")
-            result.record["outcome"] = result.outcome.to_dict()
-        return result
-
-    monkeypatch.setattr(camp.WorkingCopyRunner, "run", fake_run)
+    infra = RunOutcome.infrastructure_failure("infrastructure_log_pattern", pattern="DUE TO TIME LIMIT")
+    _scripted_parse(monkeypatch, {"s001": [infra, infra, infra]})
     entries = run_v2_diff_campaign(spec(), node, tmp_path / "runs", V2DiffManager(ScriptedChat([reply(lr("0.1", "0.3"))]), "m"),
                                    LIMITS, 1, enable_v2_diff=True, max_infra_reruns=2)
     step = entries[1]
     assert [r["run_id"] for r in step["runs"]] == ["s001", "s001_r1", "s001_r2"]
-    assert step["decision"] == "infrastructure_failure_final" and step["final_outcome"]["reason"] == "htcondor_eviction"
+    assert all(r["executed"] is True for r in step["runs"])                 # really rerun, not refused
+    assert step["decision"] == "infrastructure_failure_final"
 
 
-def test_prompt_shows_editable_files_only():
-    import tempfile
-    from pathlib import Path
-    with tempfile.TemporaryDirectory() as d:
-        node = make_node(Path(d))
-        text = build_prompt(spec(), node, [])
+def test_timeouts_interleaved_with_infra_failures_and_across_steps(tmp_path, monkeypatch):
+    """One timeout, then an infra failure, then a timeout of the same code state: capped (2 timeouts); the infra
+    rerun does not count. The count carries across steps: a code state that timed out once in step 1 (then ran ok
+    on its rerun) is capped by its next timeout in a later step only if it is run again (here it is a duplicate)."""
+    from autoresearch.trackg.outcome import RunOutcome
+    node = make_node(tmp_path)
+    t_out = RunOutcome.infrastructure_failure("timeout")
+    infra = RunOutcome.infrastructure_failure("killed", signal=9)
+    _scripted_parse(monkeypatch, {"s001": [t_out, infra, t_out]})
+    entries = run_v2_diff_campaign(spec(), node, tmp_path / "runs",
+                                   V2DiffManager(ScriptedChat([reply(lr("0.1", "0.3"))]), "m"), LIMITS, 1,
+                                   enable_v2_diff=True)
+    step = entries[1]
+    assert [r["outcome"]["reason"] for r in step["runs"]] == ["timeout", "killed", "timeout"]
+    assert step["final_outcome"]["reason"] == "timeout_repeated" and step["decision"] == "discarded_divergent"
+
+
+def test_baseline_failure_is_rerun_then_stops_with_a_ledger_line(tmp_path, monkeypatch):
+    from autoresearch.trackg.campaign_v2_diff import V2DiffCampaignError
+    from autoresearch.trackg.outcome import RunOutcome
+    node = make_node(tmp_path)
+    t_out = RunOutcome.infrastructure_failure("timeout")
+    _scripted_parse(monkeypatch, {"s000_baseline": [t_out, t_out]})
+    with pytest.raises(V2DiffCampaignError, match="baseline"):
+        run_v2_diff_campaign(spec(), node, tmp_path / "runs", V2DiffManager(ScriptedChat([]), "m"), LIMITS, 1,
+                             enable_v2_diff=True)
+    ledger = [json.loads(s) for s in (tmp_path / "runs" / "campaign_ledger.jsonl").read_text().splitlines()]
+    assert len(ledger) == 1 and ledger[0]["decision"] == "baseline_failed"
+    assert [r["run_id"] for r in ledger[0]["runs"]] == ["s000_baseline", "s000_baseline_r1"]
+
+
+def test_baseline_infra_failure_then_ok_is_used(tmp_path, monkeypatch):
+    from autoresearch.trackg.outcome import RunOutcome
+    node = make_node(tmp_path)
+    _scripted_parse(monkeypatch, {"s000_baseline": [RunOutcome.infrastructure_failure("killed", signal=9)]})
+    entries = run_v2_diff_campaign(spec(), node, tmp_path / "runs",
+                                   V2DiffManager(ScriptedChat([reply(lr("0.1", "0.05"))]), "m"), LIMITS, 1,
+                                   enable_v2_diff=True)
+    assert entries[0]["decision"] == "baseline" and entries[0]["best_after"] == pytest.approx(0.6)
+    assert entries[1]["decision"] == "discarded"                            # 0.55 < 0.6: not kept unconditionally
+
+
+def test_extra_payload_cannot_override_pinned_fields_and_requests_are_recorded(tmp_path):
+    with pytest.raises(ValueError, match="pinned"):
+        V2DiffManager(ScriptedChat([]), "m", extra_payload={"seed": 1})
+    node = make_node(tmp_path)
+    chat = ScriptedChat([reply(lr("0.1", "0.2"))])
+    entries = run_v2_diff_campaign(spec(), node, tmp_path / "runs",
+                                   V2DiffManager(chat, "fixture", seed=3, extra_payload={"cache_prompt": False}),
+                                   LIMITS, 1, enable_v2_diff=True)
+    req = entries[1]["manager_call"]["request"]
+    assert req["model"] == "fixture" and req["cache_prompt"] is False and req["seed"] == entries[1]["manager_call"]["seed"]
+    assert "messages" not in req and entries[1]["manager_call"]["base_seed"] == 3
+
+
+def test_transport_stop_is_recorded_in_the_ledger(tmp_path):
+    from autoresearch.trackg.manager_v2_diff import ManagerTransportStop
+
+    def broken(payload):
+        raise ConnectionError("down")
+
+    node = make_node(tmp_path)
+    with pytest.raises(ManagerTransportStop):
+        run_v2_diff_campaign(spec(), node, tmp_path / "runs", V2DiffManager(broken, "m"), LIMITS, 2,
+                             enable_v2_diff=True)
+    ledger = [json.loads(s) for s in (tmp_path / "runs" / "campaign_ledger.jsonl").read_text().splitlines()]
+    assert [e["decision"] for e in ledger] == ["baseline", "stop_transport"]
+    assert ledger[1]["manager_call"]["prompt_sha256"]
+
+
+def test_prompt_shows_editable_files_only(tmp_path):
+    import os
+    node = make_node(tmp_path)
+    (node / "model" / "leak.txt").symlink_to(node / "data" / "train.csv")       # link to a frozen file
+    text = build_prompt(spec(), node, [])
     assert "=== train.py ===" in text and "=== model/net.py ===" in text
-    assert "evaluate.py" not in text.split("Editable files")[1] and "model/metric.py ===" not in text
+    body = text.split("Editable files")[1]
+    assert "evaluate.py" not in body and "model/metric.py ===" not in body and "model/leak.txt" not in body
+    assert "x,y" not in body
+    # a frozen entry written with a leading ./ is still frozen
+    dotted = TrackGNodeSpec.from_mapping(spec_mapping(frozen_paths=["evaluate.py", "data/", "./model/metric.py"]))
+    assert "model/metric.py ===" not in build_prompt(dotted, node, []).split("Editable files")[1]
 
 
 def test_openai_compatible_transport_sends_the_payload():

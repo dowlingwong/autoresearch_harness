@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+from autoresearch.trackg.diff_support import editable_files
 from autoresearch.trackg.node_template import TrackGNodeSpec
 from autoresearch.trackg.proposal_v2_diff import (MANAGER_PROPOSAL_V2_DIFF, DiffProposal, ProposalParseError,
                                                   manager_response_format_v2_diff, parse_v2_diff_reply)
@@ -36,6 +37,11 @@ MAX_FILE_CHARS = 20000
 MAX_HISTORY = 12
 
 Chat = Callable[[dict[str, Any]], tuple[str, dict[str, Any]]]
+PINNED_FIELDS = ("model", "messages", "temperature", "seed", "max_tokens", "response_format")
+
+
+class ManagerTransportStop(RuntimeError):
+    """The transport failed (not model output): the campaign records it and STOPs."""
 
 
 def openai_compatible_chat(base_url: str, *, timeout: float = 600.0) -> Chat:
@@ -53,22 +59,22 @@ def openai_compatible_chat(base_url: str, *, timeout: float = 600.0) -> Chat:
 
 
 def _editable_files(spec: TrackGNodeSpec, incumbent_dir: Path) -> list[tuple[str, str]]:
+    """The incumbent's editable text files, chosen exactly as the scope validator chooses them.
+
+    ``diff_support.editable_files`` walks the copy without following directory links and keeps the paths that
+    ``validate_edit_scope`` accepts (editable and not frozen, after path normalisation). Symlinked files are
+    skipped, so a link cannot pull a frozen or outside file into the prompt; undecodable files are skipped."""
     root = Path(incumbent_dir)
     files = []
-    for entry in spec.editable_paths:
-        target = root / entry
-        candidates = sorted(p for p in target.rglob("*") if p.is_file()) if target.is_dir() else [target]
-        for path in candidates:
-            if not path.is_file() or "__pycache__" in path.parts:
-                continue
-            rel = path.relative_to(root).as_posix()
-            if any(rel == f.rstrip("/") or rel.startswith(f.rstrip("/") + "/") for f in spec.frozen_paths):
-                continue
-            try:
-                text = path.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                continue
-            files.append((rel, text if len(text) <= MAX_FILE_CHARS else text[:MAX_FILE_CHARS] + "\n[... truncated]\n"))
+    for rel in editable_files(root, spec.to_base_node_spec()):
+        path = root / rel
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        files.append((rel, text if len(text) <= MAX_FILE_CHARS else text[:MAX_FILE_CHARS] + "\n[... truncated]\n"))
     return files
 
 
@@ -108,6 +114,11 @@ class V2DiffManager:
     extra_payload: dict[str, Any] = field(default_factory=dict)
     schema_version: str = MANAGER_PROPOSAL_V2_DIFF
 
+    def __post_init__(self) -> None:
+        clash = sorted(set(self.extra_payload) & set(PINNED_FIELDS))
+        if clash:
+            raise ValueError(f"extra_payload must not override the pinned request fields {clash}")
+
     def propose(self, spec: TrackGNodeSpec, incumbent_dir: Path, history: Sequence[dict[str, Any]],
                 step: int) -> tuple[DiffProposal | None, dict[str, Any]]:
         prompt = build_prompt(spec, incumbent_dir, history)
@@ -116,11 +127,14 @@ class V2DiffManager:
                    "temperature": 0.0, "seed": seed, "max_tokens": self.max_tokens,
                    "response_format": manager_response_format_v2_diff(), **self.extra_payload}
         call = {"schema_version": self.schema_version, "prompt_version": PROMPT_VERSION,
-                "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(), "seed": seed}
+                "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(), "seed": seed, "base_seed": self.seed,
+                "request": {k: v for k, v in payload.items() if k != "messages"}}
         try:
             content, usage = self.chat(payload)
-        except Exception as error:  # transport failures are not model output: the campaign STOPs on them
-            raise RuntimeError(f"STOP: v2-diff manager transport failed: {type(error).__name__}: {error}") from error
+        except Exception as error:  # any failure inside the transport is not model output: the campaign STOPs
+            stop = ManagerTransportStop(f"STOP: v2-diff manager transport failed: {type(error).__name__}: {error}")
+            stop.call = call
+            raise stop from error
         call.update(usage=usage, raw_reply_sha256=hashlib.sha256(str(content).encode()).hexdigest(),
                     raw_reply=content)
         try:
