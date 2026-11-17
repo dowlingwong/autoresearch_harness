@@ -35,6 +35,12 @@ def test_static():
     ps.check_static(NODE, NODES)
 
 
+def test_shared_dev_shm_for_cuda_ipc():
+    """The worker hands logits to the parent through CUDA IPC, whose reference counters live in /dev/shm, so
+    this node (alone among the ports) opts out of the private /dev/shm; its runs record the exception."""
+    assert ps.load(NODE).isolation.shared_dev_shm is True
+
+
 def test_manifest_complete():
     ps.check_manifest(NODE)
 

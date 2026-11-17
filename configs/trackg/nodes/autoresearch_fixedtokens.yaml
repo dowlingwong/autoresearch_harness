@@ -45,6 +45,10 @@ isolation:
   args: ["--tokens", "{budget}"]
   env:
     PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+  # The worker hands logits to the parent through CUDA IPC; torch keeps the IPC reference counters in /dev/shm,
+  # so this node gives the worker the host /dev/shm (a channel that can carry state between runs; disclosed in
+  # the port report and in isolation.limits_text).
+  shared_dev_shm: true
 
 metric_name: val_bpb
 metric_direction: minimize
