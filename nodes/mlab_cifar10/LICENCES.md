@@ -15,7 +15,7 @@ legal opinion.
 
 **Changes made by the port.** The suite's `train.py` was restructured into the Track G fixed-step API. The editable `train.py` keeps the suite's model, optimizer, loss and preprocessing (its docstring lists every difference). The loop, step budget, data handling, validation split and metric moved into the frozen files.
 
-**Written by the port** (Track G, Paper B, R1): `run_fixed_budget.py`, `ar_fixed_loop.py`, `ar_data.py`,
+**Written by the port** (Track G, Paper B, R1): `run_fixed_budget.py` (the frozen parent), `ar_worker.py` (the frozen worker entry), `ar_parent.py`, `ar_isolated.py`, `ar_fixed_loop.py`, `ar_data.py`,
 `prepare_data.py`, `requirements.txt`, this file.
 
 ## Data (never redistributed)

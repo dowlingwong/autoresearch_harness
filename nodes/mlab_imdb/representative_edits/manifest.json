@@ -50,7 +50,7 @@
   ],
   "measured": false,
   "node": "mlab_imdb",
-  "node_spec_sha256": "bfcdcd9d522d3cdec7373ecb3dd27bce9bb0d60dbc2b032f94d3eab994bee101",
+  "node_spec_sha256": "0123a8a771f5abc1028dd83fab7afdf67afb053f7bf064c693f081ec13601510",
   "run_budget": {
     "kind": "steps",
     "value": 1000

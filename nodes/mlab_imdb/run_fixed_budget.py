@@ -1,78 +1,59 @@
-"""Frozen fixed-step wrapper of node mlab_imdb (run command: ``python3 run_fixed_budget.py --steps {budget}``).
+"""Frozen parent of node mlab_imdb (R1-HARNESS-ISOLATION; started by the runner as ``python3 run_fixed_budget.py --steps {budget}``).
 
-FROZEN.  Data: IMDb reviews tokenized once by prepare_data.py (512 tokens,
-distilbert-base-uncased WordPiece) and checked against data/data_manifest.json;
-the pretrained model files are in data/pretrained/.  Split: the 25,000
-training reviews are split by AR_SPLIT_SEED into 22,500 for training and 2,500
-for validation; the 25,000 test reviews are the suite's test set.  Selection
-metric: validation accuracy (``AR_METRIC val_accuracy=``); the test accuracy is
-printed as ``AR_TEST test_accuracy=`` for the sealed record only.  Budget:
-exactly ``--steps`` optimizer steps (ar_fixed_loop).
+FROZEN.  This process never imports the editable code.  Data: IMDb reviews tokenized once by prepare_data.py
+(512 tokens, distilbert-base-uncased WordPiece) and checked against data/data_manifest.json; the pretrained
+model files are in data/pretrained/.  Split: the 25,000 training reviews are split by AR_SPLIT_SEED into
+22,500 for training and 2,500 for validation; the 25,000 test reviews are the suite's test set.  The frozen
+worker ``ar_worker.py`` imports train.py, trains for exactly ``--steps`` optimizer steps (ar_fixed_loop) and
+returns the validation and test logits; the accuracies are computed here with the labels this process
+loaded and written to the runner's result channel: selection metric ``AR_METRIC val_accuracy=``; the test
+accuracy as ``AR_TEST test_accuracy=`` for the sealed record only.
+
+The editable baseline train.py of this node was written by the port, not taken from MLAgentBench
+(R1-TRACKG-PORT-DECISIONS (3)): it is frozen at the sha256 recorded in LICENCES.md, independently reviewed
+before any label run, and disclosed as "baseline written by us" in the census funnel and the appendix.
 """
-import os
+import ar_isolated as iso
+CHANNEL = iso.parent_start()  # first statement: non-dumpable, then the result channel (R1-HARNESS-ISOLATION)
 
-import numpy as np
-import torch
+import numpy as np  # noqa: E402
 
-import ar_data
-import ar_fixed_loop as L
+import ar_data  # noqa: E402
+import ar_parent as P  # noqa: E402
 
 NODE = "mlab_imdb"
 N_CLASSES = 2
 VAL_SIZE = 2500
-MAX_BATCH_SIZE = 128
 FILES = ["train_ids.npy", "train_mask.npy", "train_y.npy", "test_ids.npy", "test_mask.npy", "test_y.npy"]
+CHECKED = FILES + ["pretrained/config.json", "pretrained/model.safetensors"]
 
 
 def main() -> None:
-    budget = L.read_budget()
-    train_seed, split_seed = L.read_seeds()
-    device = L.pick_device()
+    budget = P.read_budget("steps")
+    train_seed, split_seed = P.read_seeds()
     data_dir = ar_data.data_dir_of(__file__)
-    ar_data.verify(data_dir, NODE, FILES + ["pretrained/config.json", "pretrained/model.safetensors"])
-    arr = {name[:-4]: torch.from_numpy(np.load(data_dir / name)) for name in FILES}
-    n = len(arr["train_y"])
-    perm = torch.from_numpy(np.random.RandomState(split_seed).permutation(n))
+    ar_data.verify(data_dir, NODE, CHECKED)
+    train_y = np.load(data_dir / "train_y.npy").astype(np.int64)
+    test_y = np.load(data_dir / "test_y.npy").astype(np.int64)
+    perm = np.random.RandomState(split_seed).permutation(len(train_y))
     val_idx, tr_idx = perm[:VAL_SIZE], perm[VAL_SIZE:]
+    print(f"AR_SPLIT train={len(tr_idx)} val={len(val_idx)} test={len(test_y)}", flush=True)
 
-    def part(prefix, idx=None):
-        ids, mask, y = arr[f"{prefix}_ids"], arr[f"{prefix}_mask"], arr[f"{prefix}_y"].long()
-        if idx is not None:
-            ids, mask, y = ids[idx], mask[idx], y[idx]
-        return ids.to(device), mask.to(device), y.to(device)
-
-    tr, val, te = part("train", tr_idx), part("train", val_idx), part("test")
-    print(f"AR_SPLIT train={len(tr[2])} val={len(val[2])} test={len(te[2])}", flush=True)
-
-    os.environ.setdefault("HF_HUB_OFFLINE", "1")  # runs never reach the network
-    L.seed_everything(train_seed)
-    import train as T  # the editable code, imported after seeding
-
-    config = L.check_api(T)
-    info = {"device": device, "num_classes": N_CLASSES, "pretrained_dir": str(data_dir / "pretrained"),
-            "max_tokens": tr[0].shape[1], "n_train": len(tr[2])}
-    model = T.build_model(info)
-    optimizer, scheduler = T.build_optimizer(model, budget)
-    sampler = L.FixedStepSampler(len(tr[2]), config["batch_size"], budget, train_seed, MAX_BATCH_SIZE)
-    L.train_fixed_steps(T, model, optimizer, scheduler, sampler,
-                        lambda idx: {"input_ids": tr[0][idx], "attention_mask": tr[1][idx], "y": tr[2][idx]},
-                        config, device)
-
-    def evaluation(split):
-        return lambda idx: {"input_ids": split[0][idx], "attention_mask": split[1][idx]}
-
-    val_pred = L.predict_classes(T, model, evaluation(val), len(val[2]), N_CLASSES, config, device)
-    test_pred = L.predict_classes(T, model, evaluation(te), len(te[2]), N_CLASSES, config, device)
-    # Both evaluations (editable predict_logits) and the accuracies run before the first result line, which
-    # only formats Python floats: nothing editable runs after it.
-    val_accuracy, test_accuracy = L.accuracy(val_pred, val[2]), L.accuracy(test_pred, te[2])
-    # The data are checked again: a run whose editable code changed them fails itself, not the runs after it.
-    ar_data.verify(data_dir, NODE, FILES + ["pretrained/config.json", "pretrained/model.safetensors"], prefix="AR_ERROR the editable code changed the data:")
-    ar_data.seal()  # stdout/stderr to /dev/null: threads of the editable code cannot print now
-    ar_data.emit(f"AR_METRIC val_accuracy={val_accuracy:.6f}")
-    ar_data.emit(f"AR_TEST test_accuracy={test_accuracy:.6f}")
+    worker = P.start_worker()
+    P.call(worker, "train", {"budget": budget, "train_seed": train_seed},
+           {"train_idx": tr_idx.astype(np.int64), "val_idx": val_idx.astype(np.int64)})
+    _, val = P.call(worker, "logits", {"split": "val"})
+    val_logits = P.check_array(val, "logits", (len(val_idx), N_CLASSES))
+    _, test = P.call(worker, "logits", {"split": "test"})
+    test_logits = P.check_array(test, "logits", (len(test_y), N_CLASSES))
+    P.stop_worker(worker)
+    ar_data.verify(data_dir, NODE, CHECKED, prefix="AR_ERROR the editable code changed the data:")
+    val_accuracy = P.accuracy(val_logits, train_y[val_idx])
+    test_accuracy = P.accuracy(test_logits, test_y)
+    CHANNEL.write(f"AR_METRIC val_accuracy={val_accuracy:.6f}")
+    CHANNEL.write(f"AR_TEST test_accuracy={test_accuracy:.6f}")
+    CHANNEL.close()
 
 
 if __name__ == "__main__":
     main()
-    ar_data.finish()  # no output of the editable code after the result lines

@@ -15,7 +15,7 @@ legal opinion.
 
 **Changes made by the port.** The suite's `train.py` was restructured into the Track G fixed-step API. The editable `train.py` keeps the suite's MLP, optimizer and loss, with the number of outputs corrected from 172 to the 40 classes. Two differences come from the frozen loop: batch norm sees only a batch's 1,024 training seeds (the suite's MLP runs on a sampled 2-hop subgraph of them, so its batch statistics include sampled neighbours), and each epoch's last partial batch is dropped (88 full batches per epoch instead of 89; 356 steps are about 4.05 epochs). The `train.py` docstring lists every difference. The loop, step budget, data handling and metric moved into the frozen files.
 
-**Written by the port** (Track G, Paper B, R1): `run_fixed_budget.py`, `ar_fixed_loop.py`, `ar_data.py`,
+**Written by the port** (Track G, Paper B, R1): `run_fixed_budget.py` (the frozen parent), `ar_worker.py` (the frozen worker entry), `ar_parent.py`, `ar_isolated.py`, `ar_fixed_loop.py`, `ar_data.py`,
 `prepare_data.py`, `requirements.txt`, this file.
 
 ## Data (never redistributed)

@@ -16,12 +16,17 @@ The editable ``train.py`` of a node provides
                                -> scalar loss tensor for one batch (dict of tensors)
   predict_logits(model, batch) -> logits for an evaluation batch (dict without labels)
 
-This module owns everything a diff must not change: the step budget (exactly
-``--steps`` optimizer steps, counted on the optimizer itself), the seeds, the order of the training batches,
-the loss log the outcome parser reads (``step <n> loss <mean over the last
-LOG_EVERY steps>``), and the metric lines, which the node wrapper prints after
-training returns (``AR_METRIC ...`` for validation, ``AR_TEST ...`` for the
-sealed test metric).
+This module owns everything a diff must not change in the training: the step budget (exactly ``--steps``
+optimizer steps, counted on the optimizer itself), the seeds, the order of the training batches and the loss log
+the outcome parser reads (``step <n> loss <mean over the last LOG_EVERY steps>``).
+
+R1-HARNESS-ISOLATION: it runs in the node's **worker** process (``ar_worker.py``), next to the editable code;
+:func:`logits_array` returns the evaluation logits as a NumPy array, which the worker sends to the frozen
+**parent** (``run_fixed_budget.py``).  The parent, a separate process that never imports editable code,
+computes the metric from them with labels it loaded itself and writes the result lines to the runner's result
+channel.  So editable code can no longer change the metric arithmetic or print a result line that counts; what
+it can still do in the worker (extra updates by other means, reading the data files, answering the parent with
+other logits than its model's) is listed in the port reports' threat model.
 """
 from __future__ import annotations
 
@@ -196,19 +201,12 @@ def train_fixed_steps(train_mod, model, optimizer, scheduler, sampler: FixedStep
     return step
 
 
-def no_active_modes() -> None:
-    """Refuse a torch-dispatch mode the editable code left active: DisableTorchFunction (used around the frozen
-    arithmetic below) does not reach dispatch modes, which could rewrite it; the dispatch stack is empty in a clean
-    run.  Torch-function modes are not refused: DisableTorchFunction already keeps them out of the frozen
-    arithmetic, and an ordinary edit can leave one active (``torch.set_default_device`` pushes a DeviceContext)."""
-    if torch._C._len_torch_dispatch_stack():
-        fail(EXIT_BAD_EDITABLE_API, "a torch dispatch mode is active during the frozen evaluation")
-
-
 @torch.no_grad()
-def predict_classes(train_mod, model, make_eval_batch, n_items: int, n_classes: int, config: dict,
-                    device: torch.device) -> torch.Tensor:
-    """Class predictions for items 0..n_items-1 of an evaluation set, in order."""
+def logits_array(train_mod, model, make_eval_batch, n_items: int, n_classes: int, config: dict,
+                 device: torch.device) -> np.ndarray:
+    """Logits for items 0..n_items-1 of an evaluation set, in order, as a float32 array (n_items, n_classes) for
+    the parent.  ``predict_logits`` must return a plain tensor of shape (batch, n_classes) (a subclass is refused:
+    its methods would be editable code here)."""
     amp = bool(config.get("amp_bf16", False)) and device.type == "cuda"
     model.eval()
     out = []
@@ -219,16 +217,6 @@ def predict_classes(train_mod, model, make_eval_batch, n_items: int, n_classes: 
         if type(logits) is not torch.Tensor or tuple(logits.shape) != (len(idx), n_classes):
             fail(EXIT_BAD_EDITABLE_API, f"predict_logits must return a plain torch.Tensor of shape "
                                         f"({len(idx)}, {n_classes})")
-        no_active_modes()
-        with torch._C.DisableTorchFunction():  # no __torch_function__ subclass or mode of the editable code
-            out.append(logits.float().argmax(dim=1))
-    with torch._C.DisableTorchFunction():
-        return torch.cat(out)
-
-
-def accuracy(pred: torch.Tensor, labels: torch.Tensor) -> float:
-    """Frozen accuracy, computed with torch-function dispatch disabled and no dispatch mode active (no editable
-    subclass or mode code); a patch of torch itself (e.g. ``torch.Tensor.__eq__``) is not detected."""
-    no_active_modes()
-    with torch._C.DisableTorchFunction():
-        return float((pred.to(labels.device) == labels).double().mean().item())
+        with torch._C.DisableTorchFunction():
+            out.append(logits.detach().float().cpu().numpy())
+    return np.concatenate(out, axis=0) if out else np.zeros((0, n_classes), dtype=np.float32)

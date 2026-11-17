@@ -15,8 +15,21 @@ legal opinion.
 
 **Changes made by the port.** The suite ships an unfinished skeleton (`model = None`), so the editable `train.py` is a baseline written by the port for the task's stated goal of fine-tuning DistilBERT (see its docstring). The loop, step budget, data handling, validation split and metric are in the frozen files.
 
-**Written by the port** (Track G, Paper B, R1): `run_fixed_budget.py`, `ar_fixed_loop.py`, `ar_data.py`,
-`prepare_data.py`, `requirements.txt`, this file.
+**Written by the port** (Track G, Paper B, R1): `run_fixed_budget.py` (the frozen parent), `ar_worker.py`,
+`ar_parent.py`, `ar_isolated.py`, `ar_fixed_loop.py`, `ar_data.py`, `prepare_data.py`, `requirements.txt`, this file.
+
+## Baseline written by us (R1-TRACKG-PORT-DECISIONS (3))
+
+The editable baseline `train.py` was written by the port (the suite ships only a skeleton). The author accepts it on
+three conditions, recorded here:
+
+| Condition | State |
+|---|---|
+| Frozen before any label run | the baseline is fixed at **sha256 `01dcb7c4352d4c80495856542683c1c02412fc2da5824c41503e31283215a50a`** (`BASELINE_SHA256` below; the port tests fail if `train.py` differs from it, so a change needs a new record and a review) |
+| Independently reviewed before any label run | reviewed as part of the MLAgentBench port kit (READY 57, 8 rounds) and again in the isolation unit's review; the census uses it only after that review is accepted |
+| Disclosed | the census funnel and the paper's appendix state **"baseline written by us"** for mlab_imdb (wording for both: "The mlab_imdb baseline (DistilBERT fine-tuning) was written by us; MLAgentBench ships only a skeleton for this task.") |
+
+BASELINE_SHA256 = 01dcb7c4352d4c80495856542683c1c02412fc2da5824c41503e31283215a50a
 
 ## Data and pretrained model (never redistributed)
 

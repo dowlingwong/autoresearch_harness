@@ -1,66 +1,56 @@
-"""Frozen fixed-step wrapper of node mlab_cifar10 (run command: ``python3 run_fixed_budget.py --steps {budget}``).
+"""Frozen parent of node mlab_cifar10 (R1-HARNESS-ISOLATION; started by the runner as ``python3 run_fixed_budget.py --steps {budget}``).
 
-FROZEN.  Data: CIFAR-10 as fetched by torchvision for MLAgentBench, stored by
-prepare_data.py as uint8 arrays and checked against data/data_manifest.json.
-Split: the 50,000 training images are split by AR_SPLIT_SEED into 45,000 for
-training and 5,000 for validation; the 10,000 test images are the suite's test
-set.  Selection metric: validation accuracy (``AR_METRIC val_accuracy=``);
-the test accuracy is printed as ``AR_TEST test_accuracy=`` for the sealed
-record only.  Budget: exactly ``--steps`` optimizer steps (ar_fixed_loop).
+FROZEN.  This process never imports the editable code.  It reads the budget and the seeds, checks the data
+(CIFAR-10 as fetched by torchvision for MLAgentBench,
+stored by prepare_data.py as uint8 arrays and checked against data/data_manifest.json), makes the split (the
+50,000 training images split by AR_SPLIT_SEED into 45,000 for training and 5,000 for validation; the 10,000
+test images are the suite's test set), and starts the frozen worker ``ar_worker.py``, which imports train.py,
+trains for exactly ``--steps`` optimizer steps (ar_fixed_loop) and returns the validation and test logits.
+The accuracies are computed here from those logits and the labels this process loaded, and written to the
+runner's result channel: selection metric ``AR_METRIC val_accuracy=``; the test accuracy as
+``AR_TEST test_accuracy=`` for the sealed record only.
 """
-import numpy as np
-import torch
+import ar_isolated as iso
+CHANNEL = iso.parent_start()  # first statement: non-dumpable, then the result channel (R1-HARNESS-ISOLATION)
 
-import ar_data
-import ar_fixed_loop as L
+import numpy as np  # noqa: E402
+
+import ar_data  # noqa: E402
+import ar_parent as P  # noqa: E402
 
 NODE = "mlab_cifar10"
 N_CLASSES = 10
 VAL_SIZE = 5000
-MAX_BATCH_SIZE = 4096
 FILES = ["train_x.npy", "train_y.npy", "test_x.npy", "test_y.npy"]
 
 
 def main() -> None:
-    budget = L.read_budget()
-    train_seed, split_seed = L.read_seeds()
-    device = L.pick_device()
+    budget = P.read_budget("steps")
+    train_seed, split_seed = P.read_seeds()
     data_dir = ar_data.data_dir_of(__file__)
     ar_data.verify(data_dir, NODE, FILES)
-    arr = {name[:-4]: np.load(data_dir / name) for name in FILES}
-    x_all = torch.from_numpy(arr["train_x"]).permute(0, 3, 1, 2).contiguous()  # (N, 3, 32, 32) uint8
-    y_all = torch.from_numpy(arr["train_y"]).long()
-    perm = torch.from_numpy(np.random.RandomState(split_seed).permutation(len(x_all)))
+    train_y = np.load(data_dir / "train_y.npy").astype(np.int64)
+    test_y = np.load(data_dir / "test_y.npy").astype(np.int64)
+    perm = np.random.RandomState(split_seed).permutation(len(train_y))
     val_idx, tr_idx = perm[:VAL_SIZE], perm[VAL_SIZE:]
-    x_tr, y_tr = x_all[tr_idx].to(device), y_all[tr_idx].to(device)
-    x_val, y_val = x_all[val_idx].to(device), y_all[val_idx].to(device)
-    x_te = torch.from_numpy(arr["test_x"]).permute(0, 3, 1, 2).contiguous().to(device)
-    y_te = torch.from_numpy(arr["test_y"]).long().to(device)
-    print(f"AR_SPLIT train={len(x_tr)} val={len(x_val)} test={len(x_te)}", flush=True)
+    print(f"AR_SPLIT train={len(tr_idx)} val={len(val_idx)} test={len(test_y)}", flush=True)
 
-    L.seed_everything(train_seed)
-    import train as T  # the editable code, imported after seeding
-
-    config = L.check_api(T)
-    info = {"device": device, "num_classes": N_CLASSES, "input_shape": (3, 32, 32), "n_train": len(x_tr)}
-    model = T.build_model(info)
-    optimizer, scheduler = T.build_optimizer(model, budget)
-    sampler = L.FixedStepSampler(len(x_tr), config["batch_size"], budget, train_seed, MAX_BATCH_SIZE)
-    L.train_fixed_steps(T, model, optimizer, scheduler, sampler,
-                        lambda idx: {"x": x_tr[idx], "y": y_tr[idx]}, config, device)
-
-    val_pred = L.predict_classes(T, model, lambda idx: {"x": x_val[idx]}, len(x_val), N_CLASSES, config, device)
-    test_pred = L.predict_classes(T, model, lambda idx: {"x": x_te[idx]}, len(x_te), N_CLASSES, config, device)
-    # Both evaluations (editable predict_logits) and the accuracies run before the first result line, which
-    # only formats Python floats: nothing editable runs after it.
-    val_accuracy, test_accuracy = L.accuracy(val_pred, y_val), L.accuracy(test_pred, y_te)
-    # The data are checked again: a run whose editable code changed them fails itself, not the runs after it.
+    worker = P.start_worker()
+    P.call(worker, "train", {"budget": budget, "train_seed": train_seed},
+           {"train_idx": tr_idx.astype(np.int64), "val_idx": val_idx.astype(np.int64)})
+    _, val = P.call(worker, "logits", {"split": "val"})
+    val_logits = P.check_array(val, "logits", (len(val_idx), N_CLASSES))
+    _, test = P.call(worker, "logits", {"split": "test"})
+    test_logits = P.check_array(test, "logits", (len(test_y), N_CLASSES))
+    P.stop_worker(worker)
+    # The data are checked again: a run whose worker changed them fails itself, not the runs after it.
     ar_data.verify(data_dir, NODE, FILES, prefix="AR_ERROR the editable code changed the data:")
-    ar_data.seal()  # stdout/stderr to /dev/null: threads of the editable code cannot print now
-    ar_data.emit(f"AR_METRIC val_accuracy={val_accuracy:.6f}")
-    ar_data.emit(f"AR_TEST test_accuracy={test_accuracy:.6f}")
+    val_accuracy = P.accuracy(val_logits, train_y[val_idx])
+    test_accuracy = P.accuracy(test_logits, test_y)
+    CHANNEL.write(f"AR_METRIC val_accuracy={val_accuracy:.6f}")
+    CHANNEL.write(f"AR_TEST test_accuracy={test_accuracy:.6f}")
+    CHANNEL.close()
 
 
 if __name__ == "__main__":
     main()
-    ar_data.finish()  # no output of the editable code after the result lines

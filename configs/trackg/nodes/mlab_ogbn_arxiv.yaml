@@ -1,12 +1,13 @@
 # Track G node (trackg_node/v1): MLAgentBench ogbn-arxiv, fixed-step port.
-# Port kit: TRACKG_PORT_CHECKLIST.md (paper repo); harness r1-local-trackg-v2-20261114 @ 717ad835.
+# Port kit: TRACKG_PORT_CHECKLIST.md (paper repo); harness r1-local-trackg-v2-20261114 @ 717ad835;
+# isolated per R1-HARNESS-ISOLATION (harness mac-harness-isolation-20261117).
 schema: trackg_node/v1
 name: mlab_ogbn_arxiv
 description: >-
   MLAgentBench task ogbn-arxiv (benchmarks/ogbn-arxiv, MIT licence): 40-class node classification of arXiv
   papers with the suite's baseline, a 2-layer MLP on node features (hidden 16, batch norm, Adam lr 1,
   batches of 1,024 training nodes). The editable train.py holds model, optimizer and loss and receives the
-  full features and edge list; the frozen wrapper holds the data, the official split (train / valid / test
+  full features and edge list; the frozen parent and worker hold the data, the official split (train / valid / test
   by year; valid is the selection split, test the sealed test set), the training loop and the metric. The
   fixed budget is 356 optimizer steps, the number of batches of the suite baseline's own run (4 epochs of 89
   batches). Two deviations from the suite: batch norm sees only the 1,024 training seeds of a batch (the suite's
@@ -19,6 +20,9 @@ editable_paths:
   - train.py
 frozen_paths:
   - run_fixed_budget.py
+  - ar_worker.py
+  - ar_parent.py
+  - ar_isolated.py
   - ar_fixed_loop.py
   - ar_data.py
   - prepare_data.py
@@ -30,6 +34,11 @@ allow_new_files: false
 
 setup_command: 'test -n "$AR_TRACKG_DATA_ROOT" && python3 prepare_data.py --out "$AR_TRACKG_DATA_ROOT/mlab_ogbn_arxiv"'
 run_command: "python3 run_fixed_budget.py --steps {budget}"
+# R1-HARNESS-ISOLATION: the runner starts the frozen parent directly (no shell); the parent holds the
+# result channel and starts ar_worker.py, the only process that imports the editable code.
+isolation:
+  entry: run_fixed_budget.py
+  args: ["--steps", "{budget}"]
 
 metric_name: val_accuracy
 metric_direction: maximize
@@ -39,7 +48,7 @@ metric:
   steps_regex: '^step (\d+) loss \S+$'
   test_metric_regex: '^AR_TEST test_accuracy=(\S+)$'
   infrastructure_log_patterns:
-    # the wrapper's GPU check, printed before the editable code is imported (no AR_DEVICE line before it)
+    # the worker's GPU check, printed before the editable code is imported (no AR_DEVICE line before it)
     - '\A(?:(?!AR_DEVICE ).*\n)*?AR_INFRA a GPU was assigned \(CUDA_VISIBLE_DEVICES set\) but CUDA is unavailable$'
 
 run_budget:

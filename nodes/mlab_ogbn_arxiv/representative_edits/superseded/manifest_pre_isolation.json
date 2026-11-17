@@ -1,0 +1,59 @@
+{
+  "allow_new_files": false,
+  "baseline_code_state_raw_sha256": "48f8f208ddd207a524c1432531b770f883742c16334ef9f212d009d20687d4de",
+  "baseline_code_state_sha256": "d472b9aa43eb8268870d6ef2dacf0f668d2f62da23df20fb40320ce0fe7dc805",
+  "edits": [
+    {
+      "code_state_sha256": "a67ed98cf6ce914e2a95190a87c3c66cab898ab055da8e05144ff79832705e60",
+      "file": "E1.diff",
+      "files_touched": [
+        "train.py"
+      ],
+      "id": "E1",
+      "incumbent_code_state_sha256": "d472b9aa43eb8268870d6ef2dacf0f668d2f62da23df20fb40320ce0fe7dc805",
+      "normalised_diff_sha256": "168bf85b02c68cd49f49490272eb1ca3a0a690a09a1ded5b7048c5f54e3cb1cc",
+      "sha256": "77c4dbb32e09ac9094cddc283d530f8c14e3312abcaaaa6b6e17d773d4a08bfb"
+    },
+    {
+      "code_state_sha256": "1acbb5a67dbf6d9de038dee4b7d4d2275aa485802d94a13c45aea2168c81b287",
+      "file": "E2.diff",
+      "files_touched": [
+        "train.py"
+      ],
+      "id": "E2",
+      "incumbent_code_state_sha256": "d472b9aa43eb8268870d6ef2dacf0f668d2f62da23df20fb40320ce0fe7dc805",
+      "normalised_diff_sha256": "6a3a24d8cdf2c590bb61147ed0f7e36d3bc4f9c06c713bc264d02ad85d49b551",
+      "sha256": "c8d2b67f3ae9b78ec0cb3214fe9497d2c519e08ffdfa3406db5411735bdb15f9"
+    },
+    {
+      "code_state_sha256": "3ec536eea4e4a0cb1f98f14d63b5e36f3b08f31fe1740809a65b126bb4b23478",
+      "file": "E3.diff",
+      "files_touched": [
+        "train.py"
+      ],
+      "id": "E3",
+      "incumbent_code_state_sha256": "d472b9aa43eb8268870d6ef2dacf0f668d2f62da23df20fb40320ce0fe7dc805",
+      "normalised_diff_sha256": "d9c477657d6914f00a11a712d7b19cb9806392fdc02d6d7e842ba89bd9d27c4a",
+      "sha256": "ffa1b54ab8949a904344819d91b2ab2c3d25d4f95587da431880f42865336b46"
+    },
+    {
+      "code_state_sha256": "48c079efaf2596697b9323b8800b2ee73808926c424c8fc398462ab6da6ef5a0",
+      "file": "E4.diff",
+      "files_touched": [
+        "train.py"
+      ],
+      "id": "E4",
+      "incumbent_code_state_sha256": "d472b9aa43eb8268870d6ef2dacf0f668d2f62da23df20fb40320ce0fe7dc805",
+      "normalised_diff_sha256": "b5c786eb998a4efdff8aec8a1865b6dd71b9b269598c1a0cffff711a77a71d0b",
+      "sha256": "ed265c6151cf91ba7b7e453284f495a67b22da7b5b2d3bb5ca26b58f943151e5"
+    }
+  ],
+  "measured": false,
+  "node": "mlab_ogbn_arxiv",
+  "node_spec_sha256": "e34924de881fa767176032d76e282786aaa6fa8d8aa80270d4967ca24ca22b28",
+  "run_budget": {
+    "kind": "steps",
+    "value": 356
+  },
+  "schema": "trackg_representative_edits/v1"
+}

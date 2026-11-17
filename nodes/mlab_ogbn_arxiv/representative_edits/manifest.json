@@ -50,7 +50,7 @@
   ],
   "measured": false,
   "node": "mlab_ogbn_arxiv",
-  "node_spec_sha256": "e34924de881fa767176032d76e282786aaa6fa8d8aa80270d4967ca24ca22b28",
+  "node_spec_sha256": "e952df6a2f3f9abfdca944805e57a86604770d289101135fe45763b510752c0c",
   "run_budget": {
     "kind": "steps",
     "value": 356

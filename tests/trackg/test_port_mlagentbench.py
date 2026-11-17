@@ -125,14 +125,27 @@ def test_synthetic_smoke(node, tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("node", NODES)
-def test_output_seal(node):
-    """Review findings (partial line before seal, thread writes): the result line still comes last."""
-    ps.check_output_seal(node)
+def test_worker_logits_refuse_tensor_subclass(node):
+    """The worker-side evaluation returns plain float32 logits and refuses a tensor subclass from predict_logits."""
+    if not ps.have("torch"):
+        pytest.skip("needs torch")
+    ps.check_logits_array_refuses_subclass(node)
 
 
 @pytest.mark.parametrize("node", NODES)
-def test_frozen_accuracy_refuses_tensor_subclass(node):
-    """Review finding: a tensor subclass from predict_logits must not run code inside the frozen accuracy."""
-    if not ps.have("torch"):
-        pytest.skip("needs torch")
-    ps.check_plain_tensor_metric(node)
+def test_parent_metric_helpers(node):
+    """R1-HARNESS-ISOLATION: the parent computes the metric (ar_parent), from the worker's arrays."""
+    ps.check_parent_metric_helpers(node)
+
+
+def test_imdb_baseline_is_frozen_and_disclosed():
+    """R1-TRACKG-PORT-DECISIONS (3): the port-written imdb baseline is frozen at the sha256 recorded in LICENCES.md
+    (a change needs a new record and a review), and the disclosure wording is recorded."""
+    import hashlib
+    import re
+    node = ps.node_dir("mlab_imdb")
+    text = (node / "LICENCES.md").read_text()
+    recorded = re.search(r"^BASELINE_SHA256 = ([0-9a-f]{64})$", text, re.MULTILINE).group(1)
+    assert hashlib.sha256((node / "train.py").read_bytes()).hexdigest() == recorded
+    assert '"baseline written by us"' in text and "census funnel" in text and "appendix" in text
+    assert "R1-TRACKG-PORT-DECISIONS (3)" in (node / "run_fixed_budget.py").read_text()

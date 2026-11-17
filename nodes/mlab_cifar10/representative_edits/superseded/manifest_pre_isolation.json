@@ -1,0 +1,59 @@
+{
+  "allow_new_files": false,
+  "baseline_code_state_raw_sha256": "55ec5c27aabe17e42d16a7b189e64b62250606d82b17db18abffa934ef800e3d",
+  "baseline_code_state_sha256": "cad725b26f6d7afb5ea43c4dbd9f263f2ccd43d4a93c86f21db07c879e5226f9",
+  "edits": [
+    {
+      "code_state_sha256": "3dc1563780cea6bb5f92544f6be4a76f1e94d61aaf01d962662e280947b9834b",
+      "file": "E1.diff",
+      "files_touched": [
+        "train.py"
+      ],
+      "id": "E1",
+      "incumbent_code_state_sha256": "cad725b26f6d7afb5ea43c4dbd9f263f2ccd43d4a93c86f21db07c879e5226f9",
+      "normalised_diff_sha256": "23e888b42d9a16c82b20d3a59b63fcbd6a1db69a79e9f74142c6862e72d6ac1f",
+      "sha256": "345f0bcd6585491bad429fcfad08a89c186e1d032304be6d2a4c4a6f5cc3f341"
+    },
+    {
+      "code_state_sha256": "da90e13a624136f2785b40eeae7632ee8cec354da50cbab8fc3e3ece9129e70c",
+      "file": "E2.diff",
+      "files_touched": [
+        "train.py"
+      ],
+      "id": "E2",
+      "incumbent_code_state_sha256": "cad725b26f6d7afb5ea43c4dbd9f263f2ccd43d4a93c86f21db07c879e5226f9",
+      "normalised_diff_sha256": "0c363e7b74e46d77aacd0ac04d7ac6f6d07746fd7b028fc1abaaef93482a0832",
+      "sha256": "39fd85d00eb2ff90e98524505e5c1932ecb5df522b7e3167306a66a4caea8a5c"
+    },
+    {
+      "code_state_sha256": "64e30895a69cf9d91ea22e77349fb19519faa90323fd2570f2d9b695e5e589fe",
+      "file": "E3.diff",
+      "files_touched": [
+        "train.py"
+      ],
+      "id": "E3",
+      "incumbent_code_state_sha256": "cad725b26f6d7afb5ea43c4dbd9f263f2ccd43d4a93c86f21db07c879e5226f9",
+      "normalised_diff_sha256": "5e0236ca0401c2563f724e8664d00eb8f9c60b2fa747a421f60a19bd9dbe2d3f",
+      "sha256": "4d25e5997d8e8dd3061a67b6959514d1696573617ec0ecebe22babf03d93c0a3"
+    },
+    {
+      "code_state_sha256": "ddd0142b543ca8f97f2cced279c22b511ffcae39f56c42cbb7d0f42eb47ddda5",
+      "file": "E4.diff",
+      "files_touched": [
+        "train.py"
+      ],
+      "id": "E4",
+      "incumbent_code_state_sha256": "cad725b26f6d7afb5ea43c4dbd9f263f2ccd43d4a93c86f21db07c879e5226f9",
+      "normalised_diff_sha256": "16c87d232e11e0c2e36f657b16f592ad80703bcdae814bd6147e689595b942d6",
+      "sha256": "261b474a67ed6ce97eef4c50fa90e9ea2e586d4fa985beceae5266725e11f56a"
+    }
+  ],
+  "measured": false,
+  "node": "mlab_cifar10",
+  "node_spec_sha256": "f6a9d028f3b6ed1c6ec3f74c8c4a37a8e2fc964938422f25731f0f9ea0cb7e8c",
+  "run_budget": {
+    "kind": "steps",
+    "value": 1950
+  },
+  "schema": "trackg_representative_edits/v1"
+}

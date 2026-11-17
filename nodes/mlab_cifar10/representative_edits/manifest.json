@@ -50,7 +50,7 @@
   ],
   "measured": false,
   "node": "mlab_cifar10",
-  "node_spec_sha256": "f6a9d028f3b6ed1c6ec3f74c8c4a37a8e2fc964938422f25731f0f9ea0cb7e8c",
+  "node_spec_sha256": "90c8364f3c35b276ad97c73ea66b9e31d9f8e128aa9be7db5a013b5eb7b4093f",
   "run_budget": {
     "kind": "steps",
     "value": 1950

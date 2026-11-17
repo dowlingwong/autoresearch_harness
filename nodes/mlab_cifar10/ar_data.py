@@ -12,27 +12,20 @@ file must have its recorded size and sha256, and no other file may exist in the
 directory except under the setup-only subdirectories the manifest names (raw
 downloads that no run reads).
 
-Known limits (the editable code runs in the wrapper's process): the setup makes
-the directory read-only, which makes accidental writes by a run fail, but code
-running as the directory's owner can restore the write bits (and as root the bits
-do not apply), and it could rewrite the manifest together with the data; files
-under the setup-only subdirectories, and anything outside the data directory, are
-not checked.  After the census records the manifest's sha256, pin it and give the
-data another owner or a read-only mount on the census host.
+Isolated nodes (R1-HARNESS-ISOLATION): the frozen parent verifies the data before it starts the worker and
+again after the worker's last answer, and it loads the labels it scores with itself; the worker (which imports
+the editable code) verifies the data before training.  Known limits: the worker runs as the same user, so it can
+read every data file (labels included) and, although the setup makes the directory read-only, restore the write
+bits as the owner (as root the bits do not apply) and rewrite the manifest together with the data; the parent's
+second check catches a change that is still there when the worker has answered.  Files under the setup-only
+subdirectories, and anything outside the data directory, are not checked.  After the census records the
+manifest's sha256, pin it and give the data another owner or a read-only mount on the census host.
 
-The wrapper's own result lines go through :func:`emit`, which writes to a copy of
-the standard output descriptor taken when this module is imported (before the
-editable code is), and the wrapper ends with :func:`finish` (``os._exit(0)``), so
-editable code cannot rewrite those lines by replacing ``sys.stdout`` or add lines
-after them from an ``atexit`` handler.  Every wrapper runs all editable code (both
-evaluations) before its first result line, and calls :func:`seal` just before it:
-the process's standard output and error descriptors are pointed at /dev/null, so
-a thread the editable code started can no longer print into the log while the
-result lines are written (they go to the saved copy).  Editable code can still
-print a forged line before the wrapper's lines (and end the process before the
-wrapper prints), or write to the saved descriptor itself, or patch this module;
-the harness takes the last metric match.  A harness change would close the rest
-(for example refusing a run with more than one metric match).
+:func:`emit` writes a line to a copy of the standard output descriptor taken when this module is imported (in
+the worker: the loss lines of the frozen loop, which editable code cannot then reword by replacing
+``sys.stdout``).  Result lines never go through it in an isolated node: the parent writes them to the runner's
+result channel, and the runner refuses a run whose output holds a metric line.  :func:`seal` and :func:`finish`
+remain for a wrapper that is not isolated.
 """
 from __future__ import annotations
 

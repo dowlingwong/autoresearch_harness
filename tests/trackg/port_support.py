@@ -4,8 +4,11 @@ Used by tests/trackg/test_port_<suite>.py.  Two tiers:
 
 * static checks (always run; no torch): the node spec loads; the frozen and
   editable files exist; the shared frozen helpers are byte-identical across
-  the port's nodes; the frozen wrapper, not the editable code, prints the
-  metric lines; the committed representative-edits manifest is complete
+  the port's nodes (``ar_isolated.py`` also with the harness master); the node
+  is isolated (R1-HARNESS-ISOLATION): the frozen parent starts with
+  ``parent_start()``, never imports editable code and writes the result lines
+  to the result channel, the frozen worker entry alone imports the editable
+  code, and no file prints a result line to the run's output; the committed representative-edits manifest is complete
   (3-5 edits, every E*.diff listed with its sha256, the spec hash and the
   baseline code-state hash are current, nothing measured) and re-declaring the
   edits reproduces it (byte for byte under the declaring Python 3.12; under
@@ -42,7 +45,9 @@ from autoresearch.trackg.runner import ResourceLimits, WorkingCopyRunner
 from autoresearch.trackg.smoke import run_smoke_campaign
 
 ROOT = Path(__file__).resolve().parents[2]
-SHARED_FROZEN = ("ar_data.py", "ar_fixed_loop.py")
+SHARED_FROZEN = ("ar_data.py", "ar_fixed_loop.py", "ar_parent.py", "ar_isolated.py")
+NODE_LIB_MASTER = ROOT / "src" / "autoresearch" / "trackg" / "node_lib" / "ar_isolated.py"
+ISOLATED_FROZEN = ("run_fixed_budget.py", "ar_worker.py", "ar_parent.py", "ar_isolated.py")
 METRIC_PREFIXES = ("AR_METRIC", "AR_TEST")
 DATA_SUFFIXES = {".npy", ".npz", ".parquet", ".csv", ".pkl", ".pt", ".pth", ".safetensors", ".bin", ".arrow",
                  ".tar", ".gz", ".zip"}
@@ -50,15 +55,26 @@ DATA_SUFFIXES = {".npy", ".npz", ".parquet", ".csv", ".pkl", ".pt", ".pth", ".sa
 DECLARED_WITH_PYTHON = (3, 12)
 RECORD_KEYS = ("schema", "run_id", "node", "node_spec_sha256", "run_budget", "workers", "seeds", "limits",
                "diff", "incumbent_code_state_sha256", "code_state_sha256", "executed", "command",
-               "environment_applied", "determinism", "process", "log_sha256", "outcome")
+               "environment_applied", "determinism", "process", "log_sha256", "outcome", "isolation")
+
+
+def _home(node: str) -> Path:
+    """The tree that holds the node: the repository root, or a licence subtree such as ``third_party/mlgym``
+    (R1-TRACKG-PORT-DECISIONS (1))."""
+    if (ROOT / "configs" / "trackg" / "nodes" / f"{node}.yaml").exists():
+        return ROOT
+    homes = [d for d in sorted((ROOT / "third_party").glob("*"))
+             if (d / "configs" / "trackg" / "nodes" / f"{node}.yaml").exists()]
+    assert len(homes) == 1, f"node {node} found in {homes or 'no tree'}"
+    return homes[0]
 
 
 def spec_path(node: str) -> Path:
-    return ROOT / "configs" / "trackg" / "nodes" / f"{node}.yaml"
+    return _home(node) / "configs" / "trackg" / "nodes" / f"{node}.yaml"
 
 
 def node_dir(node: str) -> Path:
-    return ROOT / "nodes" / node
+    return _home(node) / "nodes" / node
 
 
 def load(node: str) -> TrackGNodeSpec:
@@ -142,24 +158,7 @@ def check_static(node: str, port_nodes: list[str]) -> None:
             copies = {n: (node_dir(n) / name).read_bytes() for n in port_nodes if (node_dir(n) / name).exists()}
             assert len(set(copies.values())) == 1, f"{name} differs between nodes {sorted(copies)}"
             assert name in spec.frozen_paths
-    # The frozen wrapper prints the metric, through the saved output descriptor (emit), and ends with
-    # os._exit after it (finish); editable code never mentions the result lines.
-    wrapper = (base / "run_fixed_budget.py").read_text()
-    assert re.search(r'emit\(f"AR_METRIC ' + re.escape(spec.metric_name) + "=", wrapper)
-    if spec.selection.test_scored:
-        assert re.search(r'emit\(f"AR_TEST ' + re.escape(spec.selection.test_metric_name) + "=", wrapper)
-    assert not re.search(r'print\(f?"AR_(METRIC|TEST|STEPS|TOKENS) ', wrapper), "result lines must go through emit"
-    assert re.search(r'\nif __name__ == "__main__":\n    main\(\)\n    (ar_data\.)?finish\(\)', wrapper), \
-        "the wrapper must end the process with finish() right after main()"
-    # The output is sealed (descriptors 1 and 2 to /dev/null) right before the first AR_METRIC line, and from there
-    # to the end of main() only result lines follow: no editable code runs after it.
-    head = wrapper[:wrapper.rindex("\n", 0, wrapper.index('emit(f"AR_METRIC'))].rstrip().splitlines()
-    assert head and head[-1].strip().startswith(("ar_data.seal()", "seal()")), "seal() must precede the AR_METRIC line"
-    tail = wrapper[wrapper.index('emit(f"AR_METRIC'):wrapper.index('\nif __name__ == "__main__":')]
-    for line in tail.splitlines()[1:]:
-        text = line.strip()
-        assert not text or text.startswith(("ar_data.emit(", "emit(", "ar_data.finish()", "finish()", "#")), \
-            f"code after the first AR_METRIC line: {text!r}"
+    check_isolated(node)
     for rel in spec.editable_paths:
         text = (base / rel).read_text()
         for prefix in METRIC_PREFIXES + ("AR_STEPS", "AR_TOKENS"):
@@ -174,6 +173,63 @@ def check_static(node: str, port_nodes: list[str]) -> None:
     for rel in spec.editable_paths:
         if rel.endswith(".py"):
             compile((base / rel).read_text(), rel, "exec")
+
+
+def _imports(tree) -> set[str]:
+    import ast
+    names = set()
+    for item in ast.walk(tree):
+        if isinstance(item, ast.Import):
+            names |= {alias.name.split(".")[0] for alias in item.names}
+        elif isinstance(item, ast.ImportFrom) and item.module:
+            names.add(item.module.split(".")[0])
+    return names
+
+
+def check_isolated(node: str) -> None:
+    """R1-HARNESS-ISOLATION: the node runs as a frozen parent that never imports editable code and writes the
+    result lines only to the result channel; the frozen worker entry alone imports the editable code."""
+    import ast
+    spec, base = load(node), node_dir(node)
+    assert spec.isolation is not None, "the node has no isolation block"
+    assert spec.isolation.entry == "run_fixed_budget.py" and "{budget}" in spec.isolation.args
+    for name in ISOLATED_FROZEN:
+        assert name in spec.frozen_paths and (base / name).is_file(), f"isolated node lacks frozen {name}"
+    assert (base / "ar_isolated.py").read_bytes() == NODE_LIB_MASTER.read_bytes(), \
+        "ar_isolated.py differs from the harness master (autoresearch/trackg/node_lib/ar_isolated.py)"
+    editable_modules = {Path(rel).stem for rel in spec.editable_paths if rel.endswith(".py")}
+    parent_text = (base / "run_fixed_budget.py").read_text()
+    parent = ast.parse(parent_text)
+    body = [n for n in parent.body if not (isinstance(n, ast.Expr) and isinstance(getattr(n, "value", None), ast.Constant))]
+    first = ast.get_source_segment(parent_text, body[0]) if body else ""
+    second = ast.get_source_segment(parent_text, body[1]) if len(body) > 1 else ""
+    assert first == "import ar_isolated as iso" and second == "CHANNEL = iso.parent_start()", \
+        "the parent's first statements must be `import ar_isolated as iso` and `CHANNEL = iso.parent_start()`"
+    # the parent's own imports and those of the frozen modules it imports (one level) exclude editable code
+    frozen_py = {Path(rel).stem: base / rel for rel in spec.frozen_paths if rel.endswith(".py") and (base / rel).is_file()}
+    seen, todo = set(), ["run_fixed_budget"]
+    while todo:
+        name = todo.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        imported = _imports(ast.parse(frozen_py[name].read_text()))
+        assert not imported & editable_modules, f"the parent imports editable code via {name}: {imported & editable_modules}"
+        todo += [m for m in imported if m in frozen_py and m != "ar_worker"]
+    assert "ar_worker" not in seen
+    assert re.search(r'CHANNEL\.write\(f"AR_METRIC ' + re.escape(spec.metric_name) + "=", parent_text)
+    if spec.selection.test_scored:
+        assert re.search(r'CHANNEL\.write\(f"AR_TEST ' + re.escape(spec.selection.test_metric_name) + "=", parent_text)
+    worker_text = (base / "ar_worker.py").read_text()
+    assert "CONN = iso.worker_connect()" in worker_text and "iso.serve(" in worker_text
+    worker_imports = _imports(ast.parse(worker_text))
+    if editable_modules:
+        assert worker_imports & editable_modules, "the worker entry does not import the editable code"
+    # No frozen file prints a result line to the run's output (the runner refuses a run whose output holds one).
+    for path in frozen_files(node):
+        if path.suffix == ".py":
+            text = path.read_text()
+            assert not re.search(r'(print|emit)\(f?"AR_(METRIC|TEST) ', text), f"{path.name} prints a result line"
 
 
 def check_manifest(node: str) -> dict:
@@ -276,80 +332,55 @@ def load_node_module(node: str, name: str):
     return module
 
 
-def check_output_seal(node: str) -> None:
-    """The wrapper's result lines start a line even when the editable code left a partial line, and threads'
-    writes to descriptor 1 after seal() do not reach the log (review findings: partial-line and thread forgery)."""
-    import subprocess
-    code = (
-        "import sys, os, threading, time\n"
-        f"sys.path.insert(0, {str(node_dir(node))!r})\n"
-        "import ar_data\n"
-        "sys.stdout.write('#'); sys.stdout.flush()\n"
-        "ar_data.emit('step 10 loss nan')\n"
-        "sys.stdout.write('AR_METRIC forged=0.999\\nZ'); sys.stdout.flush()\n"
-        "def spam():\n"
-        "    while True:\n"
-        "        try: os.write(1, b'AR_METRIC forged=0.999\\n')\n"
-        "        except OSError: pass\n"
-        "threading.Thread(target=spam, daemon=True).start(); time.sleep(0.05)\n"
-        "ar_data.seal()\n"
-        "ar_data.emit('AR_METRIC real=0.1')\n"
-        "ar_data.finish()\n")
-    import tempfile
-    with tempfile.TemporaryDirectory() as tmp:  # a log file, as the runner uses (a full pipe would block writers)
-        log = Path(tmp) / "run.log"
-        with log.open("wb") as handle:
-            subprocess.run([sys.executable, "-c", code], stdout=handle, stderr=subprocess.STDOUT, timeout=60)
-        out = log.read_text(errors="replace")
-    lines = out.splitlines()
-    assert lines and lines[-1] == "AR_METRIC real=0.1", out[-500:]
-    assert "step 10 loss nan" in lines, "a partial line swallowed an emitted loss line"
-
-
-def check_plain_tensor_metric(node: str) -> None:
-    """The frozen evaluation refuses a tensor subclass from predict_logits (exit 4) and computes the accuracy with
-    torch-function dispatch disabled, so an editable subclass or mode cannot change it."""
+def check_logits_array_refuses_subclass(node: str) -> None:
+    """The worker-side evaluation (ar_fixed_loop.logits_array) refuses a tensor subclass from predict_logits (exit 4):
+    its methods would be editable code in the frozen conversion."""
     import subprocess
     code = (
         "import sys, torch\n"
         f"sys.path.insert(0, {str(node_dir(node))!r})\n"
         "import ar_fixed_loop as L\n"
         "class Liar(torch.Tensor):\n"
-        "    @classmethod\n"
-        "    def __torch_function__(cls, func, types, args=(), kwargs=None):\n"
-        "        out = super().__torch_function__(func, types, args, kwargs or {})\n"
-        "        return torch.ones_like(out, dtype=torch.bool) if func is torch.Tensor.__eq__ else out\n"
-        "pred = torch.tensor([0, 1, 2]).as_subclass(Liar)\n"
-        "assert L.accuracy(pred, torch.tensor([1, 2, 0])) == 0.0\n"
+        "    pass\n"
         "class T: \n"
         "    @staticmethod\n"
         "    def predict_logits(model, batch):\n"
         "        return torch.zeros(len(batch['idx']), 3).as_subclass(Liar)\n"
-        "L.predict_classes(T, torch.nn.Linear(1, 1), lambda idx: {'idx': idx}, 4, 3, {}, torch.device('cpu'))\n")
+        "L.logits_array(T, torch.nn.Linear(1, 1), lambda idx: {'idx': idx}, 4, 3, {}, torch.device('cpu'))\n")
     res = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
     assert res.returncode == 4 and "plain torch.Tensor" in res.stdout, (res.returncode, res.stdout[-500:], res.stderr[-800:])
-    mode = (
+    ok = (
         "import sys, torch\n"
         f"sys.path.insert(0, {str(node_dir(node))!r})\n"
         "import ar_fixed_loop as L\n"
-        "from torch.utils._python_dispatch import TorchDispatchMode\n"
-        "class M(TorchDispatchMode):\n"
-        "    def __torch_dispatch__(self, func, types, args=(), kwargs=None):\n"
-        "        return func(*args, **(kwargs or {}))\n"
-        "M().__enter__()\n"
-        "L.accuracy(torch.tensor([0, 1]), torch.tensor([0, 1]))\n")
-    res = subprocess.run([sys.executable, "-c", mode], capture_output=True, text=True, timeout=120)
-    assert res.returncode == 4 and "dispatch mode is active" in res.stdout, (res.returncode, res.stdout[-500:])
-    # An ordinary edit may leave a torch-function mode active (set_default_device): not refused, result unchanged.
-    device = (
-        "import sys, torch\n"
-        f"sys.path.insert(0, {str(node_dir(node))!r})\n"
-        "import ar_fixed_loop as L\n"
-        "torch.set_default_device('cpu')\n"
-        "assert torch._C._len_torch_function_stack() == 1\n"
-        "print('ACC', L.accuracy(torch.tensor([0, 1, 2]), torch.tensor([0, 1, 0])))\n")
-    res = subprocess.run([sys.executable, "-c", device], capture_output=True, text=True, timeout=120)
-    assert res.returncode == 0 and "ACC 0.666" in res.stdout, (res.returncode, res.stdout[-500:], res.stderr[-800:])
+        "class T: \n"
+        "    @staticmethod\n"
+        "    def predict_logits(model, batch):\n"
+        "        return torch.arange(len(batch['idx']) * 3, dtype=torch.float32).reshape(-1, 3)\n"
+        "a = L.logits_array(T, torch.nn.Linear(1, 1), lambda idx: {'idx': idx}, 5, 3, {}, torch.device('cpu'))\n"
+        "print('SHAPE', a.shape, a.dtype)\n")
+    res = subprocess.run([sys.executable, "-c", ok], capture_output=True, text=True, timeout=120)
+    assert res.returncode == 0 and "SHAPE (5, 3) float32" in res.stdout, (res.returncode, res.stdout[-500:], res.stderr[-800:])
+
+
+def check_parent_metric_helpers(node: str) -> None:
+    """The parent's metric helpers (ar_parent): argmax accuracy with non-finite rows counted wrong, RMSE nan on a
+    non-finite prediction, and a worker array of the wrong shape refused (exit 4)."""
+    import subprocess
+    import numpy as np
+    sys.path.insert(0, str(node_dir(node)))
+    try:
+        P = load_node_module(node, "ar_parent")
+    finally:
+        sys.path.pop(0)
+    assert P.accuracy(np.array([[0.0, 1.0], [2.0, 1.0], [np.nan, 5.0]]), np.array([1, 0, 1])) == 2 / 3
+    assert P.rmse(np.array([1.0, 2.0]), np.array([1.0, np.inf])) != P.rmse(np.array([1.0]), np.array([1.0]))
+    assert P.rmse(np.array([3.0, 4.0]), np.array([0.0, 0.0])) == (12.5 ** 0.5)
+    code = (f"import sys; sys.path.insert(0, {str(node_dir(node))!r})\n"
+            "import numpy as np, ar_parent as P\n"
+            "P.check_array({'logits': np.zeros((2, 3), np.float32)}, 'logits', (2, 4))\n")
+    res = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+    assert res.returncode == 4 and "AR_ERROR" in res.stdout, (res.returncode, res.stdout, res.stderr[-500:])
 
 
 def smoke_copy(node: str, tmp: Path, make_data: Callable[[Path], dict] | None, data_files: list[str]) -> Path:
@@ -380,9 +411,15 @@ def limits(seconds: float = 600.0, gpu_uuids: tuple[str, ...] = (), cpu_list: tu
     """Runner limits for the smoke.  On a GPU host pass the card's UUID, the CPU list and what enforces
     the memory cap; without a UUID the runner hides every GPU and the run is a CPU run."""
     cpus = cpu_list or tuple(sorted(os.sched_getaffinity(0)))[:4]
+    # isolated runs (R1-HARNESS-ISOLATION) need a cgroup parent (AR_TEST_CGROUP_PARENT) or a recorded reason,
+    # and a reason to run as root (a root run is recorded as not effective)
+    cgroup = os.environ.get("AR_TEST_CGROUP_PARENT")
+    extra = {"cgroup_parent": cgroup} if cgroup else {"no_cgroup_reason": "port smoke without a cgroup parent"}
+    if os.geteuid() == 0:
+        extra["root_isolation_reason"] = "port smoke as root (test container)"
     return ResourceLimits(gpu_uuids=tuple(gpu_uuids), cpu_list=cpus, memory_bytes=None,
                           memory_method="external", external_limit=external_limit,
-                          provisional_timeout_seconds=seconds, kill_grace_seconds=2.0)
+                          provisional_timeout_seconds=seconds, kill_grace_seconds=2.0, **extra)
 
 
 def broken_diff(node: str, anchor: str, replacement: str, rel: str | None = None) -> str:
@@ -415,22 +452,25 @@ def run_smoke(node: str, tmp: Path, work: Path, budget: int | None, broken: str,
     repeat = WorkingCopyRunner(spec, work, tmp / "runs_edits").run(
         "B2", lim, train_seed=8001, split_seed=8001, interpreter=interpreter)
     per_edit.append(repeat.record)
-    check_baseline_log(spec, (tmp / "runs_smoke" / "s000_baseline" / "run.log").read_text(errors="replace"))
+    check_baseline_log(spec, (tmp / "runs_smoke" / "s000_baseline" / "run.log").read_text(errors="replace"),
+                       (tmp / "runs_smoke" / "s000_baseline" / "result_channel.txt").read_text())
     return records, per_edit
 
 
-def check_baseline_log(spec: TrackGNodeSpec, log: str) -> None:
-    """The node's patterns really see the baseline's lines: loss lines (all finite), the metric
-    line, the step counter at the budget, the sealed test line, and no stray carriage returns."""
+def check_baseline_log(spec: TrackGNodeSpec, log: str, channel: str) -> None:
+    """The node's patterns really see the baseline's lines: loss lines (all finite) and the step counter at
+    the budget in the log, exactly one metric line and the sealed test line in the result channel and none in
+    the log, and no stray carriage returns."""
     losses = re.findall(spec.metric.loss_regex, log, re.MULTILINE)
     assert losses, "loss_regex matched no line of the baseline log"
     assert all(float(v) == float(v) for v in losses)
-    assert len(re.findall(spec.metric.metric_regex, log, re.MULTILINE)) == 1
+    assert len(re.findall(spec.metric.metric_regex, channel, re.MULTILINE)) == 1
+    assert not re.findall(spec.metric.metric_regex, log, re.MULTILINE)
     if spec.metric.steps_regex:
         steps = [int(v) for v in re.findall(spec.metric.steps_regex, log, re.MULTILINE)]
         assert steps and max(steps) >= spec.run_budget.value
     if spec.selection.test_scored:
-        assert len(re.findall(spec.metric.test_metric_regex, log, re.MULTILINE)) == 1
+        assert len(re.findall(spec.metric.test_metric_regex, channel, re.MULTILINE)) == 1
     assert "\r" not in log.replace("\r\n", "\n"), "carriage returns in the log can hide lines from ^-anchored patterns"
 
 
