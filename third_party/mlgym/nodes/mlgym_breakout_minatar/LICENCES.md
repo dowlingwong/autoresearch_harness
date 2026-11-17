@@ -35,7 +35,8 @@ gymnax-blines are Apache-2.0; CC BY-NC 4.0 grants no patent rights (U1 §3). Att
 
 None: the environment is simulated by `gymnax` (`Breakout-MinAtar`). Gymnax and gymnax-blines are
 **Apache-2.0** per MLGym's README (U1 §3). Attribution: "PPO and evaluation adapted by MLGym from gymnax-blines
-and gymnax (R. T. Lange), Apache-2.0".
+and gymnax (R. T. Lange), Apache-2.0". A copy of the Apache License 2.0 ships as `third_party/mlgym/LICENSE-APACHE-2.0`
+(Apache-2.0 §4(a)); it applies to those parts of `policy.py`, `helpers.py`, `networks.py` and `evaluate_policy.py`.
 
 No container is used (native ports): no image digest applies. The node and its branch contain no task data; the
 port's tests use synthetic data.
