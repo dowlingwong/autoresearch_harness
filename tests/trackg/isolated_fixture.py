@@ -220,8 +220,7 @@ TRAIN_PY = textwrap.dedent('''\
             print("stash seen:", os.path.exists(path), flush=True)
             open(path, "w").write("state from an earlier run")
         if MODE == "env_report":
-            print("env report:", " ".join(sorted(k for k in os.environ if "SECRET" in k or k.startswith("AR_FAKE"))),
-                  flush=True)
+            print("env report:", " ".join(sorted(os.environ)), flush=True)   # names only, every one
         for step in range(1, steps + 1):
             loss = float("nan") if (MODE == "nan" and step == 3) else 1.0 / step
             print(f"step {step} loss: {loss}", flush=True)
