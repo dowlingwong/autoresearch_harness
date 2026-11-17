@@ -256,6 +256,8 @@ class WorkingCopyRunner:
             "seeds": {"train": train_seed, "split": split_seed},
             "limits": limits.to_dict(),
             "diff": None,
+            # the census pins this hash for T1 (a committed manifest), so a kit changed before setup is caught too
+            "frozen_pin_sha256": hashlib.sha256(json.dumps(self.frozen_pin, sort_keys=True).encode()).hexdigest(),
         }
         normalised, raw = code_state_hashes(work, self.base_spec)
         record["incumbent_code_state_sha256"], record["incumbent_code_state_raw_sha256"] = normalised, raw
@@ -322,6 +324,11 @@ class WorkingCopyRunner:
                 normalised_diff_sha256=application.provenance["normalised_diff_sha256"] if application else None,
                 incumbent_code_state_sha256=record["incumbent_code_state_sha256"])
         self._write_record(run_dir, record)
+        iso_rec = record.get("isolation") or {}
+        if iso_rec.get("parent_traced_by") or iso_rec.get("parent_dumpable_at_accept"):
+            raise IntegrityError(f"STOP: the run's parent was traced (TracerPid {iso_rec.get('parent_traced_by')}) or "
+                                 f"dumpable at the accept ({iso_rec.get('parent_dumpable_at_accept')}): a process "
+                                 f"outside the run interfered; see {run_dir / 'run_record.json'}")
         return RunResult(run_id, run_dir, work, outcome, record, code_dir if keep_code_snapshot else None)
 
     # ------------------------------------------------------------------ internals
@@ -389,6 +396,9 @@ class WorkingCopyRunner:
                              "leftover_processes_killed": killed_with in ("SIGKILL", "cgroup.kill")}
             kill_info["cgroup"] = _close_cgroup(cgroup, cg_kill)
         elapsed = time.monotonic() - start
+        if not timed_out and elapsed > timeout:   # e.g. the runner was stopped while the run went on
+            timed_out = True
+            kill_info["timed_out_by_elapsed"] = round(elapsed, 3)
         det_record = determinism.read_record(run_dir / "determinism_shim.json", env)
         return ProcessExit(returncode, timed_out=timed_out), applied, det_record, elapsed, kill_info
 
@@ -402,33 +412,34 @@ class WorkingCopyRunner:
             raise RunnerError(str(error)) from error
 
     def _sandbox_config(self, run_dir: Path, work: Path, interpreter: str) -> dict:
-        """What the worker sees read-only, writable and private (see :mod:`autoresearch.trackg.isolation`)."""
-        protect = [self.runs_root, self.node_root, *self.protect_paths]
+        """The worker's file system (see :mod:`autoresearch.trackg.isolation`): an allow-list.  Read-only: the system
+        directories, the run interpreter's installation and ``sys.path``, the data, the determinism shim; ``/sys``
+        without its submounts (no cgroup file system); writable: the working copy, with its frozen paths read-only;
+        ``/dev`` as is; a private ``/tmp``.  Nothing else exists for the worker (no home directory, no runs tree, no
+        ``/run``)."""
+        ro: list[Path] = [Path(p) for p in ("/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc")]
+        ro += _interpreter_paths(interpreter)
         data = work / "data"
         if data.is_symlink():
-            protect.append(data.resolve())
-        home = os.environ.get("HOME")
-        if home:
-            protect.append(Path(home).resolve())
-        protect += _interpreter_prefixes(interpreter)
-        protect.append(Path(__file__).resolve().parents[2])   # the harness source tree
-        protect = sorted({p for p in protect if p.exists()}, key=lambda p: len(p.parts))
-        writable = [work.resolve()]
-        uid = os.getuid()
-        private = []
-        for candidate in (Path("/tmp"), Path("/var/tmp"), Path(f"/run/user/{uid}")):
-            inside = [x for x in protect + writable if x == candidate or candidate in x.parents]
-            if candidate.is_dir() and not inside:
-                private.append(candidate)
-        # caches and a home directory inside the working copy (the real home directory is read-only for the worker)
+            ro.append(data.resolve())
+        ro.append((run_dir / "_ar_shim").resolve())
+        ro = sorted({p for p in ro if os.path.lexists(p)}, key=lambda p: (len(p.parts), str(p)))
+        ro_in_rw = sorted({str((work / entry.rstrip("/").removesuffix("/*")).resolve() if not
+                               (work / entry.rstrip("/")).is_symlink() else work / entry.rstrip("/"))
+                           for entry in self.spec.frozen_paths if os.path.lexists(work / entry.rstrip("/"))})
+        root = run_dir / "_root"
+        root.mkdir()
+        # caches and a home directory inside the working copy (no real home directory exists for the worker)
         scratch = {"HOME": work / ".ar_home", "XDG_CACHE_HOME": work / ".ar_cache",
                    "TRITON_CACHE_DIR": work / ".ar_cache" / "triton",
                    "TORCHINDUCTOR_CACHE_DIR": work / ".ar_cache" / "inductor",
                    "MPLCONFIGDIR": work / ".ar_cache" / "matplotlib"}
         for path in scratch.values():
             path.mkdir(parents=True, exist_ok=True)
-        return {"protect": [str(p) for p in protect], "writable": [str(p) for p in writable],
-                "private": [str(p) for p in private], "env": {k: str(v) for k, v in scratch.items()}}
+        env = {k: str(v) for k, v in scratch.items()}
+        env[determinism.DETERMINISM_RECORD_ENV] = str(work / ".ar_determinism_shim.json")
+        return {"root": str(root), "ro": [str(p) for p in ro], "ro_flat": ["/sys"], "rw": [str(work.resolve())],
+                "ro_in_rw": ro_in_rw, "dev": "/dev", "env": env}
 
     def _execute_isolated(self, run_dir: Path, work: Path, limits: ResourceLimits, train_seed: int | None,
                           split_seed: int | None, interpreter: str):
@@ -453,6 +464,7 @@ class WorkingCopyRunner:
                 raise RunnerError(f"this host refuses the worker sandbox ({why}); give the no_worker_sandbox waiver "
                                   "to run without it (then the run is not isolated)")
             env[isolation.SANDBOX_ENV] = json.dumps(sandbox)
+            applied[determinism.DETERMINISM_RECORD_ENV] = sandbox["env"][determinism.DETERMINISM_RECORD_ENV]
         frozen_before = isolation.frozen_file_hashes(work, self.spec.frozen_paths)
         cgroup = self._make_cgroup(limits, run_dir.name)
         preexec_limits = _limits_preexec(limits, cgroup)
@@ -481,9 +493,7 @@ class WorkingCopyRunner:
         kill = exit_.kill or {}
         override = None
         if exit_.launch_error is None and not exit_.timed_out:   # the timeout rule decides first, as for any run
-            if kill.get("parent_traced_by"):
-                override = RunOutcome.infrastructure_failure("parent_traced", tracer=kill["parent_traced_by"])
-            elif not log_intact:
+            if not log_intact:
                 override = RunOutcome.divergent("log_tampered")
             elif changed:
                 override = RunOutcome.divergent("frozen_file_changed", files=changed[:20])
@@ -508,11 +518,15 @@ class WorkingCopyRunner:
             "result_channel_sha256": result_sha,
             "result_channel_overflow": exit_.result_overflow,
             "frozen_files_checked": len(frozen_before),
+            "parent_traced_by": kill.get("parent_traced_by"),
+            "parent_dumpable_at_accept": kill.get("parent_dumpable_at_accept"),
             "frozen_files_changed": changed,
             "limits": isolation.limits_text(),
             "_verified_log": (verified or b"").decode("utf-8", errors="replace"),
         }
-        det_record = determinism.read_record(run_dir / "determinism_shim.json", env)
+        record_path = Path(sandbox["env"][determinism.DETERMINISM_RECORD_ENV]) if sandbox else \
+            run_dir / "determinism_shim.json"
+        det_record = determinism.read_record(record_path, env)
         kill_info = {"killed_with": ("cgroup.kill" if cgroup else "session_sweep") if exit_.timed_out else None,
                      "leftover_processes_killed": bool(kill.get("processes_before") or
                                                        kill.get("session_sweep_killed") or
@@ -541,14 +555,16 @@ class _NoCgroup:
 _PREFIX_CACHE: dict[str, list[Path]] = {}
 
 
-def _interpreter_prefixes(interpreter: str) -> list[Path]:
-    """The run interpreter's ``sys.prefix`` and ``sys.base_prefix`` (its installation, read-only for the worker)."""
+def _interpreter_paths(interpreter: str) -> list[Path]:
+    """The run interpreter's executable, ``sys.prefix``, ``sys.base_prefix`` and ``sys.path`` entries (its
+    installation, read-only for the worker)."""
     if interpreter not in _PREFIX_CACHE:
-        out = subprocess.run([interpreter, "-E", "-s", "-c", "import sys; print(sys.prefix); print(sys.base_prefix)"],
-                             capture_output=True, text=True, timeout=60)
+        code = ("import json, sys, os; print(json.dumps([os.path.realpath(sys.executable), sys.executable, sys.prefix, "
+                "sys.base_prefix] + [p for p in sys.path if p]))")
+        out = subprocess.run([interpreter, "-s", "-c", code], capture_output=True, text=True, timeout=60, cwd="/")
         if out.returncode != 0:
             raise RunnerError(f"cannot query {interpreter}: {out.stderr[-300:]}")
-        _PREFIX_CACHE[interpreter] = [Path(line).resolve() for line in out.stdout.split() if line]
+        _PREFIX_CACHE[interpreter] = [Path(p) for p in json.loads(out.stdout.strip().splitlines()[-1])]
     return list(_PREFIX_CACHE[interpreter])
 
 
