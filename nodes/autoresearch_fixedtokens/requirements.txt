@@ -8,3 +8,4 @@ pyarrow==26.0.1
 tiktoken==0.14.0
 rustbpe==0.1.0
 requests
+huggingface_hub  # setup_command only (dataset revision check)

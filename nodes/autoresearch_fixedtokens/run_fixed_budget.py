@@ -1,6 +1,7 @@
 """Frozen fixed-budget wrapper of the Track G node autoresearch_fixedtokens.
 
-Run command: ``PYTORCH_ALLOC_CONF=expandable_segments:True python3 run_fixed_budget.py --tokens {budget}``.
+Run command: ``PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python3 run_fixed_budget.py --tokens {budget}``
+(the variable torch 2.6 reads; the fork's ``PYTORCH_ALLOC_CONF`` is read only from torch 2.9 on).
 
 FROZEN.  Runs the editable train.py (the autoresearch training script) in
 this process with a fixed budget of ``--tokens`` training tokens in place of
@@ -14,7 +15,15 @@ Seeds: torch is seeded from AR_TRAIN_SEED before train.py runs (autoresearch
 itself seeds 42 in train.py; the port moved that here).  AR_SPLIT_SEED has no
 effect: the validation shard is fixed by autoresearch.  The token budget is
 enforced by ar_budget.py: the training loader serves exactly ``--tokens``
-tokens and the wrapper stops (exit 3) unless train.py used all of them.
+tokens and the wrapper stops (exit 3) unless train.py used all of them; a
+request beyond the budget exits 7; a request for the validation split while
+train.py runs exits 8; any other exception or ``SystemExit`` out of train.py
+exits 4 (so a ``sys.exit(0)`` after a forged metric line cannot skip the budget
+check).  Known in-process limits (the editable code runs in this process): it
+can still print forged ``AR_`` lines before failing, patch this module's
+functions at run time, introspect the budget closure, or read the parquet files
+directly; the line order and the checks above narrow these, they do not close
+them.
 """
 import argparse
 import os
@@ -25,6 +34,10 @@ import sys
 EXIT_BAD_INVOCATION = 2
 EXIT_BUDGET_NOT_REACHED = 3
 EXIT_BAD_EDITABLE_API = 4
+EXIT_OVER_BUDGET = 7
+EXIT_VALIDATION_REQUESTED = 8
+REQUIRED_FILES = ["tokenizer/tokenizer.pkl", "tokenizer/token_bytes.pt", "data/shard_06542.parquet",
+                  *[f"data/shard_{i:05d}.parquet" for i in range(10)]]
 NODE = "autoresearch_fixedtokens"
 
 
@@ -53,8 +66,7 @@ def main() -> None:
     import ar_data
 
     data_dir = ar_data.data_dir_of(__file__)
-    ar_data.verify(data_dir, NODE, ["tokenizer/tokenizer.pkl", "tokenizer/token_bytes.pt",
-                                    "data/shard_06542.parquet"])
+    ar_data.verify(data_dir, NODE, REQUIRED_FILES)
     os.environ["AUTORESEARCH_CACHE_DIR"] = str(data_dir.resolve())
 
     import numpy as np
@@ -71,12 +83,21 @@ def main() -> None:
     import ar_budget
     import prepare
 
-    ar_budget.TRAIN_TOKENS = budget
-    prepare.make_dataloader = ar_budget.budgeted(prepare.make_dataloader)
-    namespace = runpy.run_path("train.py", run_name="__main__")  # the editable training script
-    if ar_budget.served() != budget:
-        fail(EXIT_BUDGET_NOT_REACHED, f"train.py used {ar_budget.served()} of {budget} training tokens")
-    print(f"AR_TOKENS consumed={ar_budget.served()}", flush=True)
+    ar_budget.TRAIN_TOKENS = budget  # read by train.py; the budget itself is enforced by the closure below
+    make, served, open_validation = ar_budget.budgeted(prepare.make_dataloader, budget)
+    prepare.make_dataloader = make
+    try:
+        namespace = runpy.run_path("train.py", run_name="__main__")  # the editable training script
+    except ar_budget.BudgetExhausted as exc:
+        fail(EXIT_OVER_BUDGET, f"train.py requested more than the budget: {exc}")
+    except ar_budget.ValidationRequested as exc:
+        fail(EXIT_VALIDATION_REQUESTED, f"train.py requested the validation split: {exc}")
+    except BaseException as exc:  # noqa: BLE001 - SystemExit and KeyboardInterrupt included, on purpose
+        fail(EXIT_BAD_EDITABLE_API, f"train.py ended with {type(exc).__name__}: {exc}")
+    if served() != budget:
+        fail(EXIT_BUDGET_NOT_REACHED, f"train.py used {served()} of {budget} training tokens")
+    print(f"AR_TOKENS consumed={served()}", flush=True)
+    open_validation()
 
     model, tokenizer = namespace.get("model"), namespace.get("tokenizer")
     if not isinstance(model, torch.nn.Module) or tokenizer is None:

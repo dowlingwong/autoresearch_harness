@@ -1,40 +1,60 @@
 """Frozen training-token budget of the Track G node autoresearch_fixedtokens.
 
-FROZEN.  The wrapper (run_fixed_budget.py) sets ``TRAIN_TOKENS`` from
-``--tokens`` before the editable train.py imports it, and replaces
-``prepare.make_dataloader`` by :func:`budgeted`, which passes the validation
-loader through unchanged and stops the training loader after exactly
-``TRAIN_TOKENS`` tokens: a request beyond the budget raises
-:class:`BudgetExhausted` (a BaseException, so ``except Exception`` in edited
-code does not hide it) and the run fails.  After train.py returns, the
-wrapper checks that the budget was used in full (:func:`served`).
+FROZEN.  The wrapper (run_fixed_budget.py) replaces ``prepare.make_dataloader``
+by the loader factory that :func:`budgeted` returns, before the editable
+train.py runs.  That factory
+
+* stops the training loader after exactly ``tokens`` tokens: a request beyond
+  the budget raises :class:`BudgetExhausted`;
+* refuses the validation split while train.py runs: a request raises
+  :class:`ValidationRequested`, because the validation shard is the only metric
+  data and must not become an unbudgeted training source.  The wrapper opens it
+  (``open_validation``) only after train.py has returned, for
+  ``prepare.evaluate_bpb``.
+
+Both exceptions are BaseExceptions, so ``except Exception`` in edited code does
+not hide them, and the wrapper turns each into its own non-zero exit.  The
+token counter lives in a closure, not in a module global that train.py could
+assign; the wrapper keeps the ``served`` and ``open_validation`` callables.
+``TRAIN_TOKENS`` is informational (train.py reads it to plan its steps).
 """
-TRAIN_TOKENS = 0  # set by run_fixed_budget.py before train.py is imported
-_served = 0
+
+
+TRAIN_TOKENS = 0  # set by the wrapper before train.py runs, for train.py to plan its steps; not used to enforce
 
 
 class BudgetExhausted(BaseException):
     """A training batch was requested after the token budget was used up."""
 
 
-def served() -> int:
-    return _served
+class ValidationRequested(BaseException):
+    """train.py asked for the validation split while it was running."""
 
 
-def budgeted(make_dataloader):
+def budgeted(make_dataloader, tokens: int):
+    """(make, served, open_validation): the budgeted loader factory and its two controls."""
+    state = {"served": 0, "validation_open": False}
+
     def make(tokenizer, B, T, split, *args, **kwargs):
-        loader = make_dataloader(tokenizer, B, T, split, *args, **kwargs)
         if split != "train":
-            return loader
+            if not state["validation_open"]:
+                raise ValidationRequested(f"split {split!r} requested while train.py runs")
+            return make_dataloader(tokenizer, B, T, split, *args, **kwargs)
+        loader = make_dataloader(tokenizer, B, T, split, *args, **kwargs)
 
         def train_batches():
-            global _served
             for batch in loader:
-                if _served + B * T > TRAIN_TOKENS:
-                    raise BudgetExhausted(f"batch of {B * T} tokens requested after {_served} of {TRAIN_TOKENS}")
-                _served += B * T
+                if state["served"] + B * T > tokens:
+                    raise BudgetExhausted(f"batch of {B * T} tokens requested after {state['served']} of {tokens}")
+                state["served"] += B * T
                 yield batch
 
         return train_batches()
 
-    return make
+    def served() -> int:
+        return state["served"]
+
+    def open_validation() -> None:
+        state["validation_open"] = True
+
+    return make, served, open_validation
