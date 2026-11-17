@@ -61,8 +61,8 @@ How a node with an ``isolation`` block (``trackg_node/v1``) is run by :class:`Wo
   should commit, so a kit changed before a later campaign is caught by comparing it.
 
 Not closed here (stated in the record's ``isolation.limits`` and the kits' threat model): the worker can read
-every file the run's uid can read, including the data and the validation and test labels (a read-only mount
-does not hide them); it computes the training itself, so the budget accounting and the loss lines stay in the
+every allow-listed path: its working copy (the kit's files included) and the data, so the validation and test
+labels wherever a node keeps them there (a read-only mount does not hide them); it computes the training itself, so the budget accounting and the loss lines stay in the
 editable process; it can answer the parent's evaluation requests differently from a fixed model (the kits'
 probes narrow this); a node that sets ``shared_dev_shm`` (needed for torch's CUDA IPC reference counters) gives the
 worker the host's ``/dev/shm``, through which it can keep state between runs or reach concurrent runs;
@@ -610,12 +610,16 @@ def append_runner_line(log_path: Path, line: str) -> None:
 
 def limits_text() -> list[str]:
     return [
-        "the worker can read every file the run's uid can read (data, validation and test labels included)",
+        "the worker can read every allow-listed path: its working copy (the kit's files included), the data "
+        "(validation and test labels included, where a node keeps them there), the interpreter and system directories",
         "budget accounting and loss lines stay in the worker (editable) process",
         "a worker can answer the parent's evaluation requests differently from a fixed model (kit probes only)",
         "with shared_dev_shm (CUDA IPC), /dev/shm is shared with the worker and can carry state between runs",
-        "the Python installation and the kit are trusted as the uid left them before the campaign (frozen_pin_sha256 "
-        "should be committed by the census)",
+        "the Python installation, the data, the harness checkout and the kit before the pin are trusted as the uid "
+        "left them (the worker cannot write them; another process of that uid can; frozen_pin_sha256 should be "
+        "committed by the census)",
+        "/dev is the host's (a private /dev/shm unless shared_dev_shm); CUDA IPC across the PID namespace is "
+        "exercised only by the kits' GPU smoke",
         "an infrastructure log pattern printed by the worker makes the run an infrastructure_failure",
         "the guarantees hold only with the worker sandbox, a non-root uid, a cgroup and ptrace_scope >= 1 "
         "(the record lists any waiver)",
