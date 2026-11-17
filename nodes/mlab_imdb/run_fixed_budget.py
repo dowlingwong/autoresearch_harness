@@ -62,9 +62,13 @@ def main() -> None:
         return lambda idx: {"input_ids": split[0][idx], "attention_mask": split[1][idx]}
 
     val_pred = L.predict_classes(T, model, evaluation(val), len(val[2]), N_CLASSES, config, device)
-    ar_data.emit(f"AR_METRIC val_accuracy={L.accuracy(val_pred, val[2]):.6f}")
     test_pred = L.predict_classes(T, model, evaluation(te), len(te[2]), N_CLASSES, config, device)
-    ar_data.emit(f"AR_TEST test_accuracy={L.accuracy(test_pred, te[2]):.6f}")
+    # Both evaluations (editable predict_logits) and the accuracies run before the first result line, which
+    # only formats Python floats: nothing editable runs after it.
+    val_accuracy, test_accuracy = L.accuracy(val_pred, val[2]), L.accuracy(test_pred, te[2])
+    ar_data.seal()  # stdout/stderr to /dev/null: threads of the editable code cannot print now
+    ar_data.emit(f"AR_METRIC val_accuracy={val_accuracy:.6f}")
+    ar_data.emit(f"AR_TEST test_accuracy={test_accuracy:.6f}")
 
 
 if __name__ == "__main__":

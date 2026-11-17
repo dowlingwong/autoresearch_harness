@@ -15,16 +15,24 @@ downloads that no run reads).
 Known limits (the editable code runs in the wrapper's process): the setup makes
 the directory read-only, which makes accidental writes by a run fail, but code
 running as the directory's owner can restore the write bits (and as root the bits
-do not apply), and it could rewrite the manifest together with the data.  After
-the census records the manifest's sha256, pin it and give the data another owner
-or a read-only mount on the census host.
+do not apply), and it could rewrite the manifest together with the data; files
+under the setup-only subdirectories, and anything outside the data directory, are
+not checked.  After the census records the manifest's sha256, pin it and give the
+data another owner or a read-only mount on the census host.
 
 The wrapper's own result lines go through :func:`emit`, which writes to a copy of
 the standard output descriptor taken when this module is imported (before the
 editable code is), and the wrapper ends with :func:`finish` (``os._exit(0)``), so
 editable code cannot rewrite those lines by replacing ``sys.stdout`` or add lines
-after them from an ``atexit`` handler.  It can still print a forged line and exit
-before the wrapper prints its own.
+after them from an ``atexit`` handler.  Every wrapper runs all editable code (both
+evaluations) before its first result line, and calls :func:`seal` just before it:
+the process's standard output and error descriptors are pointed at /dev/null, so
+a thread the editable code started can no longer print into the log while the
+result lines are written (they go to the saved copy).  Editable code can still
+print a forged line before the wrapper's lines (and end the process before the
+wrapper prints), or write to the saved descriptor itself, or patch this module;
+the harness takes the last metric match.  A harness change would close the rest
+(for example refusing a run with more than one metric match).
 """
 from __future__ import annotations
 
@@ -55,6 +63,20 @@ def emit(line: str) -> None:
     except Exception:  # noqa: BLE001 - the editable code may have replaced or closed sys.stdout
         pass
     os.write(_OUT_FD, (line.rstrip("\n") + "\n").encode("utf-8"))
+
+
+def seal() -> None:
+    """Point file descriptors 1 and 2 at /dev/null (after flushing), just before the final result lines: output
+    of threads the editable code started no longer reaches the log; the result lines use the saved descriptor."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:  # noqa: BLE001
+            pass
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull, 1)
+    os.dup2(devnull, 2)
+    os.close(devnull)
 
 
 def finish() -> None:
@@ -114,33 +136,34 @@ def unlisted_files(data_dir: Path, manifest: dict) -> list[str]:
     return out
 
 
-def verify(data_dir: Path, node: str, names: list[str]) -> dict:
+def verify(data_dir: Path, node: str, names: list[str], prefix: str = "AR_ERROR data") -> dict:
     """Check that the manifest exists, belongs to *node*, lists *names*, that every listed file
     has the recorded size and sha256, and that no unlisted file exists outside the setup-only
-    subdirectories.  Exit with code 5 otherwise."""
+    subdirectories.  Exit with code 5 otherwise; the message starts with *prefix* (a wrapper that
+    re-checks after the editable code ran passes its own prefix, so the two cases can be told apart)."""
     data_dir = Path(data_dir)
     manifest_path = data_dir / MANIFEST_NAME
     if not manifest_path.is_file():
-        print(f"AR_ERROR data manifest missing at {manifest_path}; run the node's setup_command", flush=True)
+        print(f"{prefix} manifest missing at {manifest_path}; run the node's setup_command", flush=True)
         sys.exit(EXIT_DATA)
     manifest_bytes = manifest_path.read_bytes()
     manifest = json.loads(manifest_bytes)
     if manifest.get("schema") != MANIFEST_SCHEMA or manifest.get("node") != node:
-        print(f"AR_ERROR data manifest {manifest_path} is not a {MANIFEST_SCHEMA} manifest of {node}", flush=True)
+        print(f"{prefix} manifest {manifest_path} is not a {MANIFEST_SCHEMA} manifest of {node}", flush=True)
         sys.exit(EXIT_DATA)
     files = manifest.get("files", {})
     for name in names:
         if name not in files:
-            print(f"AR_ERROR data manifest lacks {name}", flush=True)
+            print(f"{prefix} manifest lacks {name}", flush=True)
             sys.exit(EXIT_DATA)
     for name, entry in sorted(files.items()):
         path = data_dir / name
         if not path.is_file() or path.stat().st_size != entry["bytes"] or sha256_file(path) != entry["sha256"]:
-            print(f"AR_ERROR data file {name} differs from the manifest", flush=True)
+            print(f"{prefix} file {name} differs from the manifest", flush=True)
             sys.exit(EXIT_DATA)
     extra = unlisted_files(data_dir, manifest)
     if extra:
-        print(f"AR_ERROR data directory holds files the manifest does not list: {extra[:5]}", flush=True)
+        print(f"{prefix} directory holds files the manifest does not list: {extra[:5]}", flush=True)
         sys.exit(EXIT_DATA)
     digest = hashlib.sha256(manifest_bytes).hexdigest()
     print(f"AR_DATA manifest_sha256={digest} files={len(files)}", flush=True)
