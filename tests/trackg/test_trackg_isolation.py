@@ -114,7 +114,7 @@ def run(tmp_path, mode="ok", lim=None, run_id="r1", spec_over=None, env=None):
 
 def test_isolation_block_is_validated():
     spec = TrackGNodeSpec.from_mapping(isolated_spec_mapping())
-    assert spec.isolation.entry == "parent.py" and spec.isolation.argv("py", 5) == ["py", "-E", "-s", "parent.py", "5"]
+    assert spec.isolation.entry == "parent.py" and spec.isolation.argv("py", 5) == ["py", "-s", "parent.py", "5"]
     with pytest.raises(TrackGNodeSpecError, match="covered by frozen_paths"):
         TrackGNodeSpec.from_mapping(isolated_spec_mapping(isolation={"entry": "train.py"}))
     with pytest.raises(TrackGNodeSpecError, match="AR_RESULT_SOCKET"):
@@ -174,10 +174,10 @@ def test_ok_isolated_run_takes_the_metric_from_the_channel(tmp_path):
     rec = result.record
     assert result.outcome.kind == OK and result.outcome.value == pytest.approx(1.0), rec
     iso = rec["isolation"]
-    assert rec["command"] == ["python3", "-E", "-s", "parent.py", "5"] and iso["argv"] == rec["command"]
+    assert rec["command"] == ["python3", "-s", "parent.py", "5"] and iso["argv"] == rec["command"]
     assert iso["log_intact"] and iso["frozen_files_checked"] == 3 and not iso["frozen_files_changed"]
     assert iso["runner_dumpable"] is False and iso["effective"] is False   # waivers on this test host
-    assert iso["worker_sandbox"]["writable"] == [str(result.work_dir.resolve())] and "_verified_log" not in iso
+    assert iso["worker_sandbox"]["rw"] == [str(result.work_dir.resolve())] and "_verified_log" not in iso
     assert rec["sealed"] == {"test_accuracy": 0.4242}
     assert rec["environment_applied"]["FAKE_NODE"] == "1"
     log = (result.run_dir / "run.log").read_text()
@@ -190,8 +190,7 @@ def test_ok_isolated_run_takes_the_metric_from_the_channel(tmp_path):
 
 @pytest.mark.parametrize("mode,reason", [
     ("forge_stdout", "metric_line_in_run_output"),
-    ("tamper_log", "nonzero_exit"),          # the run directory is read-only in the sandbox: the write fails
-    ("frozen", "frozen_file_changed"),       # the working copy is writable, and checked after the run
+    ("frozen", "nonzero_exit"),              # frozen files are read-only inside the working copy: the write fails
     ("crash", "nonzero_exit"),
     ("nan", "non_finite_loss"),
 ])
@@ -200,10 +199,19 @@ def test_forged_or_broken_isolated_runs_are_divergent(tmp_path, mode, reason):
     assert (result.outcome.kind, result.outcome.reason) == (DIVERGENT, reason), result.record["outcome"]
 
 
-def test_without_the_sandbox_a_tampered_log_is_refused(tmp_path):
+def test_the_sandboxed_worker_cannot_reach_the_real_log(tmp_path):
+    """The run directory does not exist in the worker's file system (its parent directories at most, in the private
+    /tmp here): a write to ../run.log lands nowhere the runner reads."""
+    result = run(tmp_path, "tamper_log")
+    assert result.outcome.kind == OK and result.record["isolation"]["log_intact"], result.record["outcome"]
+
+
+def test_without_the_sandbox_a_tampered_log_or_frozen_file_is_refused(tmp_path):
     result = run(tmp_path, "tamper_log", limits(waive={"no_worker_sandbox": "test"}))
     assert (result.outcome.kind, result.outcome.reason) == (DIVERGENT, "log_tampered"), result.record["outcome"]
     assert result.record["isolation"]["worker_sandbox"] is None and result.record["isolation"]["effective"] is False
+    result = run(tmp_path / "f", "frozen", limits(waive={"no_worker_sandbox": "test"}))
+    assert (result.outcome.kind, result.outcome.reason) == (DIVERGENT, "frozen_file_changed"), result.record["outcome"]
 
 
 def test_the_sandbox_confines_the_worker(tmp_path, monkeypatch):
@@ -215,15 +223,28 @@ def test_the_sandbox_confines_the_worker(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_REAL_HOME", os.environ.get("HOME", "/root"))
     node = make_isolated_node(tmp_path / "sb", "sandbox_report")
     monkeypatch.setenv("FAKE_KIT", str(node))
+    import socket
+    sock_dir = Path(tempfile.mkdtemp(prefix="ar_daemon_", dir="/tmp"))
+    daemon = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    daemon.bind(str(sock_dir / "s"))
+    daemon.listen(1)
+    monkeypatch.setenv("FAKE_SOCKET", str(sock_dir / "s"))
     spec = TrackGNodeSpec.from_mapping(isolated_spec_mapping())
-    result = WorkingCopyRunner(spec, node, tmp_path / "sb" / "runs").run("r1", limits())
+    try:
+        result = WorkingCopyRunner(spec, node, tmp_path / "sb" / "runs").run("r1", limits())
+    finally:
+        daemon.close()
     assert result.outcome.kind == OK, result.record["outcome"]
     log = (result.run_dir / "run.log").read_text()
     report = json.loads(log.split("sandbox report:")[1].splitlines()[0])
     assert report["pid"] == 1 and report["ppid"] == 0 and report["procs"] <= 3, report
-    assert report["run_log"] != "writable" and report["kit"] != "writable" and report["work"] == "writable", report
+    assert report["kit"] != "writable" and report["work"] == "writable", report
+    assert result.record["isolation"]["log_intact"]
     assert report["home"] != "writable" and report["net"] != "connected", report
     assert report["FAKE_RUNNER_PID"] != "signal_ok" and report["caps"] == "0000000000000000", report
+    assert report["socket"] != "connected", report            # review round 2, B1: no pathname socket outside
+    assert report["cgroupfs"] in ([], "FileNotFoundError"), report   # round 2, M2: no cgroup file system
+    assert result.record["determinism"]["shim_loaded"] is True  # round 2, M3
     assert report["setuid"] != "ok" or report["uid"] == 0
     del kit
 
@@ -456,3 +477,11 @@ def _unprivileged_run(work, cgroup_parent):
     assert out["isolation"]["euid"] == 65534 and out["isolation"]["worker_sandbox"] is not None
     assert set(out["isolation"]["waivers"]) <= {"ptrace_scope"}
     assert out["outcome"]["kind"] == "ok" and out["outcome"]["value"] == pytest.approx(1.0), out["outcome"]
+
+
+def test_killing_its_process_group_does_not_reach_the_parent(tmp_path):
+    """Review round 2, M2: the worker has its own session and process group (and is PID 1 of its namespace, which
+    ignores the signal); kill(0, SIGKILL) does not reach the parent, so the run is never an infrastructure failure."""
+    result = run(tmp_path, "kill_group")
+    assert result.outcome.kind != INFRASTRUCTURE_FAILURE, result.record["outcome"]
+    assert result.record["process"]["returncode"] in (0, 12), result.record["process"]
