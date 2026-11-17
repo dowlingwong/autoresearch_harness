@@ -33,6 +33,23 @@ def test_frozen_path_edit_refused(node):
     ps.check_scope(node)
 
 
+# Pairs of declared edits that change different settings and must compose (S1.1 interaction runs).
+# Edits that set the same line (two learning rates) are alternatives and are expected to conflict.
+INTERACTING = {
+    "mlab_cifar10": {"E1+E2", "E1+E3", "E2+E3", "E2+E4", "E3+E4"},
+    "mlab_imdb": {"E1+E3", "E1+E4", "E2+E3", "E2+E4", "E3+E4"},
+    "mlab_ogbn_arxiv": {"E1+E3", "E2+E3", "E3+E4"},
+}
+
+
+@pytest.mark.parametrize("node", NODES)
+def test_interacting_edits_compose(node):
+    pairs = ps.check_composable(node)
+    for pair in INTERACTING[node]:
+        a, b = pair.split("+")
+        assert pairs[f"{a}+{b}"] == "applied" and pairs[f"{b}+{a}"] == "applied", (pair, pairs)
+
+
 # --------------------------------------------------------------------------- synthetic data
 
 def cifar_data(d: Path) -> dict:
@@ -45,6 +62,7 @@ def cifar_data(d: Path) -> dict:
 
 
 def imdb_data(d: Path) -> dict:
+    import torch
     from transformers import DistilBertConfig, DistilBertModel
 
     rng = np.random.RandomState(0)
@@ -54,6 +72,7 @@ def imdb_data(d: Path) -> dict:
         np.save(d / f"{split}_y.npy", rng.randint(0, 2, n).astype(np.int64))
     config = DistilBertConfig(vocab_size=1000, dim=32, n_layers=1, n_heads=2, hidden_dim=64,
                               max_position_embeddings=512)
+    torch.manual_seed(0)  # the tiny model's weights, so the smoke table reproduces
     DistilBertModel(config).save_pretrained(d / "pretrained")
     return {"shapes": "random token ids; tiny random DistilBERT"}
 

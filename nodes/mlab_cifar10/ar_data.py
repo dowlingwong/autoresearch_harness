@@ -42,6 +42,17 @@ def write_manifest(data_dir: Path, node: str, files: list[str], source: dict) ->
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def make_read_only(data_dir: Path) -> None:
+    """Remove write permission from every file and directory under *data_dir* (after the manifest is
+    written), so a run's editable code cannot change the shared data or leave files there."""
+    data_dir = Path(data_dir)
+    for path in sorted(data_dir.rglob("*"), reverse=True):
+        if path.is_symlink():
+            continue
+        path.chmod(path.stat().st_mode & ~0o222)
+    data_dir.chmod(data_dir.stat().st_mode & ~0o222)
+
+
 def data_dir_of(script: str) -> Path:
     """The node's ``data`` link, next to the calling frozen script."""
     return Path(script).resolve().parent / "data"

@@ -6,5 +6,7 @@ numpy==2.5.4
 transformers==4.49.0
 safetensors==0.8.0
 tokenizers==0.21.4
-datasets  # setup_command only
-huggingface_hub  # setup_command only
+datasets  # setup_command only; its version is recorded in the data manifest
+huggingface_hub==0.36.2  # setup_command only (also needed by transformers 4.49)
+# Install this file in one resolver call (pip install -r requirements.txt), so a setup-only package cannot
+# replace the pinned torch.

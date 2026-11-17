@@ -1,15 +1,6 @@
 --- a/train.py
 +++ b/train.py
-@@ -23,7 +23,7 @@
- HIDDEN = 16
- NUM_LAYERS = 2
- DROPOUT = 0.0
--LEARNING_RATE = 1.0
-+LEARNING_RATE = 0.01
- 
- 
- class MLP(torch.nn.Module):
-@@ -45,8 +45,38 @@
+@@ -52,13 +52,43 @@
          return torch.log_softmax(self.lins[-1](h), dim=-1)
  
  
@@ -49,3 +40,9 @@
      return model.to(info["device"])
  
  
+ # Optimizer: the suite's Adam (its ReduceLROnPlateau scheduler is never stepped there, so none here).
+-LEARNING_RATE = 1.0
++LEARNING_RATE = 0.01
+ 
+ 
+ def build_optimizer(model, total_steps):

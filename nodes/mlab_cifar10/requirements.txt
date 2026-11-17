@@ -3,4 +3,6 @@
 # and records the versions in the census and run records.
 torch==2.6.0
 numpy==2.5.4
-torchvision  # setup_command only (download and md5 check of the CIFAR-10 archive)
+torchvision==0.21.0  # setup_command only (download and md5 check of the CIFAR-10 archive); the release built for torch 2.6.0
+# Install this file in one resolver call (pip install -r requirements.txt), so a setup-only package cannot
+# replace the pinned torch.

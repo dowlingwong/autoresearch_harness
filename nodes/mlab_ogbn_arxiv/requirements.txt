@@ -3,4 +3,6 @@
 # and records the versions in the census and run records.
 torch==2.6.0
 numpy==2.5.4
-ogb  # setup_command only
+ogb==1.3.6  # setup_command only (the release prepare_data.py was written against)
+# Install this file in one resolver call (pip install -r requirements.txt), so a setup-only package cannot
+# replace the pinned torch.

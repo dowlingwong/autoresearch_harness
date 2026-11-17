@@ -1,15 +1,15 @@
 --- a/train.py
 +++ b/train.py
-@@ -20,9 +20,9 @@
-     "grad_clip": None,
+@@ -28,9 +28,9 @@
      "amp_bf16": False,
  }
+ # Model: the suite's MLP.
 -HIDDEN = 16
 -NUM_LAYERS = 2
 -DROPOUT = 0.0
 +HIDDEN = 256
 +NUM_LAYERS = 3
 +DROPOUT = 0.5
- LEARNING_RATE = 1.0
  
  
+ class MLP(torch.nn.Module):

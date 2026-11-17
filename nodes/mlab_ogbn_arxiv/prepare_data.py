@@ -9,9 +9,13 @@ writes the hashed data manifest and links --out into the node as ``data``.
     python3 prepare_data.py --out "$AR_TRACKG_DATA_ROOT/mlab_ogbn_arxiv"
 
 Re-running with a complete --out only re-checks and re-links it.
+--out must lie under ``$AR_TRACKG_DATA_ROOT``.  A first run needs an empty or
+new --out (a partial earlier attempt is never reused); the manifest is written
+last and the directory is then made read-only, so runs cannot change the data.
 """
 import argparse
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -27,8 +31,14 @@ def main() -> None:
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
     out = args.out.resolve()
+    root = os.environ.get("AR_TRACKG_DATA_ROOT")
+    if not root or not out.is_relative_to(Path(root).resolve()) or out == Path(root).resolve():
+        raise SystemExit(f"--out must lie under $AR_TRACKG_DATA_ROOT (set: {bool(root)}); got {out}")
     node_dir = Path(__file__).resolve().parent
     if not (out / ar_data.MANIFEST_NAME).exists():
+        if out.exists() and any(out.iterdir()):
+            raise SystemExit(f"{out} is not empty and has no data manifest (an earlier attempt?); move it aside "
+                             "and run again into a new --out (nothing is reused)")
         import ogb
         from ogb.nodeproppred import NodePropPredDataset
         out.mkdir(parents=True, exist_ok=True)
@@ -45,6 +55,7 @@ def main() -> None:
                   "split_sizes": {k: int(len(v)) for k, v in split.items()}}
         digest = ar_data.write_manifest(out, NODE, FILES, source)
         print(f"wrote {out / ar_data.MANIFEST_NAME} sha256 {digest}")
+        ar_data.make_read_only(out)  # runs cannot change the shared data or leave files in it
     manifest = ar_data.verify(out, NODE, FILES)
     ar_data.link_data(node_dir, out)
     print(json.dumps({"node": NODE, "data": str(out), "files": sorted(manifest["files"])}))

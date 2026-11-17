@@ -8,7 +8,10 @@ description: >-
   batches of 1,024 training nodes). The editable train.py holds model, optimizer and loss and receives the
   full features and edge list; the frozen wrapper holds the data, the official split (train / valid / test
   by year; valid is the selection split, test the sealed test set), the training loop and the metric. The
-  fixed budget is 356 optimizer steps, the length of the suite baseline's own run (4 epochs of 89 batches).
+  fixed budget is 356 optimizer steps, the number of batches of the suite baseline's own run (4 epochs of 89
+  batches). Two deviations from the suite: batch norm sees only the 1,024 training seeds of a batch (the suite's
+  MLP runs on a sampled 2-hop subgraph of the seeds, so its batch statistics include sampled neighbours), and the
+  wrapper drops each epoch's last partial batch (356 full batches are about 4.05 epochs).
 suite: mlagentbench
 domain: graph
 
@@ -20,12 +23,12 @@ frozen_paths:
   - ar_data.py
   - prepare_data.py
   - requirements.txt
-  - NOTICE.md
+  - LICENCES.md
   - data/
   - representative_edits/
 allow_new_files: false
 
-setup_command: 'python3 prepare_data.py --out "$AR_TRACKG_DATA_ROOT/mlab_ogbn_arxiv"'
+setup_command: 'test -n "$AR_TRACKG_DATA_ROOT" && python3 prepare_data.py --out "$AR_TRACKG_DATA_ROOT/mlab_ogbn_arxiv"'
 run_command: "python3 run_fixed_budget.py --steps {budget}"
 
 metric_name: val_accuracy
@@ -35,7 +38,9 @@ metric:
   loss_regex: '^step \d+ loss (\S+)$'
   steps_regex: '^step (\d+) loss \S+$'
   test_metric_regex: '^AR_TEST test_accuracy=(\S+)$'
-  infrastructure_log_patterns: []
+  infrastructure_log_patterns:
+    # the wrapper's GPU check, printed before the editable code is imported (no AR_DEVICE line before it)
+    - '\A(?:(?!AR_DEVICE ).*\n)*?AR_INFRA a GPU was assigned \(CUDA_VISIBLE_DEVICES set\) but CUDA is unavailable$'
 
 run_budget:
   kind: steps
@@ -77,7 +82,7 @@ external_benchmark:
   repository: https://github.com/snap-stanford/MLAgentBench
   task: benchmarks/ogbn-arxiv
   license: MIT
-  data: ogbn-arxiv (Open Graph Benchmark; MAG-derived, ODC-BY), fetched with the ogb package
+  data: ogbn-arxiv (Open Graph Benchmark; MAG-derived; ODC-BY as OGB's page states, per U1 §4), fetched with the ogb package
 
 notes:
   python_env: torch

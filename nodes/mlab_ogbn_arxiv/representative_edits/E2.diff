@@ -1,11 +1,11 @@
 --- a/train.py
 +++ b/train.py
-@@ -23,7 +23,7 @@
- HIDDEN = 16
- NUM_LAYERS = 2
- DROPOUT = 0.0
+@@ -58,7 +58,7 @@
+ 
+ 
+ # Optimizer: the suite's Adam (its ReduceLROnPlateau scheduler is never stepped there, so none here).
 -LEARNING_RATE = 1.0
 +LEARNING_RATE = 0.01
  
  
- class MLP(torch.nn.Module):
+ def build_optimizer(model, total_steps):
