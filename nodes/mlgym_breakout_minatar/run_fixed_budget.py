@@ -60,7 +60,7 @@ def emit(line: str) -> None:
         sys.stdout.flush()
     except Exception:  # noqa: BLE001
         pass
-    os.write(_OUT_FD, (line + "\n").encode("utf-8"))
+    os.write(_OUT_FD, ("\n" + line + "\n").encode("utf-8"))  # a newline first: a partial line cannot swallow it
 
 
 def seal() -> None:

@@ -194,6 +194,13 @@ def train_fixed_steps(train_mod, model, optimizer, scheduler, sampler: FixedStep
     return step
 
 
+def no_active_modes() -> None:
+    """Refuse a torch-function or torch-dispatch mode the editable code left active: DisableTorchFunction does not
+    reach dispatch modes, which could rewrite the frozen arithmetic below (both stacks are empty in a clean run)."""
+    if torch._C._len_torch_dispatch_stack() or torch._C._len_torch_function_stack():
+        fail(EXIT_BAD_EDITABLE_API, "a torch function or dispatch mode is active during the frozen evaluation")
+
+
 @torch.no_grad()
 def predict_classes(train_mod, model, make_eval_batch, n_items: int, n_classes: int, config: dict,
                     device: torch.device) -> torch.Tensor:
@@ -208,6 +215,7 @@ def predict_classes(train_mod, model, make_eval_batch, n_items: int, n_classes: 
         if type(logits) is not torch.Tensor or tuple(logits.shape) != (len(idx), n_classes):
             fail(EXIT_BAD_EDITABLE_API, f"predict_logits must return a plain torch.Tensor of shape "
                                         f"({len(idx)}, {n_classes})")
+        no_active_modes()
         with torch._C.DisableTorchFunction():  # no __torch_function__ subclass or mode of the editable code
             out.append(logits.float().argmax(dim=1))
     with torch._C.DisableTorchFunction():
@@ -215,6 +223,8 @@ def predict_classes(train_mod, model, make_eval_batch, n_items: int, n_classes: 
 
 
 def accuracy(pred: torch.Tensor, labels: torch.Tensor) -> float:
-    """Frozen accuracy, computed with torch-function dispatch disabled (no editable subclass or mode code)."""
+    """Frozen accuracy, computed with torch-function dispatch disabled and no mode active (no editable subclass or
+    mode code); a patch of torch itself (e.g. ``torch.Tensor.__eq__``) is not detected."""
+    no_active_modes()
     with torch._C.DisableTorchFunction():
         return float((pred.to(labels.device) == labels).double().mean().item())
