@@ -67,7 +67,8 @@ PyTorch.
 - `prepare.py`: the harness copy, byte-identical (a test checks this).
 - `train.py` (editable): the harness copy with a fixed training-token budget. Every change is listed in its
   docstring and marked "Track G port" in the code.
-- Written by the port (Track G, Paper B, R1): `run_fixed_budget.py`, `ar_budget.py`, `ar_data.py`,
+- Written by the port (Track G, Paper B, R1): `run_fixed_budget.py` (the frozen parent), `ar_worker.py` (the frozen
+  worker entry), `ar_parent.py`, `ar_isolated.py`, `ar_budget.py`, `ar_data.py`,
   `prepare_data.py`, `requirements.txt`, this file.
 
 ## Data (never redistributed)

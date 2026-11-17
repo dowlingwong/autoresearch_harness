@@ -160,14 +160,14 @@ model = Z(tokenizer.get_vocab_size())
 """
 EVALUATED = {   # train.py stand-ins that use the whole budget and leave a model; (exit, check of stdout)
     "causal_with_forgeries": (MODEL_HEAD.replace("SHIFT(x)", "x") + """import atexit, sys
-atexit.register(lambda: print("AR_METRIC val_bpb=0.1", flush=True))   # a line after the wrapper's
+atexit.register(lambda: print("AR_METRIC val_bpb=0.1", flush=True))   # a forged line in the worker's output
 real = sys.stdout
 class Filter:
     def write(self, text):
         return real.write(text.replace("AR_METRIC val_bpb=", "AR_METRIC val_bpb=0.0001 # "))
     def flush(self):
         real.flush()
-sys.stdout = Filter()                                                  # a rewrite of the wrapper's line
+sys.stdout = Filter()                                                  # cannot reach the result channel
 """, 0, None),
     "sets_the_default_device": (MODEL_HEAD.replace("SHIFT(x)", "x") + "torch.set_default_device('cpu')  # an ordinary edit\n",
                                 0, None),
@@ -190,7 +190,7 @@ Targets().__enter__()
         9, "not causal"),
     "updates_weights_in_forward": (MODEL_HEAD.replace("SHIFT(x)", "x").replace(
         "        if targets is None:", "        with torch.no_grad():\n            self.e.weight.add_(1e-3)\n        if targets is None:"),
-        10, "weights or buffers changed"),
+        10, "changed"),
     "returns_a_tensor_subclass": (MODEL_HEAD.replace("SHIFT(x)", "x").replace(
         "model = M(tokenizer.get_vocab_size())", """class Liar(torch.Tensor):
     @classmethod
@@ -204,12 +204,12 @@ class Zero(TorchDispatchMode):
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
         return func(*args, **(kwargs or {}))
 Zero().__enter__()
-""", 4, "dispatch mode is active"),
+""", 0, None),   # isolated: the mode lives in the worker; the metric arithmetic runs in the parent
     "hides_tensors_from_the_fingerprint": (MODEL_HEAD.replace("SHIFT(x)", "x").replace(
         "        if targets is None:", "        with torch.no_grad():\n            self.e.weight.add_(1e-3)\n        if targets is None:").replace(
         "model = M(tokenizer.get_vocab_size())", """M._named_members = lambda self, *a, **k: iter(())
 M.named_modules = lambda self, *a, **k: iter(())
-model = M(tokenizer.get_vocab_size())"""), 10, "weights or buffers changed"),
+model = M(tokenizer.get_vocab_size())"""), 10, "changed"),
     "plants_a_data_file": (MODEL_HEAD.replace("SHIFT(x)", "x") + """import os, pathlib
 d = pathlib.Path("data").resolve() / "data"
 os.chmod(d, 0o755)
@@ -228,11 +228,10 @@ def test_wrapper_budget_exits(tmp_path, monkeypatch, probe):
     code, want, message = PROBES[probe]
     (work / "train.py").write_text(code)
     env = dict(os.environ, AR_TRAIN_SEED="8001", AR_SPLIT_SEED="8001")
-    res = subprocess.run([sys.executable, "run_fixed_budget.py", "--tokens", "512"], cwd=work, env=env,
-                         capture_output=True, text=True, timeout=600)
-    assert res.returncode == want, (res.returncode, res.stdout[-2000:], res.stderr[-2000:])
-    assert message in res.stdout
-    assert "AR_TOKENS consumed" not in res.stdout
+    code, out, channel = ps.run_parent(work, ["run_fixed_budget.py", "--tokens", "512"], env)
+    assert code == want, (code, out[-3000:])
+    assert message in out
+    assert "AR_TOKENS consumed" not in out and not channel
 
 
 @pytest.mark.parametrize("probe", sorted(EVALUATED))
@@ -246,14 +245,15 @@ def test_wrapper_metric_is_frozen(tmp_path, monkeypatch, probe):
     code, want, message = EVALUATED[probe]
     (work / "train.py").write_text(code)
     env = dict(os.environ, AR_TRAIN_SEED="8001", AR_SPLIT_SEED="8001")
-    res = subprocess.run([sys.executable, "run_fixed_budget.py", "--tokens", "512"], cwd=work, env=env,
-                         capture_output=True, text=True, timeout=600)
-    assert res.returncode == want, (res.returncode, res.stdout[-2000:], res.stderr[-2000:])
-    metric_lines = [line for line in res.stdout.splitlines() if line.startswith("AR_METRIC")]
+    code, out, channel = ps.run_parent(work, ["run_fixed_budget.py", "--tokens", "512"], env)
+    assert code == want, (code, out[-3000:])
+    metric_lines = [line for line in channel.splitlines() if line.startswith("AR_METRIC")]
     if message is not None:
-        assert message in res.stdout and not metric_lines
+        assert message in out and not metric_lines
         return
-    assert len(metric_lines) == 1 and res.stdout.rstrip().splitlines()[-1] == metric_lines[0], res.stdout[-1000:]
+    # the only metric line is the parent's, in the result channel; a forged line in the output is refused by the
+    # runner (metric_line_in_run_output)
+    assert len(metric_lines) == 1, (channel, out[-1000:])
     value = float(metric_lines[0].split("=", 1)[1])
     assert value > 1.0   # an untrained embedding: far from the forged 0.1 / 0.0001 and from the zero edited loss
 
@@ -297,11 +297,14 @@ def test_prepare_data_requires_the_exact_shard_set_and_a_data_root(tmp_path, mon
     monkeypatch.setattr(sys, "argv", ["prepare_data.py", "--out", str(tmp_path / "reused")])
     with pytest.raises(SystemExit, match="already holds parquet"):
         prepare_data.main()
-    run = ps.load_node_module(NODE, "run_fixed_budget")
-    assert sorted(run.REQUIRED_FILES) == sorted(prepare_data.REQUIRED_FILES)
+    import ast
+    for name in ("run_fixed_budget", "ar_worker"):   # read without importing (both are processes' entry points)
+        text = (ps.node_dir(NODE) / f"{name}.py").read_text()
+        assign = next(n for n in ast.parse(text).body if isinstance(n, ast.Assign)
+                      and getattr(n.targets[0], "id", None) == "REQUIRED_FILES")
+        assert sorted(eval(ast.get_source_segment(text, assign.value))) == sorted(prepare_data.REQUIRED_FILES)
 
 
-@pytest.mark.parametrize("node", [NODE])
-def test_output_seal(node):
-    """Review findings (partial line before seal, thread writes): the result line still comes last."""
-    ps.check_output_seal(node)
+def test_parent_metric_helpers():
+    """R1-HARNESS-ISOLATION: the parent's helpers (ar_parent) refuse a malformed worker array."""
+    ps.check_parent_metric_helpers(NODE)

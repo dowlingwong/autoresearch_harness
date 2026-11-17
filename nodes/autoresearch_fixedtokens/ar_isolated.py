@@ -1,0 +1,491 @@
+"""Frozen node library: parent/worker split of an isolated Track G node (R1-HARNESS-ISOLATION).
+
+FROZEN: copied byte-identically into every isolated node and listed in its ``frozen_paths``; the master copy
+is ``autoresearch/trackg/node_lib/ar_isolated.py`` in the harness (the port tests compare the copies).
+Standard library and NumPy only; ``torch`` is imported lazily by the CUDA helpers.
+
+The runner starts the node's frozen **parent** script directly (no shell, ``python -E -s``); the name of the
+runner's result socket is in ``AR_RESULT_SOCKET``.  Importing this module in that process makes it
+non-dumpable at once (before NumPy is imported), so another process of the same user can neither open its file
+descriptors through ``/proc`` nor ``ptrace`` it from then on.  The parent:
+
+1. calls :func:`parent_start` as its first statement: it connects to the result socket (the runner accepts only
+   the parent's pid) with a close-on-exec socket, and ``AR_RESULT_SOCKET`` is removed from the environment;
+2. imports everything it needs (it never imports editable code);
+3. starts the editable code with :class:`Worker` -- a separate process running a frozen worker script that
+   calls :func:`worker_connect` and then :func:`serve`; the worker inherits only one end of a socket pair (the
+   result socket is closed in the child before anything else).  The parent's script directory is removed from
+   its ``sys.path`` first, so nothing it imports later can come from the working copy;
+4. drives the worker with requests (:meth:`Worker.call`) and computes the metric from the arrays it returns;
+5. writes the metric line with :meth:`ResultChannel.write` (the runner refuses a run whose channel holds more
+   or fewer than one metric line, or whose output holds a metric line), and exits.
+
+**Worker sandbox** (when the runner sets ``AR_ISOLATION_SANDBOX``, a JSON object): the worker is started in new
+user, mount, PID, network and cgroup namespaces.  Before ``exec`` the child maps the run's uid and gid to 0 in
+the new user namespace, makes the mount tree private, bind-mounts every ``protect`` path read-only (the
+runner's runs tree, the node kit, the data, the home directory, and the parent's Python installation), gives
+each ``writable`` path (the run's working copy) back write access, and mounts private ``tmpfs`` file systems on
+``private`` paths (``/tmp``, ``/var/tmp``, ``/run/user/<uid>``); the config's ``env`` (a home directory and cache
+directories inside the working copy) is set in the worker's environment.  After ``exec``, :func:`worker_connect` forks:
+the child is PID 1 of the new PID namespace, mounts a fresh ``/proc``, drops every capability (bounding set,
+ambient set, permitted / effective / inheritable sets, locked secure bits) and sets ``no_new_privs`` before the
+editable code is imported; the outer process only waits and passes on the exit code.  So the editable code
+cannot see or signal any process outside its PID namespace (the runner, the parent), cannot reach the network
+(abstract Unix sockets included), cannot write the runs tree, the kit, the data, the home directory or the
+Python installation (mounts made in a more privileged namespace stay locked in a nested one), cannot gain
+privileges through set-uid programs, and when PID 1 dies the kernel kills every process of the namespace.
+
+Messages are a fixed magic, an 8-byte header length, a JSON header and the raw bytes of each array (no
+pickle).  Arrays are checked against a dtype whitelist and their declared shape.  For large outputs the parent
+can hand the worker a shared buffer: a CPU buffer (``memfd``, sealed against shrinking and growing, passed over
+the socket with ``SCM_RIGHTS``) or, on a GPU, a CUDA tensor shared by CUDA IPC (:func:`cuda_share` /
+:func:`cuda_open`); the parent reads a private copy of either after each answer.  The CUDA path needs a GPU and
+is exercised by the kits' GPU smoke only; it relies on torch's IPC reference counter files in ``/dev/shm``,
+which is therefore not made private.
+"""
+from __future__ import annotations
+
+import ctypes
+import os
+
+_PR_SET_DUMPABLE = 4
+RESULT_SOCKET_ENV = "AR_RESULT_SOCKET"
+
+
+def _prctl(option: int, arg: int, arg3: int = 0) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(ctypes.c_int(option), ctypes.c_ulong(arg), ctypes.c_ulong(arg3), ctypes.c_ulong(0),
+                  ctypes.c_ulong(0)) < 0:
+        err = ctypes.get_errno()
+        raise OSError(err, os.strerror(err))
+
+
+if os.environ.get(RESULT_SOCKET_ENV):
+    _prctl(_PR_SET_DUMPABLE, 0)  # the parent: non-dumpable before anything else is imported
+
+import base64  # noqa: E402
+import json  # noqa: E402
+import mmap  # noqa: E402
+import socket  # noqa: E402
+import struct  # noqa: E402
+import subprocess  # noqa: E402
+import sys  # noqa: E402
+
+import numpy as np  # noqa: E402
+
+MAGIC = b"ARI1"
+WORKER_FD_ENV = "AR_WORKER_FD"
+SANDBOX_ENV = "AR_ISOLATION_SANDBOX"
+SANDBOXED_ENV = "AR_WORKER_SANDBOXED"
+MAX_HEADER_BYTES = 1 << 20
+MAX_MESSAGE_BYTES = 1 << 30   # large outputs go through shared buffers
+_RESULT_FD: list[int] = []    # the parent's result socket, closed in the worker's child before anything else
+DTYPES = ("float16", "float32", "float64", "int8", "int16", "int32", "int64", "uint8", "bool")
+
+
+class IsolationProtocolError(RuntimeError):
+    """A malformed message, a refused dtype or shape, or a worker that went away."""
+
+
+# ---------------------------------------------------------------------------------------------- parent side
+
+
+class ResultChannel:
+    """The parent's connection to the runner's result socket."""
+
+    def __init__(self, sock: socket.socket) -> None:
+        self._sock = sock
+
+    def write(self, line: str) -> None:
+        self._sock.sendall((line.rstrip("\n") + "\n").encode("utf-8"))
+
+    def close(self) -> None:
+        if self._sock is not None:
+            self._sock.close()
+            self._sock = None
+
+
+def parent_start() -> ResultChannel:
+    """First statement of a frozen parent: (non-dumpable since this module's import) connect the result channel."""
+    _prctl(_PR_SET_DUMPABLE, 0)
+    name = os.environ.pop(RESULT_SOCKET_ENV, None)
+    if not name:
+        raise SystemExit("AR_ERROR isolation: no result channel (AR_RESULT_SOCKET); the runner starts this script")
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM | socket.SOCK_CLOEXEC)
+    sock.connect("\0" + name)
+    _RESULT_FD.append(sock.fileno())
+    return ResultChannel(sock)
+
+
+# ---------------------------------------------------------------------------------------------- worker sandbox
+
+_CLONE_NEWNS, _CLONE_NEWCGROUP, _CLONE_NEWUSER = 0x00020000, 0x02000000, 0x10000000
+_CLONE_NEWPID, _CLONE_NEWNET = 0x20000000, 0x40000000
+_MS_RDONLY, _MS_NOSUID, _MS_NODEV, _MS_NOEXEC = 1, 2, 4, 8
+_MS_REMOUNT, _MS_BIND, _MS_REC, _MS_PRIVATE = 32, 4096, 0x4000, 1 << 18
+
+
+def _libc():
+    return ctypes.CDLL(None, use_errno=True)
+
+
+def _check(result: int, what: str) -> None:
+    if result != 0:
+        err = ctypes.get_errno()
+        raise OSError(err, f"{what}: {os.strerror(err)}")
+
+
+def _write_proc(name: str, text: str) -> None:
+    fd = os.open(f"/proc/self/{name}", os.O_WRONLY)
+    try:
+        os.write(fd, text.encode("ascii"))
+    finally:
+        os.close(fd)
+
+
+def _sandbox_preexec(config: dict):
+    """Child setup before exec (see the module docstring); every failure is reported on fd 2 and raised."""
+    protect = [str(p) for p in config.get("protect", []) if os.path.exists(p)]
+    writable = [str(p) for p in config.get("writable", []) if os.path.isdir(p)]
+    private = [str(p) for p in config.get("private", []) if os.path.isdir(p)]
+    uid, gid = os.getuid(), os.getgid()
+    result_fds = list(_RESULT_FD)
+
+    def setup() -> None:
+        step = "close result socket"
+        try:
+            for fd in result_fds:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            libc = _libc()
+            step = "dumpable"   # needed to write this child's own uid_map; it holds nothing secret now
+            _prctl(_PR_SET_DUMPABLE, 1)
+            step = "unshare"
+            _check(libc.unshare(ctypes.c_int(_CLONE_NEWUSER | _CLONE_NEWNS | _CLONE_NEWPID | _CLONE_NEWNET
+                                             | _CLONE_NEWCGROUP)), "unshare")
+            step = "id maps"
+            _write_proc("setgroups", "deny")
+            _write_proc("uid_map", f"0 {uid} 1")
+            _write_proc("gid_map", f"0 {gid} 1")
+            step = "private mounts"
+            _check(libc.mount(b"none", b"/", None, ctypes.c_ulong(_MS_REC | _MS_PRIVATE), None), "make / private")
+            for path in protect:
+                step = f"protect {path}"
+                raw = path.encode()
+                _check(libc.mount(raw, raw, None, ctypes.c_ulong(_MS_BIND | _MS_REC), None), "bind")
+                _check(libc.mount(None, raw, None, ctypes.c_ulong(_MS_BIND | _MS_REMOUNT | _MS_RDONLY), None),
+                       "read-only")
+            for path in writable:
+                step = f"writable {path}"
+                raw = path.encode()
+                _check(libc.mount(raw, raw, None, ctypes.c_ulong(_MS_BIND | _MS_REC), None), "bind")
+                _check(libc.mount(None, raw, None, ctypes.c_ulong(_MS_BIND | _MS_REMOUNT), None), "read-write")
+            for path in private:
+                step = f"private {path}"
+                _check(libc.mount(b"tmpfs", path.encode(), b"tmpfs", ctypes.c_ulong(_MS_NOSUID | _MS_NODEV),
+                                  b"mode=1777"), "tmpfs")
+            step = "chdir"   # the working directory was entered before the mounts: enter it again through them
+            os.chdir(os.getcwd())
+        except BaseException as error:  # noqa: BLE001 - subprocess reports only "Exception occurred in preexec_fn"
+            os.write(2, f"AR_ERROR isolation: worker sandbox setup failed at {step}: {error!r}\n".encode())
+            raise
+
+    return setup
+
+
+def _drop_capabilities() -> None:
+    """PID 1 of the worker's namespaces, after mounting /proc: no capability left, none to regain."""
+    libc = _libc()
+    for cap in range(64):
+        libc.prctl(ctypes.c_int(24), ctypes.c_ulong(cap), ctypes.c_ulong(0), ctypes.c_ulong(0),
+                   ctypes.c_ulong(0))                                   # PR_CAPBSET_DROP (EINVAL past the last)
+    _prctl(47, 4)                                                       # PR_CAP_AMBIENT, CLEAR_ALL
+    _prctl(28, 1 | 2 | 4 | 8 | 32)  # PR_SET_SECUREBITS: NOROOT(+LOCKED), NO_SETUID_FIXUP(+LOCKED), KEEP_CAPS_LOCKED
+
+    class Header(ctypes.Structure):
+        _fields_ = [("version", ctypes.c_uint32), ("pid", ctypes.c_int)]
+
+    class Data(ctypes.Structure):
+        _fields_ = [("effective", ctypes.c_uint32), ("permitted", ctypes.c_uint32),
+                    ("inheritable", ctypes.c_uint32)]
+
+    header, data = Header(0x20080522, 0), (Data * 2)()
+    import platform
+    number = {"x86_64": 126, "aarch64": 91}.get(platform.machine())
+    if number is None:
+        raise OSError(f"capset: unknown syscall number on {platform.machine()}")
+    _check(libc.syscall(ctypes.c_long(number), ctypes.byref(header), ctypes.byref(data)), "capset")
+    _prctl(38, 1)                                                       # PR_SET_NO_NEW_PRIVS
+    status = open("/proc/self/status").read()
+    caps = {line.split(":")[0]: int(line.split()[1], 16) for line in status.splitlines()
+            if line.startswith(("CapEff", "CapPrm", "CapBnd", "CapAmb"))}
+    if any(caps.values()):
+        raise OSError(f"capabilities left after the drop: {caps}")
+
+
+class Worker:
+    """A worker process that runs the editable code; the parent talks to it over a socket pair.  With
+    ``AR_ISOLATION_SANDBOX`` set (by the runner), the worker runs in the sandbox of the module docstring."""
+
+    def __init__(self, script: str, *args: str, env: dict | None = None, cwd: str | None = None) -> None:
+        here = os.path.dirname(os.path.abspath(sys.argv[0]))
+        sys.path[:] = [p for p in sys.path if p not in ("", here) and os.path.abspath(p) != here]
+        parent_sock, child_sock = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+        child_env = dict(os.environ if env is None else env)
+        child_env.pop(RESULT_SOCKET_ENV, None)
+        raw = child_env.pop(SANDBOX_ENV, None)
+        sandbox = json.loads(raw) if raw else None
+        preexec = None
+        if sandbox is not None:
+            child_env[SANDBOXED_ENV] = "1"
+            child_env.update({str(k): str(v) for k, v in (sandbox.get("env") or {}).items()})
+            preexec = _sandbox_preexec(sandbox)
+        child_env[WORKER_FD_ENV] = str(child_sock.fileno())
+        self.process = subprocess.Popen([sys.executable, script, *args], env=child_env, cwd=cwd,
+                                        stdin=subprocess.DEVNULL, pass_fds=(child_sock.fileno(),),
+                                        close_fds=True, preexec_fn=preexec)
+        child_sock.close()
+        self.conn = Connection(parent_sock)
+        self.sandboxed = sandbox is not None
+
+    def call(self, op: str, meta: dict | None = None, arrays: dict | None = None, fds: list[int] | None = None):
+        """Send one request and return the worker's reply ``(meta, arrays)``; a worker error is raised."""
+        self.conn.send(op, meta or {}, arrays or {}, fds or [])
+        reply_op, reply_meta, reply_arrays, reply_fds = self.conn.recv()
+        for fd in reply_fds:      # the parent accepts no descriptors from the worker
+            os.close(fd)
+        if reply_op == "error":
+            raise IsolationProtocolError(f"worker error in {op!r}: {reply_meta.get('error', '')[:2000]}")
+        if reply_op != "ok":
+            raise IsolationProtocolError(f"unexpected reply {reply_op!r} to {op!r}")
+        return reply_meta, reply_arrays
+
+    def close(self, grace: float = 30.0) -> int | None:
+        try:
+            self.conn.send("exit", {}, {}, [])
+        except OSError:
+            pass
+        try:
+            return self.process.wait(timeout=grace)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            return self.process.wait()
+        finally:
+            self.conn.close()
+
+
+# ---------------------------------------------------------------------------------------------- worker side
+
+
+def worker_connect() -> "Connection":
+    """First statement of a frozen worker entry: take the socket; in a sandbox, become PID 1 of the new PID
+    namespace (the outer process waits and passes on the exit code), mount /proc and drop every capability."""
+    raw = os.environ.pop(WORKER_FD_ENV, None)
+    if raw is None or not raw.isdigit():
+        raise SystemExit("AR_ERROR isolation: no worker socket (AR_WORKER_FD); the parent starts this script")
+    if os.environ.pop(SANDBOXED_ENV, None) == "1":
+        child = os.fork()
+        if child:
+            os.close(int(raw))
+            while True:
+                try:
+                    _pid, status = os.waitpid(child, 0)
+                    break
+                except InterruptedError:
+                    continue
+            os._exit(os.waitstatus_to_exitcode(status) & 0xFF if os.WIFEXITED(status) else 1)
+        try:
+            _check(_libc().mount(b"proc", b"/proc", b"proc", ctypes.c_ulong(_MS_NOSUID | _MS_NODEV | _MS_NOEXEC),
+                                 None), "mount /proc")
+            _drop_capabilities()
+        except OSError as error:
+            print(f"AR_ERROR isolation: worker sandbox (PID 1) failed: {error}", flush=True)
+            os._exit(13)
+    return Connection(socket.socket(fileno=int(raw)))
+
+
+def serve(handlers: dict, conn: "Connection | None" = None) -> None:
+    """Worker loop: answer each request with ``handlers[op](meta, arrays, fds) -> (meta, arrays)`` until
+    ``exit``.  An exception in a handler is sent back as an error reply."""
+    import traceback
+
+    conn = conn or worker_connect()
+    while True:
+        try:
+            op, meta, arrays, fds = conn.recv()
+        except IsolationProtocolError:
+            return
+        if op == "exit":
+            conn.close()
+            return
+        handler = handlers.get(op)
+        if handler is None:
+            conn.send("error", {"error": f"unknown op {op!r}"}, {}, [])
+            continue
+        try:
+            reply_meta, reply_arrays = handler(meta, arrays, fds)
+        except Exception:  # noqa: BLE001 - reported to the parent, which decides
+            conn.send("error", {"error": traceback.format_exc()[-4000:]}, {}, [])
+            continue
+        conn.send("ok", reply_meta or {}, reply_arrays or {}, [])
+
+
+# ---------------------------------------------------------------------------------------------- messages
+
+
+class Connection:
+    def __init__(self, sock: socket.socket) -> None:
+        self.sock = sock
+
+    def close(self) -> None:
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+    def send(self, op: str, meta: dict, arrays: dict, fds: list[int]) -> None:
+        specs, blobs = [], []
+        for name, value in arrays.items():
+            arr = np.ascontiguousarray(value)
+            if arr.dtype.name not in DTYPES:
+                raise IsolationProtocolError(f"array {name!r}: dtype {arr.dtype.name} not allowed")
+            specs.append({"name": str(name), "dtype": arr.dtype.name, "shape": list(arr.shape),
+                          "nbytes": int(arr.nbytes)})
+            blobs.append(arr)
+        header = json.dumps({"op": op, "meta": meta, "arrays": specs}, allow_nan=True).encode("utf-8")
+        if len(header) > MAX_HEADER_BYTES:
+            raise IsolationProtocolError("header too large")
+        prefix = MAGIC + struct.pack("<Q", len(header))
+        if fds:
+            socket.send_fds(self.sock, [prefix], list(fds))
+        else:
+            self.sock.sendall(prefix)
+        self.sock.sendall(header)
+        for arr in blobs:
+            if arr.nbytes:
+                self.sock.sendall(memoryview(arr.reshape(-1).view(np.uint8)))
+
+    def _recv_exact(self, n: int, into: memoryview | None = None) -> bytes | None:
+        buf = into if into is not None else memoryview(bytearray(n))
+        got = 0
+        while got < n:
+            try:
+                k = self.sock.recv_into(buf[got:], n - got)
+            except (ConnectionResetError, BrokenPipeError) as error:
+                raise IsolationProtocolError(f"connection closed ({error})") from None
+            if k == 0:
+                raise IsolationProtocolError("connection closed")
+            got += k
+        return None if into is not None else bytes(buf)
+
+    def recv(self):
+        try:
+            msg, fds, _flags, _addr = socket.recv_fds(self.sock, 12, 16)
+        except (ConnectionResetError, BrokenPipeError) as error:
+            raise IsolationProtocolError(f"connection closed ({error})") from None
+        if not msg:
+            raise IsolationProtocolError("connection closed")
+        prefix = msg
+        while len(prefix) < 12:
+            more = self.sock.recv(12 - len(prefix))
+            if not more:
+                raise IsolationProtocolError("connection closed")
+            prefix += more
+        if prefix[:4] != MAGIC:
+            raise IsolationProtocolError("bad magic")
+        (length,) = struct.unpack("<Q", prefix[4:])
+        if length > MAX_HEADER_BYTES:
+            raise IsolationProtocolError("header too large")
+        header = json.loads(self._recv_exact(length))
+        if not isinstance(header, dict) or not isinstance(header.get("op"), str):
+            raise IsolationProtocolError("malformed header")
+        arrays, total = {}, 0
+        for spec in header.get("arrays", []):
+            dtype = spec.get("dtype")
+            shape = spec.get("shape")
+            if dtype not in DTYPES or not isinstance(shape, list) or \
+                    not all(isinstance(d, int) and not isinstance(d, bool) and d >= 0 for d in shape):
+                raise IsolationProtocolError(f"refused array spec {spec!r}")
+            count = 1
+            for dim in shape:
+                count *= dim            # Python integers: no overflow
+            nbytes = count * np.dtype(dtype).itemsize
+            total += nbytes
+            if spec.get("nbytes") != nbytes or total > MAX_MESSAGE_BYTES:
+                raise IsolationProtocolError(f"array {spec.get('name')!r}: size mismatch or too large")
+            arr = np.empty(shape, dtype=dtype)
+            if nbytes:
+                self._recv_exact(nbytes, memoryview(arr.reshape(-1).view(np.uint8)))
+            arrays[str(spec.get("name"))] = arr
+        meta = header.get("meta", {})
+        if not isinstance(meta, dict):
+            raise IsolationProtocolError("meta must be a mapping")
+        return header["op"], meta, arrays, list(fds)
+
+
+# ---------------------------------------------------------------------------------------------- shared buffers
+
+
+class SharedBuffer:
+    """A CPU buffer the parent creates (``memfd``) and lends to the worker for one large output."""
+
+    def __init__(self, shape: tuple, dtype: str, fd: int | None = None) -> None:
+        if dtype not in DTYPES:
+            raise IsolationProtocolError(f"dtype {dtype} not allowed")
+        self.shape, self.dtype = tuple(int(d) for d in shape), dtype
+        count = 1
+        for dim in self.shape:
+            count *= dim
+        nbytes = count * np.dtype(dtype).itemsize
+        self.nbytes = nbytes
+        if fd is None:
+            fd = os.memfd_create("ar_shared", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
+            os.ftruncate(fd, max(nbytes, 1))
+            # the worker gets the descriptor: it must not shrink the file under the parent's mapping (SIGBUS)
+            import fcntl
+            seals = getattr(fcntl, "F_SEAL_SHRINK", 2) | getattr(fcntl, "F_SEAL_GROW", 4) | getattr(fcntl, "F_SEAL_SEAL", 1)
+            fcntl.fcntl(fd, getattr(fcntl, "F_ADD_SEALS", 1033), seals)   # Linux values where fcntl lacks them
+        elif os.fstat(fd).st_size < nbytes:
+            raise IsolationProtocolError("shared buffer smaller than its declared shape")
+        self.fd = fd
+        self._map = mmap.mmap(fd, max(nbytes, 1))
+        self.array = np.frombuffer(self._map, dtype=dtype, count=count).reshape(self.shape)
+
+    def describe(self) -> dict:
+        return {"shape": list(self.shape), "dtype": self.dtype}
+
+    def snapshot(self) -> np.ndarray:
+        """A private copy (the worker keeps its mapping and could change the buffer later)."""
+        return np.array(self.array, copy=True)
+
+    def close(self) -> None:
+        del self.array
+        self._map.close()
+        os.close(self.fd)
+
+
+def cuda_share(tensor) -> dict:
+    """CUDA IPC description of a contiguous CUDA tensor (parent side); the parent keeps *tensor* alive."""
+    storage = tensor.untyped_storage()
+    (device, handle, size, offset, ref_handle, ref_offset, event_handle, event_sync) = storage._share_cuda_()
+    enc = lambda b: base64.b64encode(b).decode("ascii") if isinstance(b, (bytes, bytearray)) else b  # noqa: E731
+    return {"device": int(device), "handle": enc(handle), "size": int(size), "offset": int(offset),
+            "ref_handle": enc(ref_handle), "ref_offset": int(ref_offset), "event_handle": enc(event_handle),
+            "event_sync": bool(event_sync), "shape": list(tensor.shape), "dtype": str(tensor.dtype).split(".")[-1],
+            "storage_offset": int(tensor.storage_offset())}
+
+
+def cuda_open(desc: dict):
+    """Open a tensor described by :func:`cuda_share` (worker side)."""
+    import torch
+
+    dec = lambda s: base64.b64decode(s) if isinstance(s, str) else s  # noqa: E731
+    storage = torch.UntypedStorage._new_shared_cuda(
+        desc["device"], dec(desc["handle"]), desc["size"], desc["offset"], dec(desc["ref_handle"]),
+        desc["ref_offset"], dec(desc["event_handle"]), desc["event_sync"])
+    dtype = getattr(torch, desc["dtype"])
+    t = torch.empty(0, dtype=dtype, device=f"cuda:{desc['device']}")
+    t.set_(storage, desc["storage_offset"], desc["shape"])
+    return t
