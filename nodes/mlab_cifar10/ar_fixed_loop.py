@@ -128,13 +128,15 @@ class FixedStepSampler:
         if batch_size > n_items:
             fail(EXIT_BAD_EDITABLE_API, f"CONFIG['batch_size']={batch_size} exceeds the {n_items} training items")
         self.n_items, self.batch_size, self.budget = n_items, batch_size, budget
-        self.generator = torch.Generator().manual_seed(int(seed))
+        self.generator = torch.Generator(device="cpu").manual_seed(int(seed))
         self.served = 0
 
     def __iter__(self):
         per_epoch = self.n_items // self.batch_size
         while self.served < self.budget:
-            order = torch.randperm(self.n_items, generator=self.generator)
+            # On the CPU whatever the default device (an edit may call torch.set_default_device): the order
+            # depends only on the seed, and the CPU generator matches the device.
+            order = torch.randperm(self.n_items, generator=self.generator, device="cpu")
             for k in range(per_epoch):
                 if self.served >= self.budget:
                     return
