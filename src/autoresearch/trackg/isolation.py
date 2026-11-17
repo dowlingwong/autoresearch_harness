@@ -7,63 +7,66 @@ that runs in the frozen wrapper's process can forge the metric line.
 
 How a node with an ``isolation`` block (``trackg_node/v1``) is run by :class:`WorkingCopyRunner`:
 
-* **No shell; a frozen parent.**  The runner starts ``[python, entry, *args]`` itself.  ``entry`` is a frozen
-  file (the *parent*) that never imports editable code; it starts the editable code in a *worker* process
-  (node library ``ar_isolated.py``) and computes the metric from what the worker returns.
-* **Result channel.**  The runner listens on a Unix socket with a random abstract name
-  (``AR_RESULT_SOCKET``) and accepts one connection, only from the parent's own pid (``SO_PEERCRED``); the
-  parent connects after it made itself non-dumpable, and the worker never inherits the connection (the
-  parent starts it with ``close_fds``).  Nothing is passed at ``exec``, so no process holds the channel while
-  it can still be reached through ``/proc`` (a child is dumpable until its parent script runs).  The
-  metric (and, for test-scored nodes, the test metric) is taken **only** from this channel.  The run is
-  refused (``divergent``) unless the channel holds exactly one metric line, and if any line of the run's
-  output (``run.log``) matches the metric regex: a second metric line, wherever it comes from.
-* **Non-dumpable processes.**  A process of the same user could otherwise open the pipe through
-  ``/proc/<pid>/fd`` or attach with ``ptrace``.  The runner marks itself non-dumpable
-  (``prctl(PR_SET_DUMPABLE, 0)``) before it starts an isolated run, and the parent does so as its first
-  statement (``ar_isolated.parent_start``), before it connects to the channel and before any worker exists; ``/proc/<pid>/fd`` and ``ptrace`` of a
-  non-dumpable process need ``CAP_SYS_PTRACE``.  This holds only when the run does **not** run as root: the
-  runner refuses an isolated run as root unless the limits name a reason (tests), and records
-  ``isolation.effective: false`` then.
+* **No shell; a frozen parent.**  The runner starts ``[python, -E, -s, entry, *args]`` itself (no ``PYTHON*``
+  variables, no user site directory).  ``entry`` is a frozen file (the *parent*) that never imports editable
+  code; it starts the editable code in a *worker* process (node library ``ar_isolated.py``) and computes the
+  metric from what the worker returns.
+* **Worker sandbox.**  The worker runs in new user, mount, PID, network and cgroup namespaces
+  (``ar_isolated``'s module docstring): the runs tree, the node kit, the data, the home directory and the
+  Python installation are read-only for it, only its working copy is writable, ``/tmp``-like directories are
+  private (when no protected path lies under them), it has no network, it is PID 1 of its own PID namespace with
+  a fresh ``/proc`` and no capability, and ``no_new_privs`` is set.  So it cannot see or signal the runner or
+  the parent, cannot write another run's files, the incumbent, the kit or the Python environment, and when the
+  run ends the kernel kills every process of its PID namespace.  The runner checks before the run that this
+  host allows the sandbox (unprivileged user namespaces with mount, PID and network namespaces); without it the
+  run is refused unless the limits name a waiver (``no_worker_sandbox``), which the record shows.
+* **Result channel.**  The runner listens on a Unix socket with a random abstract name (``AR_RESULT_SOCKET``,
+  visible in ``/proc/net/unix`` of the runner's network namespace, not the worker's) and accepts one
+  connection, only from the parent's own pid (``SO_PEERCRED``); the parent connects after it made itself
+  non-dumpable, and the worker never inherits the connection.  The metric (and, for test-scored nodes, the
+  test metric) is taken **only** from this channel.  The run is refused (``divergent``) unless the channel
+  holds exactly one metric line (and at most one test-metric line), and if any line of the run's output
+  (``run.log``) matches the metric regex.
+* **Non-dumpable processes.**  The runner marks itself non-dumpable (``prctl(PR_SET_DUMPABLE, 0)``) before it
+  starts an isolated run, and the parent does so when it imports ``ar_isolated`` (before NumPy); then
+  ``/proc/<pid>/fd``, ``pidfd_getfd`` and ``ptrace`` of these processes need ``CAP_SYS_PTRACE`` in their user
+  namespace (the parent stays in the runner's).  Two conditions: the run must not run as root (refused unless
+  waived: ``root``), and Yama's ``ptrace_scope`` must be at least 1, so that an unrelated process of the same
+  user cannot attach to the parent during its interpreter start-up, before the flag is set (refused unless
+  waived: ``ptrace_scope``).  At the accept the runner also requires the parent's ``TracerPid`` to be 0
+  (otherwise ``infrastructure_failure``, reason ``parent_traced``).
 * **Append-only log.**  The run's standard output and error go to a pipe the runner reads; the runner alone
   appends to ``run.log`` (``O_APPEND``) and keeps a running sha256.  A run whose log file differs from what
-  the runner wrote (truncated, rewritten, appended to by another writer) is ``divergent`` with reason
-  ``log_tampered``.  The runner's own last line records the result channel's sha256.
-* **cgroup.**  The run's processes join a fresh cgroup v2 directory under ``limits.cgroup_parent`` (joined
-  in the child before ``exec``).  On a timeout and after every normal exit the runner writes ``1`` to
+  the runner wrote is ``divergent`` (``log_tampered``); the classification uses the verified bytes.  The
+  runner's own last line records the result channel's sha256.
+* **cgroup.**  The run's processes join a fresh cgroup v2 directory under ``limits.cgroup_parent`` (joined in
+  the child before ``exec``).  On a timeout and after every normal exit the runner writes ``1`` to
   ``cgroup.kill`` (falling back to SIGKILL of every listed pid until the cgroup is empty), then removes the
-  directory.  With an unprivileged (delegated) cgroup parent, a process of the run could move itself to
-  another cgroup of the delegated subtree (it needs write access to the ``cgroup.procs`` of a common ancestor,
-  which delegation gives; the record states ``migration_possible``).  So, after joining, the child also
-  enters a new **cgroup namespace** rooted at the run cgroup (``unshare(CLONE_NEWUSER | CLONE_NEWCGROUP)``,
-  the user namespace being what lets an unprivileged process create it; the own uid and gid are mapped when
-  not root): the kernel refuses a migration to any cgroup outside the namespace root.  Capabilities in the new
-  user namespace end at ``exec`` (the mapped uid is not 0 there), so the run gains no privilege; a host
-  without unprivileged user namespaces needs ``cgroup_namespace=False`` with a recorded reason.  The kernel
-  enforces the namespace boundary only when cgroup2 is mounted with ``nsdelegate`` (systemd's default); the
-  record states it (``nsdelegate``).  Independently of the cgroup, the runner is a **child subreaper**
-  (``PR_SET_CHILD_SUBREAPER``): every process of the run that loses its parent (a daemon that forked and
-  called ``setsid``) is re-parented to the runner, and after the cgroup kill the runner kills every child
-  that it did not have before the run, with its descendants, until none is left (``orphans_killed``).  A
-  process of the run cannot leave the runner's descendants, so this catches one that migrated out of the
-  cgroup.  The process-group and session sweep of the plain runner still runs as well.  Both flags stay set
-  on the runner process after the run (it runs the campaign's runs one after another; a child another thread
-  of the runner started during an isolated run would be swept too, which the campaign does not do).
-* **Frozen files checked.**  The sha256 of every regular file under the frozen paths (symbolic links are
-  recorded by target, not followed) is taken before and after the run; a change is ``divergent`` with reason
-  ``frozen_file_changed``.
+  directory; the worker's cgroup namespace is rooted in the run cgroup.  The runner is also a child subreaper
+  (``PR_SET_CHILD_SUBREAPER``) and kills every child it did not have before the run, with its descendants.
+  A run without a cgroup is refused unless waived (``no_cgroup``).
+* **Timeout.**  A run whose wall time (the runner's monotonic clock) exceeds the timeout counts as timed out
+  even if it ended by itself (a stopped runner's clock keeps running), and R1-TRACKG-PORT-DECISIONS (4)
+  requires the factor 3 for a measured timeout (other factors need the ``timeout_factor`` waiver).
+* **Frozen files and incumbent pinned.**  The sha256 of every regular file under the frozen paths (symbolic
+  links by target) of the working copy must equal the pin taken from the node kit when the runner (or the
+  campaign) was set up, before the run, and must be unchanged after it (``frozen_file_changed``); a campaign
+  also passes the incumbent's code-state hash, which the copy must match.  A mismatch before the run is an
+  integrity STOP (:class:`IntegrityError`), not a proposal outcome.
 
-Not closed here (stated in the record's ``isolation.limits`` and the kits' threat model): the worker runs as
-the same user, so it can read every file the user can (the data, the node's frozen code) and write files
-outside the frozen paths (for example a writable Python environment the parent imports from later; the
-parent imports what it needs before it starts the worker); the worker computes the training itself, so the
-budget accounting and the loss lines stay in the editable process; and a worker can still behave differently
-on the parent's evaluation requests than a fixed model would (the kits' causality and invariance probes).
+Not closed here (stated in the record's ``isolation.limits`` and the kits' threat model): the worker can read
+every file the run's uid can read, including the data and the validation and test labels (a read-only mount
+does not hide them); it computes the training itself, so the budget accounting and the loss lines stay in the
+editable process; it can answer the parent's evaluation requests differently from a fixed model (the kits'
+probes narrow this); ``/dev/shm`` stays shared (torch's CUDA IPC reference counters live there); its output
+can contain an infrastructure log pattern, which makes the run an ``infrastructure_failure`` (rerun, not
+registered as evaluated) -- an RL reward must not treat that class as neutral without the author's decision.
 """
 from __future__ import annotations
 
 import ctypes
 import errno
+import json
 import hashlib
 import os
 import re
@@ -82,6 +85,7 @@ PR_SET_DUMPABLE = 4
 PR_GET_DUMPABLE = 3
 PR_SET_CHILD_SUBREAPER = 36
 RESULT_SOCKET_ENV = "AR_RESULT_SOCKET"
+SANDBOX_ENV = "AR_ISOLATION_SANDBOX"
 RESULT_CHANNEL_MAX_BYTES = 64 * 1024
 _CGROUP_NAME_RE = re.compile(r"[^A-Za-z0-9_.\-]")
 
@@ -206,7 +210,11 @@ def frozen_file_hashes(work: Path, frozen_paths: tuple[str, ...]) -> dict[str, s
                     continue
                 visit(child)
         elif path.is_file():
-            out[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
+            digest = hashlib.sha256()
+            with path.open("rb") as handle:
+                for block in iter(lambda: handle.read(1 << 20), b""):
+                    digest.update(block)
+            out[rel] = digest.hexdigest()
 
     for entry in frozen_paths:
         target = work / entry.rstrip("/").removesuffix("/*")
@@ -313,45 +321,67 @@ def _write_proc(name: str, text: str) -> None:
         os.close(fd)
 
 
-def join_cgroup_preexec(cgroup: RunCgroup, namespace: bool = False):
-    """Child setup (between fork and exec): join *cgroup*; with *namespace*, enter a new user and cgroup
-    namespace rooted there (see the module docstring)."""
+def join_cgroup_preexec(cgroup: RunCgroup):
+    """Child setup (between fork and exec): join *cgroup* (the parent stays in the runner's namespaces)."""
     procs = str(cgroup.path / "cgroup.procs")
-    uid, gid = os.getuid(), os.getgid()
 
     def join() -> None:
-        step = "join " + procs
         try:
             fd = os.open(procs, os.O_WRONLY)
             try:
                 os.write(fd, b"0")
             finally:
                 os.close(fd)
-            if namespace:
-                # the child inherited the runner's non-dumpable flag, which makes its own /proc files root's;
-                # it holds nothing secret (the result channel is connected later by the parent)
-                step = "dumpable"
-                _prctl(PR_SET_DUMPABLE, 1)
-                step = "unshare"
-                _unshare(CLONE_NEWUSER | CLONE_NEWCGROUP)
-                if uid != 0:      # root stays unmapped: a mapped uid 0 would keep its capabilities after exec
-                    for step, text in (("setgroups", "deny"), ("uid_map", f"{uid} {uid} 1"),
-                                       ("gid_map", f"{gid} {gid} 1")):
-                        _write_proc(step, text)
         except OSError as error:
-            raise OSError(error.errno, f"{step}: {error.strerror}") from None
+            raise OSError(error.errno, f"join {procs}: {error.strerror}") from None
 
     return join
 
 
-def cgroup_namespace_available() -> tuple[bool, str]:
-    """Whether this host lets this user create a user + cgroup namespace (tried in a short child)."""
+NODE_LIB = Path(__file__).resolve().parent / "node_lib" / "ar_isolated.py"
+_SANDBOX_PROBE = 'import importlib.util, json, os, sys\nspec = importlib.util.spec_from_file_location("ar_isolated", sys.argv[1])\niso = importlib.util.module_from_spec(spec); spec.loader.exec_module(iso)\nw = iso.Worker(os.path.join(sys.argv[2], "probe_worker.py"), os.path.dirname(sys.argv[1]))\nmeta, _ = w.call("ping")\nw.close()\nprint(json.dumps(meta))\n'
+_SANDBOX_PROBE_WORKER = 'import sys\nsys.path.insert(0, sys.argv[1])\nimport ar_isolated as iso\nc = iso.worker_connect()\nimport os\niso.serve({"ping": lambda m, a, f: ({"pid": os.getpid(), "uid": os.getuid()}, {})}, c)\n'
+
+
+def worker_sandbox_available(interpreter: str, config: dict, probe_dir: Path) -> tuple[bool, str]:
+    """Whether the run interpreter can start a worker in the sandbox *config* on this host: a short real worker
+    from *probe_dir* (a new directory the runner owns, readable inside the sandbox)."""
+    probe_dir = Path(probe_dir)
+    probe_dir.mkdir()
+    (probe_dir / "probe_worker.py").write_text(_SANDBOX_PROBE_WORKER)
+    env = dict(os.environ)
+    env[SANDBOX_ENV] = json.dumps(config)
     try:
-        proc = subprocess.run(["/bin/sh", "-c", "exit 0"], preexec_fn=lambda: _unshare(
-            CLONE_NEWUSER | CLONE_NEWCGROUP), capture_output=True, timeout=30)
+        proc = subprocess.run([interpreter, "-E", "-s", "-c", _SANDBOX_PROBE, str(NODE_LIB), str(probe_dir)],
+                              capture_output=True, text=True, env=env, timeout=120)
     except (OSError, subprocess.SubprocessError) as error:
         return False, repr(error)
-    return proc.returncode == 0, f"returncode {proc.returncode}"
+    if proc.returncode != 0:
+        return False, (proc.stdout + proc.stderr)[-600:]
+    try:
+        meta = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return False, proc.stdout[-300:]
+    if meta.get("pid") != 1:
+        return False, f"the probe worker is not PID 1 of its namespace: {meta}"
+    return True, "ok"
+
+
+def ptrace_scope() -> int | None:
+    try:
+        return int(Path("/proc/sys/kernel/yama/ptrace_scope").read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def tracer_pid(pid: int) -> int | None:
+    try:
+        for line in Path(f"/proc/{pid}/status").read_text().splitlines():
+            if line.startswith("TracerPid:"):
+                return int(line.split()[1])
+    except (OSError, ValueError):
+        return None
+    return None
 
 
 # ---------------------------------------------------------------------------------------------- the run
@@ -401,6 +431,8 @@ def execute(argv: list[str], *, cwd: Path, env: dict[str, str], log_path: Path, 
     overflow = False
     rejected = 0
     channel_error = None
+    parent_traced = 0
+    started = time.monotonic()
     log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_APPEND, 0o644)
 
     def child_setup() -> None:
@@ -468,6 +500,9 @@ def execute(argv: list[str], *, cwd: Path, env: dict[str, str], log_path: Path, 
                         conn.setblocking(False)
                         channel = conn
                         sel.register(conn, selectors.EVENT_READ, "res")
+                        traced = tracer_pid(proc.pid)   # the parent is non-dumpable now: no new tracer can attach
+                        if traced:
+                            parent_traced = traced
                     else:
                         rejected += 1
                         conn.close()
@@ -509,6 +544,11 @@ def execute(argv: list[str], *, cwd: Path, env: dict[str, str], log_path: Path, 
         kill_info["orphans_killed"] = kill_new_orphans(children_before, {proc.pid})
         kill_info["rejected_result_connections"] = rejected
         kill_info["result_channel_error"] = channel_error
+        kill_info["parent_traced_by"] = parent_traced or None
+        elapsed = time.monotonic() - started
+        if not timed_out and elapsed > timeout:
+            timed_out = True                   # e.g. the runner was stopped (SIGSTOP) while the run went on
+            kill_info["timed_out_by_elapsed"] = round(elapsed, 3)
         return IsolatedExit(proc.returncode, timed_out, None, hasher.hexdigest(), written,
                             bytes(result).decode("utf-8", errors="replace"), overflow, kill_info)
     finally:
@@ -518,17 +558,19 @@ def execute(argv: list[str], *, cwd: Path, env: dict[str, str], log_path: Path, 
         listener.close()
 
 
-def verify_log(log_path: Path, sha256: str, size: int) -> bool:
-    """Whether *log_path* holds exactly the bytes the runner wrote."""
+def verify_log(log_path: Path, sha256: str, size: int) -> bytes | None:
+    """The bytes of *log_path* if they are exactly those the runner wrote, else ``None``."""
     try:
-        data = Path(log_path).read_bytes()
+        fd = os.open(log_path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as handle:
+            data = handle.read()
     except OSError:
-        return False
-    return len(data) == size and hashlib.sha256(data).hexdigest() == sha256
+        return None
+    return data if len(data) == size and hashlib.sha256(data).hexdigest() == sha256 else None
 
 
 def append_runner_line(log_path: Path, line: str) -> None:
-    fd = os.open(log_path, os.O_WRONLY | os.O_APPEND)
+    fd = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW)
     try:
         os.write(fd, ("\n" + line + "\n").encode("utf-8"))
     finally:
@@ -537,10 +579,11 @@ def append_runner_line(log_path: Path, line: str) -> None:
 
 def limits_text() -> list[str]:
     return [
-        "the worker runs as the same user: it can read every file the user can and write outside the frozen paths",
+        "the worker can read every file the run's uid can read (data, validation and test labels included)",
         "budget accounting and loss lines stay in the worker (editable) process",
         "a worker can answer the parent's evaluation requests differently from a fixed model (kit probes only)",
-        "a process that moves itself out of the run cgroup escapes cgroup.kill when migration_possible is true",
-        "the non-dumpable protection does not hold for runs as root",
+        "/dev/shm is shared with the worker (torch CUDA IPC reference counters)",
+        "an infrastructure log pattern printed by the worker makes the run an infrastructure_failure",
+        "the guarantees hold only with the worker sandbox, a non-root uid, a cgroup and ptrace_scope >= 1 "
+        "(the record lists any waiver)",
     ]
-
