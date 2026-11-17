@@ -22,6 +22,15 @@ A Track G node is declared in a YAML file (see
 - ``selection``: whether the task is test-scored; if so, selection is on the
   validation split only (R1-TRACKG-ROLE).
 - ``determinism``: the deterministic settings the runner applies.
+- ``isolation`` (optional; R1-HARNESS-ISOLATION): the node runs as a frozen
+  **parent** process started directly by the runner (``[python, entry,
+  *args]``, no shell) that holds the run's result channel and never imports
+  editable code; the editable code runs in a **worker** process the parent
+  starts.  Keys: ``entry`` (a frozen file), ``args`` (strings; ``{budget}`` is
+  replaced) and ``env`` (extra environment variables).  The runner then takes
+  the metric only from the result channel; see
+  :mod:`autoresearch.trackg.isolation`.  Without the block the node runs as
+  before (``run_command`` through the shell).
 
 The loader is strict: unknown top-level keys are refused so a misspelled
 field cannot silently fall back to a default.
@@ -64,7 +73,7 @@ _TOP_LEVEL_KEYS = {
     "schema", "name", "description", "suite", "domain", "editable_paths", "frozen_paths",
     "setup_command", "run_command", "metric_name", "metric_direction", "metric",
     "run_budget", "workers", "selection", "determinism", "default_budget",
-    "failure_categories", "external_benchmark", "notes", "seed_env", "allow_new_files",
+    "failure_categories", "external_benchmark", "notes", "seed_env", "allow_new_files", "isolation",
 }
 _REQUIRED_KEYS = (
     "schema", "name", "description", "editable_paths", "frozen_paths", "run_command",
@@ -232,6 +241,56 @@ class DeterminismSettings:
         return settings
 
 
+_ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+RESERVED_ISOLATION_ENV = ("AR_RESULT_SOCKET", "AR_WORKER_FD")
+
+
+@dataclass(frozen=True)
+class IsolationSpec:
+    """How the runner starts an isolated node (R1-HARNESS-ISOLATION)."""
+
+    entry: str
+    args: tuple[str, ...] = ()
+    env: tuple[tuple[str, str], ...] = ()
+
+    @classmethod
+    def from_mapping(cls, raw: object, frozen: tuple[str, ...]) -> "IsolationSpec":
+        if not isinstance(raw, Mapping):
+            raise TrackGNodeSpecError("isolation must be a mapping {entry, args, env}")
+        extra = set(raw) - {"entry", "args", "env"}
+        if extra:
+            raise TrackGNodeSpecError(f"isolation has unknown keys: {sorted(extra)}")
+        entry = raw.get("entry")
+        if not isinstance(entry, str) or not entry:
+            raise TrackGNodeSpecError("isolation.entry must name the frozen parent script")
+        (entry,) = _path_tuple([entry], "isolation.entry")
+        norm_entry = _norm_scope(entry)
+        if not any(norm_entry == _norm_scope(f) or norm_entry.startswith(_norm_scope(f) + "/") for f in frozen):
+            raise TrackGNodeSpecError(f"isolation.entry {entry!r} must be covered by frozen_paths")
+        args = raw.get("args", []) or []
+        if not isinstance(args, (list, tuple)) or not all(isinstance(a, str) for a in args):
+            raise TrackGNodeSpecError("isolation.args must be a list of strings")
+        for arg in args:
+            found = _WALL_CLOCK_COMMAND_RE.search(arg)
+            if found:
+                raise WallClockBudgetError(f"isolation.args {arg!r} contains {found.group(0)!r}, which looks like "
+                                           "a time budget (R1-BX-D5)")
+        env = raw.get("env", {}) or {}
+        if not isinstance(env, Mapping):
+            raise TrackGNodeSpecError("isolation.env must be a mapping of variable names to strings")
+        pairs = []
+        for name, value in sorted(env.items()):
+            if not isinstance(name, str) or not _ENV_NAME_RE.match(name) or not isinstance(value, str):
+                raise TrackGNodeSpecError(f"isolation.env: {name!r} must be an upper-case name with a string value")
+            if name in RESERVED_ISOLATION_ENV:
+                raise TrackGNodeSpecError(f"isolation.env must not set {name}")
+            pairs.append((name, value))
+        return cls(entry=entry, args=tuple(args), env=tuple(pairs))
+
+    def argv(self, interpreter: str, budget: int) -> list[str]:
+        return [interpreter, self.entry, *(a.replace("{budget}", str(budget)) for a in self.args)]
+
+
 @dataclass(frozen=True)
 class TrackGNodeSpec:
     name: str
@@ -253,6 +312,7 @@ class TrackGNodeSpec:
     failure_categories: tuple[str, ...] = ()
     seed_env: tuple[str, str] = ("AR_TRAIN_SEED", "AR_SPLIT_SEED")
     allow_new_files: bool = False
+    isolation: IsolationSpec | None = None
     raw_sha256: str = ""
 
     @classmethod
@@ -331,6 +391,8 @@ class TrackGNodeSpec:
             failure_categories=tuple(str(c) for c in payload.get("failure_categories", ()) or ()),
             seed_env=(str(seed_env["train"]), str(seed_env["split"])),
             allow_new_files=_strict_bool(payload.get("allow_new_files", False), "allow_new_files"),
+            isolation=(IsolationSpec.from_mapping(payload["isolation"], frozen)
+                       if payload.get("isolation") is not None else None),
             raw_sha256=_canonical_sha256(payload),
         )
         # Imported here to keep the dependency one-way (selection imports this module).

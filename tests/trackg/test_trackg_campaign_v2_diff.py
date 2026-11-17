@@ -72,9 +72,25 @@ def test_campaign_keeps_discards_and_records_invalid_and_not_run(tmp_path):
     assert "step 1: lr up -> kept" in last and "test_accuracy" not in last.split("Earlier steps")[1]
 
 
-def test_repeated_timeout_becomes_divergent_after_two_and_is_never_rerun(tmp_path):
+def test_measured_timeout_is_a_proposal_failure_and_is_never_rerun(tmp_path):
+    """R1-TRACKG-PORT-DECISIONS (4): under a measured timeout, a timeout is the proposal's failure, not rerun."""
     node = make_node(tmp_path)
     fast = ResourceLimits(uncapped_reason="test fixture", measured_run_seconds=0.5, timeout_factor=1.0,
+                          kill_grace_seconds=0.2)
+    chat = ScriptedChat([reply(MODE_SLEEP, "sleepy"), reply(MODE_SLEEP, "sleepy again")])
+    entries = run_v2_diff_campaign(spec(), node, tmp_path / "runs", V2DiffManager(chat, "m"), fast, 2,
+                                   enable_v2_diff=True)
+    assert entries[0]["runs"][0]["outcome"]["kind"] == "ok"
+    first = entries[1]
+    assert [(r["outcome"]["kind"], r["outcome"]["reason"]) for r in first["runs"]] == [("divergent", "timeout")]
+    assert first["final_outcome"]["reason"] == "timeout" and first["decision"] == "discarded_divergent"
+    assert entries[2]["decision"] == "not_run_duplicate" and len(chat.payloads) == 2
+
+
+def test_repeated_provisional_timeout_becomes_divergent_after_two_and_is_never_rerun(tmp_path):
+    """Only a provisional timeout (the census's measuring run) is an infrastructure failure, with the cap."""
+    node = make_node(tmp_path)
+    fast = ResourceLimits(uncapped_reason="test fixture", provisional_timeout_seconds=0.5,
                           kill_grace_seconds=0.2)
     chat = ScriptedChat([reply(MODE_SLEEP, "sleepy"), reply(MODE_SLEEP, "sleepy again")])
     entries = run_v2_diff_campaign(spec(), node, tmp_path / "runs", V2DiffManager(chat, "m"), fast, 2,
@@ -94,12 +110,12 @@ def _scripted_parse(monkeypatch, plan):
     real = runner_mod.parse_run_log
     queues = {k: list(v) for k, v in plan.items()}
 
-    def fake(log_path, process, spec):
+    def fake(log_path, process, spec, **kw):
         run_id = log_path.parent.name
         for prefix, queue in queues.items():
             if run_id.startswith(prefix) and queue:
                 return queue.pop(0)
-        return real(log_path, process, spec)
+        return real(log_path, process, spec, **kw)
 
     monkeypatch.setattr(runner_mod, "parse_run_log", fake)
 

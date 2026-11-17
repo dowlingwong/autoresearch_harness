@@ -27,6 +27,8 @@ def test_shipped_template_loads_and_maps_to_a_harness_node_spec():
     assert base.default_budget.max_wall_clock_hours is None
     assert validate_edit_scope(["train.py"], base).valid
     assert not validate_edit_scope(["evaluate.py"], base).valid
+    assert spec.isolation is not None and spec.isolation.argv("python3", 2000) == [
+        "python3", "run_isolated.py", "--steps", "2000"]
 
 
 def test_fixture_spec_round_trips_through_yaml(tmp_path):

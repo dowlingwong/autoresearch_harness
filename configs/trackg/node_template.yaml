@@ -19,6 +19,9 @@ frozen_paths:
   - data/
   - prepare.py
   - run_fixed_budget.py                 # the fixed-step wrapper is frozen too
+  - run_isolated.py                     # the isolated parent (see isolation below)
+  - worker.py                           # the frozen worker entry that imports train.py
+  - ar_isolated.py                      # the node library (byte copy of the harness master)
 
 # A frozen script must not live in an editable directory (a new file there
 # could shadow its imports). New files are refused unless this is true; even
@@ -30,6 +33,16 @@ setup_command: ""                       # run once per host, not per run
 # AR_BUDGET_KIND / AR_BUDGET_VALUE, AR_TRAIN_SEED / AR_SPLIT_SEED,
 # AR_NUM_THREADS and AR_NUM_WORKERS in its environment.
 run_command: "python3 run_fixed_budget.py --steps {budget}"
+
+# Isolation (R1-HARNESS-ISOLATION; required before any T1 label run and any RL training): the runner starts
+# the frozen parent directly ([python, entry, *args], no shell); the parent holds the result channel, never
+# imports editable code and starts the editable code in a worker process (node library ar_isolated.py,
+# copied byte-identically from the harness's autoresearch/trackg/node_lib/). The metric is taken only from
+# the result channel; a metric line in the run's output refuses the run. See autoresearch.trackg.isolation.
+isolation:
+  entry: run_isolated.py                # a frozen file
+  args: ["--steps", "{budget}"]
+  env: {}
 
 metric_name: val_accuracy               # the SELECTION metric (validation split)
 metric_direction: maximize              # maximize | minimize
