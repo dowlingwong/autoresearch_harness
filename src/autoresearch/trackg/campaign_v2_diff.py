@@ -32,7 +32,15 @@ Per step (``budget`` manager calls, each charged):
    (``seen_diff_other_incumbent`` is recorded; M10 §5 question 7, option (a)).
 
 The baseline gets the same rerun and cap handling; if it still has no ``ok`` run, the campaign writes a
-``baseline_failed`` ledger line and STOPs (nothing is compared against a missing incumbent value). A transport
+``baseline_failed`` ledger line and STOPs (nothing is compared against a missing incumbent value).  Under a
+measured timeout a baseline timeout is ``divergent`` and therefore such a STOP at once: the census measured that
+baseline's run time, so a timeout means the host or the node changed.
+
+R1-HARNESS-ISOLATION: the campaign refuses a node without an ``isolation`` block unless ``unisolated_reason`` is
+given (never for T1 label runs or RL training).  It pins the frozen files from the node kit once at the start
+and passes the pin, the kit (read-only for the worker) and the incumbent's expected code state to every run; a
+working copy that differs (something outside the declared diffs changed the kit or an incumbent snapshot)
+writes a ``stop_integrity`` ledger line and STOPs. A transport
 failure of the manager (``ManagerTransportStop``) writes a ``stop_transport`` line and STOPs. The campaign has no
 resume: an HTCondor eviction of the job that runs it ends the campaign, and a restart refuses the existing
 ``runs_root`` (Unit 2's resume-safe units are not wired here).
@@ -51,7 +59,8 @@ from autoresearch.trackg.diff_support import EvaluatedStates
 from autoresearch.trackg.manager_v2_diff import ManagerTransportStop, V2DiffManager
 from autoresearch.trackg.node_template import TrackGNodeSpec
 from autoresearch.trackg.outcome import DIVERGENT, INFRASTRUCTURE_FAILURE, OK, RunOutcome
-from autoresearch.trackg.runner import ResourceLimits, WorkingCopyRunner
+from autoresearch.trackg import isolation
+from autoresearch.trackg.runner import IntegrityError, ResourceLimits, WorkingCopyRunner
 from autoresearch.trackg.selection import manager_view
 
 LEDGER_SCHEMA = "trackg_v2_diff_campaign_ledger/v1"
@@ -77,9 +86,13 @@ def run_v2_diff_campaign(
     train_seed: int | None = None,
     split_seed: int | None = None,
     interpreter: str = "python3",
+    unisolated_reason: str | None = None,
 ) -> list[dict[str, Any]]:
     if enable_v2_diff is not True:
         raise V2DiffCampaignError("the v2-diff campaign path is off: pass enable_v2_diff=True explicitly")
+    if spec.isolation is None and not unisolated_reason:
+        raise V2DiffCampaignError("R1-HARNESS-ISOLATION: the node is not isolated (no isolation block); a campaign "
+                                  "on it needs an explicit unisolated_reason (never for T1 label runs or RL)")
     if type(budget) is not int or budget < 1:
         raise V2DiffCampaignError("budget must be a positive integer")
     if type(timeout_cap) is not int or timeout_cap < 1 or type(max_infra_reruns) is not int or max_infra_reruns < 0:
@@ -90,7 +103,11 @@ def run_v2_diff_campaign(
     ledger.touch(exist_ok=False)
     evaluated = EvaluatedStates()
     timeouts: dict[str, int] = {}
-    incumbent_dir = Path(node_dir).resolve()
+    kit_dir = Path(node_dir).resolve()
+    incumbent_dir = kit_dir
+    # Pinned once from the kit: every run's working copy (incumbent snapshots included) must match it.
+    frozen_pin = isolation.frozen_file_hashes(kit_dir, spec.frozen_paths)
+    expected_state: list[str | None] = [None]   # the incumbent's raw code state after a kept step
     history: list[dict[str, Any]] = []
     entries: list[dict[str, Any]] = []
 
@@ -110,9 +127,15 @@ def run_v2_diff_campaign(
         attempt, reruns_other = 0, 0
         while True:
             run_id = step_tag + (f"_r{attempt}" if attempt else "")
-            result = WorkingCopyRunner(spec, incumbent_dir, runs).run(
-                run_id, limits, train_seed=train_seed, split_seed=split_seed, diff_text=diff_text,
-                evaluated=evaluated, interpreter=interpreter)
+            try:
+                result = WorkingCopyRunner(spec, incumbent_dir, runs, frozen_pin=frozen_pin,
+                                           protect_paths=(kit_dir,)).run(
+                    run_id, limits, train_seed=train_seed, split_seed=split_seed, diff_text=diff_text,
+                    evaluated=evaluated, interpreter=interpreter, expected_incumbent_state=expected_state[0])
+            except IntegrityError as error:
+                append({"schema": LEDGER_SCHEMA, "step": entry.get("step"), "decision": "stop_integrity",
+                        "error": str(error), "runs": entry["runs"], "incumbent_after": str(incumbent_dir)})
+                raise
             entry["runs"].append(manager_view(result.record))
             outcome = result.outcome
             if outcome is None:
@@ -151,6 +174,7 @@ def run_v2_diff_campaign(
         raise V2DiffCampaignError("STOP: the baseline did not give an ok run after reruns; nothing is compared "
                                   "against a missing incumbent value")
     best, incumbent_dir = base_outcome.value, base_result.code_dir
+    expected_state[0] = base_result.record["code_state_raw_sha256"]
     base_entry.update(decision="baseline", final_outcome=base_outcome.to_dict(),
                       incumbent_after=str(incumbent_dir), best_after=best)
     append(base_entry)
@@ -182,6 +206,7 @@ def run_v2_diff_campaign(
                 entry["decision"] = "discarded_divergent"
             elif better(outcome.value, best):
                 best, incumbent_dir = outcome.value, result.code_dir
+                expected_state[0] = result.record["code_state_raw_sha256"]
                 entry["decision"] = "kept"
             else:
                 entry["decision"] = "discarded"

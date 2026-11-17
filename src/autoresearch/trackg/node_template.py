@@ -288,7 +288,8 @@ class IsolationSpec:
         return cls(entry=entry, args=tuple(args), env=tuple(pairs))
 
     def argv(self, interpreter: str, budget: int) -> list[str]:
-        return [interpreter, self.entry, *(a.replace("{budget}", str(budget)) for a in self.args)]
+        """``[python, -E, -s, entry, *args]``: no ``PYTHON*`` variables and no user site directory in the parent."""
+        return [interpreter, "-E", "-s", self.entry, *(a.replace("{budget}", str(budget)) for a in self.args)]
 
 
 @dataclass(frozen=True)

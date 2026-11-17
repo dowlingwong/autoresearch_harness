@@ -27,7 +27,18 @@ from .fixtures import make_node, spec_mapping
 from .isolated_fixture import NODE_LIB, isolated_spec_mapping, make_isolated_node
 
 ROOT = os.geteuid() == 0
-ROOT_REASON = {"root_isolation_reason": "test container runs as root"} if ROOT else {}
+
+
+def host_waivers(extra=None) -> dict:
+    """Waivers this test host needs: root (the container runs as root), ptrace_scope (no Yama here)."""
+    out = {}
+    if ROOT:
+        out["root"] = "test container runs as root"
+    scope = isolation.ptrace_scope()
+    if scope is None or scope < 1:
+        out["ptrace_scope"] = f"test host ptrace_scope={scope}"
+    out.update(extra or {})
+    return out
 
 
 def _cgroup_root() -> Path | None:
@@ -69,12 +80,14 @@ def cgroup_parent():
         pass
 
 
-def limits(cgroup_parent=None, **kw):
-    base = dict(uncapped_reason="test fixture", measured_run_seconds=20.0, kill_grace_seconds=3.0, **ROOT_REASON)
+def limits(cgroup_parent=None, waive=None, **kw):
+    extra = dict(waive or {})
+    base = dict(uncapped_reason="test fixture", measured_run_seconds=20.0, kill_grace_seconds=3.0)
     if cgroup_parent is None:
-        base["no_cgroup_reason"] = "test without cgroup"
+        extra["no_cgroup"] = "test without cgroup"
     else:
         base["cgroup_parent"] = str(cgroup_parent)
+    base["isolation_waivers"] = host_waivers(extra)
     base.update(kw)
     return ResourceLimits(**base)
 
@@ -101,7 +114,7 @@ def run(tmp_path, mode="ok", lim=None, run_id="r1", spec_over=None, env=None):
 
 def test_isolation_block_is_validated():
     spec = TrackGNodeSpec.from_mapping(isolated_spec_mapping())
-    assert spec.isolation.entry == "parent.py" and spec.isolation.argv("py", 5) == ["py", "parent.py", "5"]
+    assert spec.isolation.entry == "parent.py" and spec.isolation.argv("py", 5) == ["py", "-E", "-s", "parent.py", "5"]
     with pytest.raises(TrackGNodeSpecError, match="covered by frozen_paths"):
         TrackGNodeSpec.from_mapping(isolated_spec_mapping(isolation={"entry": "train.py"}))
     with pytest.raises(TrackGNodeSpecError, match="AR_RESULT_SOCKET"):
@@ -115,16 +128,26 @@ def test_isolation_block_is_validated():
     assert TrackGNodeSpec.from_mapping(spec_mapping()).isolation is None
 
 
-def test_isolated_run_needs_a_cgroup_or_a_reason_and_refuses_root_without_one(tmp_path):
+def test_isolated_run_refuses_each_missing_host_condition_without_a_waiver(tmp_path):
     node = make_isolated_node(tmp_path)
     runner = WorkingCopyRunner(TrackGNodeSpec.from_mapping(isolated_spec_mapping()), node, tmp_path / "runs")
     with pytest.raises(RunnerError, match="cgroup_parent"):
-        runner.run("a", ResourceLimits(uncapped_reason="t", measured_run_seconds=5, **ROOT_REASON))
+        runner.run("a", ResourceLimits(uncapped_reason="t", measured_run_seconds=5, isolation_waivers=host_waivers()))
     if ROOT:
         with pytest.raises(RunnerError, match="as root"):
-            runner.run("b", ResourceLimits(uncapped_reason="t", measured_run_seconds=5, no_cgroup_reason="t"))
-    with pytest.raises(RunnerError, match="no_cgroup_namespace_reason"):
-        ResourceLimits(uncapped_reason="t", measured_run_seconds=5, cgroup_namespace=False)
+            runner.run("b", ResourceLimits(uncapped_reason="t", measured_run_seconds=5,
+                                           isolation_waivers={"no_cgroup": "t", "ptrace_scope": "t"}))
+    scope = isolation.ptrace_scope()
+    if scope is None or scope < 1:
+        with pytest.raises(RunnerError, match="ptrace_scope"):
+            runner.run("c", ResourceLimits(uncapped_reason="t", measured_run_seconds=5,
+                                           isolation_waivers={"no_cgroup": "t", "root": "t"}))
+    with pytest.raises(RunnerError, match="isolation_waivers"):
+        ResourceLimits(uncapped_reason="t", measured_run_seconds=5, isolation_waivers={"everything": "x"})
+    with pytest.raises(RunnerError, match="timeout_factor"):
+        ResourceLimits(uncapped_reason="t", measured_run_seconds=5, timeout_factor=2.0)
+    ResourceLimits(uncapped_reason="t", measured_run_seconds=5, timeout_factor=2.0,
+                   isolation_waivers={"timeout_factor": "test"})
 
 
 # ------------------------------------------------------------------------------------------- outcome rules
@@ -151,9 +174,10 @@ def test_ok_isolated_run_takes_the_metric_from_the_channel(tmp_path):
     rec = result.record
     assert result.outcome.kind == OK and result.outcome.value == pytest.approx(1.0), rec
     iso = rec["isolation"]
-    assert rec["command"] == ["python3", "parent.py", "5"] and iso["argv"] == rec["command"]
+    assert rec["command"] == ["python3", "-E", "-s", "parent.py", "5"] and iso["argv"] == rec["command"]
     assert iso["log_intact"] and iso["frozen_files_checked"] == 3 and not iso["frozen_files_changed"]
-    assert iso["runner_dumpable"] is False and iso["effective"] is (not ROOT)
+    assert iso["runner_dumpable"] is False and iso["effective"] is False   # waivers on this test host
+    assert iso["worker_sandbox"]["writable"] == [str(result.work_dir.resolve())] and "_verified_log" not in iso
     assert rec["sealed"] == {"test_accuracy": 0.4242}
     assert rec["environment_applied"]["FAKE_NODE"] == "1"
     log = (result.run_dir / "run.log").read_text()
@@ -166,14 +190,68 @@ def test_ok_isolated_run_takes_the_metric_from_the_channel(tmp_path):
 
 @pytest.mark.parametrize("mode,reason", [
     ("forge_stdout", "metric_line_in_run_output"),
-    ("tamper_log", "log_tampered"),
-    ("frozen", "frozen_file_changed"),
+    ("tamper_log", "nonzero_exit"),          # the run directory is read-only in the sandbox: the write fails
+    ("frozen", "frozen_file_changed"),       # the working copy is writable, and checked after the run
     ("crash", "nonzero_exit"),
     ("nan", "non_finite_loss"),
 ])
 def test_forged_or_broken_isolated_runs_are_divergent(tmp_path, mode, reason):
     result = run(tmp_path, mode)
     assert (result.outcome.kind, result.outcome.reason) == (DIVERGENT, reason), result.record["outcome"]
+
+
+def test_without_the_sandbox_a_tampered_log_is_refused(tmp_path):
+    result = run(tmp_path, "tamper_log", limits(waive={"no_worker_sandbox": "test"}))
+    assert (result.outcome.kind, result.outcome.reason) == (DIVERGENT, "log_tampered"), result.record["outcome"]
+    assert result.record["isolation"]["worker_sandbox"] is None and result.record["isolation"]["effective"] is False
+
+
+def test_the_sandbox_confines_the_worker(tmp_path, monkeypatch):
+    """Review round 1 (B1-B4, M3): the worker is PID 1 of its own namespace with no capability and no network;
+    the run directory, the kit and the home directory are read-only, the working copy is writable; it cannot
+    signal the runner."""
+    kit = tmp_path / "kit_marker"
+    monkeypatch.setenv("FAKE_RUNNER_PID", str(os.getpid()))
+    monkeypatch.setenv("FAKE_REAL_HOME", os.environ.get("HOME", "/root"))
+    node = make_isolated_node(tmp_path / "sb", "sandbox_report")
+    monkeypatch.setenv("FAKE_KIT", str(node))
+    spec = TrackGNodeSpec.from_mapping(isolated_spec_mapping())
+    result = WorkingCopyRunner(spec, node, tmp_path / "sb" / "runs").run("r1", limits())
+    assert result.outcome.kind == OK, result.record["outcome"]
+    log = (result.run_dir / "run.log").read_text()
+    report = json.loads(log.split("sandbox report:")[1].splitlines()[0])
+    assert report["pid"] == 1 and report["ppid"] == 0 and report["procs"] <= 3, report
+    assert report["run_log"] != "writable" and report["kit"] != "writable" and report["work"] == "writable", report
+    assert report["home"] != "writable" and report["net"] != "connected", report
+    assert report["FAKE_RUNNER_PID"] != "signal_ok" and report["caps"] == "0000000000000000", report
+    assert report["setuid"] != "ok" or report["uid"] == 0
+    del kit
+
+
+def test_a_tampered_kit_or_incumbent_is_an_integrity_stop(tmp_path):
+    """Review round 1, B1: the working copy's frozen files must match the pin taken from the kit."""
+    from autoresearch.trackg.runner import IntegrityError
+    node = make_isolated_node(tmp_path)
+    runner = WorkingCopyRunner(TrackGNodeSpec.from_mapping(isolated_spec_mapping()), node, tmp_path / "runs")
+    (node / "parent.py").write_text((node / "parent.py").read_text() + "# changed outside a diff\n")
+    with pytest.raises(IntegrityError, match="parent.py"):
+        runner.run("r1", limits())
+    fresh = WorkingCopyRunner(TrackGNodeSpec.from_mapping(isolated_spec_mapping()), node, tmp_path / "runs2")
+    with pytest.raises(IntegrityError, match="code state"):
+        fresh.run("r2", limits(), expected_incumbent_state="0" * 64)
+
+
+def test_elapsed_time_beyond_the_timeout_is_a_timeout_even_after_a_normal_exit(tmp_path):
+    """Review round 1, B4: a run that ends by itself after the deadline (here the runner is stopped meanwhile by an
+    outside helper, as a worker could once do) is a timeout: the runner's monotonic clock keeps running."""
+    node = make_isolated_node(tmp_path)
+    runner = WorkingCopyRunner(TrackGNodeSpec.from_mapping(isolated_spec_mapping()), node, tmp_path / "runs")
+    helper = subprocess.Popen(["/bin/sh", "-c", f"sleep 0.3; kill -STOP {os.getpid()}; sleep 4; kill -CONT {os.getpid()}"])
+    try:
+        result = runner.run("r1", limits(measured_run_seconds=1.0))
+    finally:
+        helper.wait()
+    assert (result.outcome.kind, result.outcome.reason) == (DIVERGENT, "timeout"), result.record["outcome"]
 
 
 def test_forging_through_proc_never_gives_an_accepted_forged_metric(tmp_path):
@@ -200,12 +278,12 @@ def test_measured_timeout_is_a_proposal_failure_and_kills_the_cgroup(tmp_path, c
     assert rec["process"]["killed_with"] == "cgroup.kill"
     cg = rec["isolation"]["cgroup"]
     assert cg["removed"] and not Path(cg["path"]).exists()
-    assert rec["isolation"]["cgroup_namespace"] is True
+    assert rec["isolation"]["worker_sandbox"] is not None
 
 
 def test_provisional_timeout_stays_infrastructure(tmp_path, cgroup_parent):
     lim = ResourceLimits(uncapped_reason="t", provisional_timeout_seconds=2.0, kill_grace_seconds=2.0,
-                         cgroup_parent=str(cgroup_parent), **ROOT_REASON)
+                         cgroup_parent=str(cgroup_parent), isolation_waivers=host_waivers())
     result = run(tmp_path, "sleep", lim)
     assert (result.outcome.kind, result.outcome.reason) == (INFRASTRUCTURE_FAILURE, "timeout")
 
@@ -218,21 +296,31 @@ def _alive(pid: int) -> bool:
     return stat[stat.rfind(")") + 2] != "Z"
 
 
-def test_escaped_daemon_is_killed_by_the_cgroup_and_cannot_migrate_out(tmp_path, cgroup_parent):
+def _processes_with_arg(token: str) -> list[int]:
+    out = []
+    for entry in Path("/proc").iterdir():
+        if entry.name.isdigit():
+            try:
+                if token.encode() in (entry / "cmdline").read_bytes().split(b"\0"):
+                    out.append(int(entry.name))
+            except OSError:
+                pass
+    return [pid for pid in out if _alive(pid)]
+
+
+def test_escaped_daemon_is_killed_whether_or_not_it_leaves_the_cgroup(tmp_path, cgroup_parent):
+    """Review round 1, M2: a daemon that double-forks, calls setsid and tries to move to another cgroup dies with
+    the run: the worker's PID namespace is torn down when its PID 1 ends (and the cgroup is killed)."""
+    token = f"{300 + (os.getpid() % 97)}.{time.monotonic_ns() % 10**6}"
     target = cgroup_parent / "cgroup.procs"
-    result = run(tmp_path, "escape", limits(cgroup_parent), env={"FAKE_CGROUP_TARGET": str(target)})
+    result = run(tmp_path, "escape", limits(cgroup_parent),
+                 env={"FAKE_CGROUP_TARGET": str(target), "FAKE_ESCAPE_TOKEN": token})
     assert result.outcome.kind == OK, result.record["outcome"]
-    pid = int((result.run_dir / "escaped.pid").read_text())
+    assert "escape migration=" in (result.run_dir / "run.log").read_text()
     deadline = time.monotonic() + 5
-    while _alive(pid) and time.monotonic() < deadline:
+    while _processes_with_arg(token) and time.monotonic() < deadline:
         time.sleep(0.05)
-    assert not _alive(pid)
-    migration = (result.run_dir / "migration.txt").read_text()
-    if result.record["isolation"]["nsdelegate"]:
-        assert migration != "moved", migration      # the cgroup namespace refuses the move (nsdelegate)
-    assert result.record["process"]["leftover_processes_killed"] is True
-    # killed whether or not it left the cgroup: re-parented to the runner (subreaper) and swept
-    assert result.record["isolation"]["cgroup"]["kill"]["orphans_killed"] >= (1 if migration == "moved" else 0)
+    assert not _processes_with_arg(token)
 
 
 def test_plain_run_with_a_cgroup_kills_it_on_timeout(tmp_path, cgroup_parent):
@@ -272,9 +360,30 @@ def test_node_library_protocol_refuses_bad_arrays(tmp_path):
     b.close()
 
 
-def test_node_library_copy_matches_the_master():
-    # kits copy the library byte-identically; the fixture does the same
-    assert NODE_LIB.is_file() and "parent_start" in NODE_LIB.read_text()
+def test_node_library_needs_only_the_standard_library_and_numpy():
+    """Kits copy the library into nodes whose environments do not have the harness: no harness import."""
+    import ast
+    tree = ast.parse(NODE_LIB.read_text())
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names |= {a.name.split(".")[0] for a in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names.add(node.module.split(".")[0])
+    assert names - {"numpy", "torch", "__future__"} <= set(sys.stdlib_module_names), names
+
+
+def test_shared_buffer_is_sealed_against_resizing():
+    """Review round 1, M1: the worker gets the memfd; it must not shrink it under the parent's mapping (SIGBUS)."""
+    sys.path.insert(0, str(NODE_LIB.parent))
+    try:
+        import ar_isolated as iso
+    finally:
+        sys.path.pop(0)
+    buf = iso.SharedBuffer((8,), "float32")
+    with pytest.raises(PermissionError):
+        os.ftruncate(buf.fd, 0)
+    buf.close()
 
 
 # ------------------------------------------------------------------------------------------- same user, not root
@@ -287,7 +396,11 @@ UNPRIV_SCRIPT = textwrap.dedent('''\
     from isolated_fixture import isolated_spec_mapping
     spec = TrackGNodeSpec.from_mapping(isolated_spec_mapping())
     runner = WorkingCopyRunner(spec, sys.argv[1], sys.argv[2])
-    lim = ResourceLimits(uncapped_reason="t", measured_run_seconds=20.0, cgroup_parent=sys.argv[3])
+    from autoresearch.trackg import isolation
+    scope = isolation.ptrace_scope()
+    waivers = {} if scope is not None and scope >= 1 else {"ptrace_scope": f"test host ptrace_scope={scope}"}
+    lim = ResourceLimits(uncapped_reason="t", measured_run_seconds=20.0, cgroup_parent=sys.argv[3],
+                         isolation_waivers=waivers)
     result = runner.run("u1", lim)
     print(json.dumps({"outcome": result.record["outcome"], "isolation": result.record["isolation"],
                       "log": (result.run_dir / "run.log").read_text()}))
@@ -339,6 +452,7 @@ def _unprivileged_run(work, cgroup_parent):
     out = json.loads(proc.stdout.strip().splitlines()[-1])
     assert "forge report:" in out["log"], (out["outcome"], out["log"][-3000:])
     report = out["log"].split("forge report:")[1].splitlines()[0]
-    assert ":written" not in report and "PermissionError" in report, report
-    assert out["isolation"]["effective"] is True and out["isolation"]["cgroup_namespace"] is True
+    assert ":written" not in report, report
+    assert out["isolation"]["euid"] == 65534 and out["isolation"]["worker_sandbox"] is not None
+    assert set(out["isolation"]["waivers"]) <= {"ptrace_scope"}
     assert out["outcome"]["kind"] == "ok" and out["outcome"]["value"] == pytest.approx(1.0), out["outcome"]
