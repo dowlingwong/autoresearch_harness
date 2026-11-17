@@ -17,7 +17,7 @@ The editable ``train.py`` of a node provides
   predict_logits(model, batch) -> logits for an evaluation batch (dict without labels)
 
 This module owns everything a diff must not change: the step budget (exactly
-``--steps`` optimizer steps), the seeds, the order of the training batches,
+``--steps`` optimizer steps, counted on the optimizer itself), the seeds, the order of the training batches,
 the loss log the outcome parser reads (``step <n> loss <mean over the last
 LOG_EVERY steps>``), and the metric lines, which the node wrapper prints after
 training returns (``AR_METRIC ...`` for validation, ``AR_TEST ...`` for the
@@ -33,11 +33,14 @@ import sys
 import numpy as np
 import torch
 
+import ar_data
+
 LOG_EVERY = 10
 EVAL_BATCH_SIZE = 1024
 EXIT_BAD_INVOCATION = 2
 EXIT_BUDGET_NOT_REACHED = 3
 EXIT_BAD_EDITABLE_API = 4
+EXIT_INFRA = 6
 
 
 def fail(code: int, message: str) -> None:
@@ -88,6 +91,13 @@ def num_workers() -> int:
 
 
 def pick_device() -> torch.device:
+    """CUDA when available.  When the runner assigned a GPU (non-empty CUDA_VISIBLE_DEVICES) but CUDA
+    is unavailable, stop with an ``AR_INFRA`` line (the node's infrastructure pattern): a silent CPU
+    fallback is a STOP for the census.  This runs before the editable code is imported, so no
+    proposal can cause it."""
+    if os.environ.get("CUDA_VISIBLE_DEVICES", "").strip() and not torch.cuda.is_available():
+        print("AR_INFRA a GPU was assigned (CUDA_VISIBLE_DEVICES set) but CUDA is unavailable", flush=True)
+        sys.exit(EXIT_INFRA)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     name = torch.cuda.get_device_name(0) if device.type == "cuda" else "cpu"
     print(f"AR_DEVICE {device.type} {name} torch={torch.__version__} workers={num_workers()}", flush=True)
@@ -134,7 +144,22 @@ class FixedStepSampler:
 
 def train_fixed_steps(train_mod, model, optimizer, scheduler, sampler: FixedStepSampler, make_batch,
                       config: dict, device: torch.device) -> int:
-    """Run exactly ``sampler.budget`` optimizer steps and print the loss log."""
+    """Run exactly ``sampler.budget`` optimizer steps and print the loss log.
+
+    The optimizer returned by build_optimizer must be a ``torch.optim.Optimizer``; a post-step hook
+    counts its ``step()`` calls, and the run fails (exit 3) unless the count equals the budget, so
+    editable code cannot add extra ``step()`` calls of that optimizer (for example inside
+    training_step).  Known limits, not enforced: the hook counts calls, not updates, so an optimizer
+    whose single ``step()`` makes several updates (Lookahead or SAM written inside ``step()``) passes;
+    editable code runs in this process and could also add updates by other means (a second optimizer,
+    manual updates, an EMA copy), tamper with the optimizer's hook registry or patch this module, print
+    forged lines, or read the data files.  A subclass whose ``step()`` calls ``super().step()`` is
+    counted twice if an instance of the parent class was created earlier in the process (torch's hook
+    wrapping); the run then fails as divergent."""
+    if not isinstance(optimizer, torch.optim.Optimizer):
+        fail(EXIT_BAD_EDITABLE_API, "build_optimizer must return a torch.optim.Optimizer")
+    optimizer_steps = [0]
+    optimizer.register_step_post_hook(lambda opt, args, kwargs: optimizer_steps.__setitem__(0, optimizer_steps[0] + 1))
     amp = bool(config.get("amp_bf16", False)) and device.type == "cuda"
     clip = config.get("grad_clip")
     running = torch.zeros((), dtype=torch.float64, device=device)
@@ -163,7 +188,9 @@ def train_fixed_steps(train_mod, model, optimizer, scheduler, sampler: FixedStep
             count = 0
     if step != sampler.budget or sampler.served != sampler.budget:
         fail(EXIT_BUDGET_NOT_REACHED, f"ran {step} of {sampler.budget} steps")
-    print(f"AR_STEPS completed={step}", flush=True)
+    if optimizer_steps[0] != sampler.budget:
+        fail(EXIT_BUDGET_NOT_REACHED, f"the optimizer stepped {optimizer_steps[0]} times for a budget of {sampler.budget}")
+    ar_data.emit(f"AR_STEPS completed={step}")
     return step
 
 

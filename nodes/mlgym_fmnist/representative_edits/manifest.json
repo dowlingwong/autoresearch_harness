@@ -50,7 +50,7 @@
   ],
   "measured": false,
   "node": "mlgym_fmnist",
-  "node_spec_sha256": "ae6427001ac3a457cfcf737053c85479950c0e0ddf38f1996164af1e102aa8b2",
+  "node_spec_sha256": "f7d7a41c6c90e812ff98c96be99c4ff13b5825848a08e3e4648ece2d0fee37fc",
   "run_budget": {
     "kind": "steps",
     "value": 9380

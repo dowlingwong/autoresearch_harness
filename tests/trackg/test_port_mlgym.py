@@ -36,6 +36,25 @@ def test_frozen_path_edit_refused(node):
     ps.check_scope(node)
 
 
+# Pairs of declared edits that change different settings, compose, and both act after each other (S1.1
+# interaction runs).  Edits that set the same line (two learning rates, two alphas) are alternatives and
+# conflict; House Prices E1/E2 (Ridge alpha) are dead code after E4 (gradient boosting) and are left out.
+INTERACTING = {
+    "mlgym_cifar10": {"E1+E3", "E1+E4", "E2+E3", "E2+E4", "E3+E4"},
+    "mlgym_fmnist": {"E1+E3", "E1+E4", "E2+E3", "E2+E4", "E3+E4"},
+    "mlgym_houseprice": {"E1+E3", "E2+E3", "E3+E4"},
+    "mlgym_breakout_minatar": {"E1+E3", "E2+E3", "E3+E4"},
+}
+
+
+@pytest.mark.parametrize("node", NODES)
+def test_interacting_edits_compose(node):
+    pairs = ps.check_composable(node)
+    for pair in INTERACTING[node]:
+        a, b = pair.split("+")
+        assert pairs[f"{a}+{b}"] == "applied" and pairs[f"{b}+{a}"] == "applied", (pair, pairs)
+
+
 def test_breakout_config_leaves_wrapper_keys_out():
     text = (ps.node_dir("mlgym_breakout_minatar") / "config.yaml").read_text()
     for key in ("num_train_steps", "evaluate_every_epochs", "num_test_rollouts"):

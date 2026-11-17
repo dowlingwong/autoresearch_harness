@@ -51,10 +51,11 @@ def main() -> None:
                         lambda idx: {"x": x_tr[idx], "y": y_tr[idx]}, config, device)
 
     val_pred = L.predict_classes(T, model, lambda idx: {"x": x_val[idx]}, len(x_val), N_CLASSES, config, device)
-    print(f"AR_METRIC val_accuracy={L.accuracy(val_pred, y_val):.6f}", flush=True)
+    ar_data.emit(f"AR_METRIC val_accuracy={L.accuracy(val_pred, y_val):.6f}")
     test_pred = L.predict_classes(T, model, lambda idx: {"x": x_te[idx]}, len(x_te), N_CLASSES, config, device)
-    print(f"AR_TEST test_accuracy={L.accuracy(test_pred, y_te):.6f}", flush=True)
+    ar_data.emit(f"AR_TEST test_accuracy={L.accuracy(test_pred, y_te):.6f}")
 
 
 if __name__ == "__main__":
     main()
+    ar_data.finish()  # no output of the editable code after the result lines

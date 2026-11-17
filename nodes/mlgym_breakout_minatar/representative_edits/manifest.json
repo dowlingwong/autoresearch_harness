@@ -50,7 +50,7 @@
   ],
   "measured": false,
   "node": "mlgym_breakout_minatar",
-  "node_spec_sha256": "f6e82cc17c09bc7a4ab2f7f86d23dbd4b89262bdb7a4031d1da2c5b2d5b479f9",
+  "node_spec_sha256": "3007e1f98b82126cc93bc73f7c59840d83f5effac9b3e63304435bc4b872a5a8",
   "run_budget": {
     "kind": "steps",
     "value": 2000000

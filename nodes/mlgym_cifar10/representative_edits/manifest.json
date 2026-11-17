@@ -50,7 +50,7 @@
   ],
   "measured": false,
   "node": "mlgym_cifar10",
-  "node_spec_sha256": "2f986b4f4ba599eed485afaa781ff5dd530f400fa6898ba6f316f270ab7f981f",
+  "node_spec_sha256": "5f360f27c876fc78a870c521dd7fbc31a3319047a433fd8611063ff0e4e883b3",
   "run_budget": {
     "kind": "steps",
     "value": 7820

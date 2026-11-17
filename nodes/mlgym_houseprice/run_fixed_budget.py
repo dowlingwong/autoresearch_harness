@@ -102,15 +102,16 @@ def main() -> None:
 
     pred_tr = predict(x_tr)
     print(f"step 1 loss {rmse(y_tr, pred_tr) if np.all(np.isfinite(pred_tr)) else float('nan'):.6f}", flush=True)
-    print("AR_STEPS completed=1", flush=True)
+    ar_data.emit("AR_STEPS completed=1")
     pred_val = predict(x_val)
     val_rmse = rmse(y_val, pred_val) if np.all(np.isfinite(pred_val)) else float("nan")
     print(f"AR_INFO val_r2={r2_score(y_val, pred_val) if np.isfinite(val_rmse) else float('nan'):.6f}", flush=True)
-    print(f"AR_METRIC val_rmse={val_rmse:.6f}", flush=True)
+    ar_data.emit(f"AR_METRIC val_rmse={val_rmse:.6f}")
     pred_te = predict(x_te)
     test_rmse = rmse(y_te, pred_te) if np.all(np.isfinite(pred_te)) else float("nan")
-    print(f"AR_TEST test_rmse={test_rmse:.6f}", flush=True)
+    ar_data.emit(f"AR_TEST test_rmse={test_rmse:.6f}")
 
 
 if __name__ == "__main__":
     main()
+    ar_data.finish()  # no output of the editable code after the result lines

@@ -12,10 +12,14 @@ frozen wrapper (MLGym's own procedure), not here.
 Instead of the download, ``--from-file <path>`` takes the same file from a local
 MLGym checkout (it must have the same hashes).  Re-running with a complete --out
 only re-checks and re-links it.
+--out must lie under ``$AR_TRACKG_DATA_ROOT``.  A first run needs an empty or
+new --out (a partial earlier attempt is never reused); the manifest is written
+last and the directory is then made read-only, so runs cannot change the data.
 """
 import argparse
 import hashlib
 import json
+import os
 import urllib.request
 from pathlib import Path
 
@@ -36,8 +40,14 @@ def main() -> None:
     parser.add_argument("--from-file", type=Path, default=None)
     args = parser.parse_args()
     out = args.out.resolve()
+    root = os.environ.get("AR_TRACKG_DATA_ROOT")
+    if not root or not out.is_relative_to(Path(root).resolve()) or out == Path(root).resolve():
+        raise SystemExit(f"--out must lie under $AR_TRACKG_DATA_ROOT (set: {bool(root)}); got {out}")
     node_dir = Path(__file__).resolve().parent
     if not (out / ar_data.MANIFEST_NAME).exists():
+        if out.exists() and any(out.iterdir()):
+            raise SystemExit(f"{out} is not empty and has no data manifest (an earlier attempt?); move it aside "
+                             "and run again into a new --out (nothing is reused)")
         if args.from_file is not None:
             data = args.from_file.read_bytes()
         else:
@@ -52,6 +62,7 @@ def main() -> None:
                   "rows": 1460}
         digest = ar_data.write_manifest(out, NODE, FILES, source)
         print(f"wrote {out / ar_data.MANIFEST_NAME} sha256 {digest}")
+        ar_data.make_read_only(out)  # runs cannot change the shared data or leave files in it
     manifest = ar_data.verify(out, NODE, FILES)
     if manifest["files"]["houseprice.csv"]["sha256"] != SHA256:
         raise SystemExit("data/houseprice.csv is not the recorded MLGym file")

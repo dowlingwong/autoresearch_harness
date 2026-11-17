@@ -23,7 +23,8 @@ frozen_paths:
   - helpers.py
   - evaluate_policy.py
   - requirements.txt
-  - NOTICE.md
+  - requirements_gpu.txt
+  - LICENCES.md
   - representative_edits/
 allow_new_files: false
 
@@ -37,7 +38,9 @@ metric:
   loss_regex: '^step \d+ loss (\S+)$'
   steps_regex: '^AR_STEPS env_steps=(\d+)$'
   test_metric_regex: '^AR_TEST test_return=(\S+)$'
-  infrastructure_log_patterns: []
+  infrastructure_log_patterns:
+    # the wrapper's GPU check, printed before the editable code is imported (no AR_DEVICE line before it)
+    - '\A(?:(?!AR_DEVICE ).*\n)*?AR_INFRA a GPU was assigned \(CUDA_VISIBLE_DEVICES set\) but CUDA is unavailable$'
 
 run_budget:
   kind: steps
@@ -79,11 +82,11 @@ external_benchmark:
   repository: https://github.com/facebookresearch/MLGym
   commit: 9d40c1b5035202018cd7091fb4e83a9c68b377c0
   task: rlBreakoutMinAtar
-  license: CC-BY-NC-4.0 (non-commercial; attribution and changes in NOTICE.md)
+  license: CC-BY-NC-4.0 (non-commercial; attribution and changes in LICENCES.md)
   data: none (simulated environment gymnax Breakout-MinAtar)
 
 notes:
   python_env: jax (separate environment from the torch nodes; see requirements.txt)
-  requirements: requirements.txt
+  requirements: requirements.txt (local CPU check); requirements_gpu.txt on the GPU host
   jax_settings: the wrapper sets XLA_FLAGS --xla_gpu_deterministic_ops=true, XLA_PYTHON_CLIENT_PREALLOCATE=false and TF_CUDNN_DETERMINISTIC=1 before importing jax
-  determinism_shim: the torch shim has nothing to force here; its settings are recorded as not_forced
+  determinism_shim: the torch shim has nothing to force here. In the torch-free JAX environment the run record's not_forced is cudnn.benchmark=False, dataloader_workers, torch.set_num_threads and torch.use_deterministic_algorithms(True) (reason torch_absent); XLA CPU threads are not bounded by the shim

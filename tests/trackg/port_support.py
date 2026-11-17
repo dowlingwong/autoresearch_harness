@@ -44,6 +44,8 @@ from autoresearch.trackg.smoke import run_smoke_campaign
 ROOT = Path(__file__).resolve().parents[2]
 SHARED_FROZEN = ("ar_data.py", "ar_fixed_loop.py")
 METRIC_PREFIXES = ("AR_METRIC", "AR_TEST")
+DATA_SUFFIXES = {".npy", ".npz", ".parquet", ".csv", ".pkl", ".pt", ".pth", ".safetensors", ".bin", ".arrow",
+                 ".tar", ".gz", ".zip"}
 # The manifests were declared with Python 3.12 (scripts/trackg_declare_edits.py); see check_manifest.
 DECLARED_WITH_PYTHON = (3, 12)
 RECORD_KEYS = ("schema", "run_id", "node", "node_spec_sha256", "run_budget", "workers", "seeds", "limits",
@@ -73,11 +75,25 @@ def frozen_files(node: str) -> list[Path]:
     out = []
     for entry in spec.frozen_paths:
         path = base / entry.rstrip("/")
+        if path.is_symlink():
+            continue  # the data link made by setup: its target is outside the node
         if entry.endswith("/"):
             out += sorted(p for p in path.rglob("*") if p.is_file()) if path.is_dir() else []
         else:
             out.append(path)
     return out
+
+
+def committed_files(base: Path) -> list[Path]:
+    """Files of the node directory, without caches and without anything behind the setup's data link."""
+    out = []
+    for path in base.rglob("*"):
+        rel = path.relative_to(base)
+        if rel.parts and rel.parts[0] == "data" and (base / "data").is_symlink():
+            continue
+        if path.is_file() and "__pycache__" not in rel.parts:
+            out.append(path)
+    return sorted(out)
 
 
 def touch_diff(rel: str, text: str) -> str:
@@ -109,11 +125,16 @@ def check_static(node: str, port_nodes: list[str]) -> None:
     if (base / "prepare_data.py").exists():
         assert "data/" in spec.frozen_paths and "prepare_data.py" in spec.frozen_paths
     assert "representative_edits/" in spec.frozen_paths
-    assert not (base / "data").exists(), "the data link is made by setup, never committed"
+    # Checklist F: the licence/provenance record is frozen, and no task data are committed.
+    assert "LICENCES.md" in spec.frozen_paths and (base / "LICENCES.md").is_file()
+    data_like = [str(p.relative_to(base)) for p in committed_files(base)
+                 if p.suffix in DATA_SUFFIXES or p.stat().st_size > 1_000_000]
+    assert not data_like, f"files that look like task data are committed: {data_like}"
+    data = base / "data"
+    assert not data.exists() or data.is_symlink(), "data/ may only be the link made by setup, never committed"
     # No committed file is outside both scopes, so nothing is silently editable or unlisted.
     listed = {p.resolve() for p in frozen_files(node)} | {(base / r).resolve() for r in spec.editable_paths}
-    stray = [str(p.relative_to(base)) for p in base.rglob("*")
-             if p.is_file() and "__pycache__" not in p.parts and p.resolve() not in listed]
+    stray = [str(p.relative_to(base)) for p in committed_files(base) if p.resolve() not in listed]
     assert not stray, f"files in neither editable nor frozen paths: {stray}"
     # Shared frozen helpers are identical in every node of the port that has them.
     for name in SHARED_FROZEN:
@@ -121,11 +142,14 @@ def check_static(node: str, port_nodes: list[str]) -> None:
             copies = {n: (node_dir(n) / name).read_bytes() for n in port_nodes if (node_dir(n) / name).exists()}
             assert len(set(copies.values())) == 1, f"{name} differs between nodes {sorted(copies)}"
             assert name in spec.frozen_paths
-    # The frozen wrapper prints the metric; editable code never does.
+    # The frozen wrapper prints the metric, through the saved output descriptor (emit), and ends with
+    # os._exit after it (finish); editable code never mentions the result lines.
     wrapper = (base / "run_fixed_budget.py").read_text()
-    assert re.search(r'print\(f"AR_METRIC ' + re.escape(spec.metric_name) + "=", wrapper)
+    assert re.search(r'emit\(f"AR_METRIC ' + re.escape(spec.metric_name) + "=", wrapper)
     if spec.selection.test_scored:
-        assert re.search(r'print\(f"AR_TEST ' + re.escape(spec.selection.test_metric_name) + "=", wrapper)
+        assert re.search(r'emit\(f"AR_TEST ' + re.escape(spec.selection.test_metric_name) + "=", wrapper)
+    assert not re.search(r'print\(f?"AR_(METRIC|TEST|STEPS|TOKENS) ', wrapper), "result lines must go through emit"
+    assert "finish()" in wrapper
     for rel in spec.editable_paths:
         text = (base / rel).read_text()
         for prefix in METRIC_PREFIXES + ("AR_STEPS", "AR_TOKENS"):
@@ -179,6 +203,36 @@ def strip_normalised_state(manifest: dict) -> dict:
     return out
 
 
+def composable_pairs(node: str) -> dict[str, str]:
+    """For every ordered pair (Ei, Ej) of declared edits: whether Ej still applies after Ei
+    (``applied``/``inert``/``refused``/``duplicate``), as the stub manager would see it."""
+    import tempfile
+
+    spec = load(node)
+    node_spec = spec.to_base_node_spec()
+    edits = edit_files(node)
+    out = {}
+    for first in edits:
+        for second in edits:
+            if first == second:
+                continue
+            with tempfile.TemporaryDirectory() as tmp:
+                work = Path(tmp) / "w"
+                shutil.copytree(node_dir(node), work, symlinks=True, ignore=shutil.ignore_patterns("__pycache__", "data"))
+                one = apply_diff(work, first.read_text(), node_spec, allow_new_files=False)
+                assert one.status == "applied"
+                two = apply_diff(work, second.read_text(), node_spec, write=False, allow_new_files=False)
+                out[f"{first.stem}+{second.stem}"] = two.status
+    return out
+
+
+def check_composable(node: str) -> dict[str, str]:
+    """At least one pair of declared edits composes (for the S1.1 interaction measurement)."""
+    pairs = composable_pairs(node)
+    assert any(v == "applied" for v in pairs.values()), f"no pair of declared edits composes: {pairs}"
+    return pairs
+
+
 def check_scope(node: str) -> None:
     spec = load(node)
     base = node_dir(node)
@@ -216,7 +270,8 @@ def smoke_copy(node: str, tmp: Path, make_data: Callable[[Path], dict] | None, d
     """A copy of the node with synthetic data linked as ``data`` (the repository node is not touched).
     Without *make_data* (a node without task data) the copy has no data link."""
     work = tmp / "node" / node
-    shutil.copytree(node_dir(node), work, ignore=shutil.ignore_patterns("__pycache__"))
+    # The repository node may already carry the setup's data link (after deployment): never follow it.
+    shutil.copytree(node_dir(node), work, symlinks=True, ignore=shutil.ignore_patterns("__pycache__", "data"))
     if make_data is None:
         return work
     data = tmp / "data" / node
@@ -234,9 +289,13 @@ def reduced_spec(node: str, budget: int) -> TrackGNodeSpec:
     return TrackGNodeSpec.from_mapping(mapping)
 
 
-def limits(seconds: float = 600.0) -> ResourceLimits:
-    return ResourceLimits(cpu_list=tuple(sorted(os.sched_getaffinity(0)))[:4], memory_bytes=None,
-                          memory_method="external", external_limit="test host (no cap)",
+def limits(seconds: float = 600.0, gpu_uuids: tuple[str, ...] = (), cpu_list: tuple[int, ...] | None = None,
+           external_limit: str = "test host (no cap)") -> ResourceLimits:
+    """Runner limits for the smoke.  On a GPU host pass the card's UUID, the CPU list and what enforces
+    the memory cap; without a UUID the runner hides every GPU and the run is a CPU run."""
+    cpus = cpu_list or tuple(sorted(os.sched_getaffinity(0)))[:4]
+    return ResourceLimits(gpu_uuids=tuple(gpu_uuids), cpu_list=cpus, memory_bytes=None,
+                          memory_method="external", external_limit=external_limit,
                           provisional_timeout_seconds=seconds, kill_grace_seconds=2.0)
 
 
@@ -251,22 +310,24 @@ def broken_diff(node: str, anchor: str, replacement: str, rel: str | None = None
     return "".join(difflib.unified_diff(text.splitlines(True), new.splitlines(True), f"a/{rel}", f"b/{rel}"))
 
 
-def run_smoke(node: str, tmp: Path, work: Path, budget: int, broken: str, interpreter: str = sys.executable):
+def run_smoke(node: str, tmp: Path, work: Path, budget: int | None, broken: str, interpreter: str = sys.executable,
+              run_limits: ResourceLimits | None = None):
     """Stub-manager smoke on synthetic data; returns (smoke records, per-edit records).  The last
     per-edit record is a second baseline run with the same seeds (repeatability check)."""
-    spec = reduced_spec(node, budget)
+    spec = load(node) if budget is None else reduced_spec(node, budget)
+    lim = run_limits or limits()
     rel_frozen = "run_fixed_budget.py"
     frozen = touch_diff(rel_frozen, (work / rel_frozen).read_text())
     edits = [p.read_text() for p in edit_files(node)]
-    records = run_smoke_campaign(spec, work, tmp / "runs_smoke", [frozen, broken, edits[0]], limits(),
+    records = run_smoke_campaign(spec, work, tmp / "runs_smoke", [frozen, broken, edits[0]], lim,
                                  train_seed=8001, split_seed=8001)
     per_edit = []
     for index, diff in enumerate(edits, start=1):
         result = WorkingCopyRunner(spec, work, tmp / "runs_edits").run(
-            f"E{index}", limits(), train_seed=8001, split_seed=8001, diff_text=diff, interpreter=interpreter)
+            f"E{index}", lim, train_seed=8001, split_seed=8001, diff_text=diff, interpreter=interpreter)
         per_edit.append(result.record)
     repeat = WorkingCopyRunner(spec, work, tmp / "runs_edits").run(
-        "B2", limits(), train_seed=8001, split_seed=8001, interpreter=interpreter)
+        "B2", lim, train_seed=8001, split_seed=8001, interpreter=interpreter)
     per_edit.append(repeat.record)
     check_baseline_log(spec, (tmp / "runs_smoke" / "s000_baseline" / "run.log").read_text(errors="replace"))
     return records, per_edit
@@ -300,9 +361,13 @@ def check_smoke(records: list[dict], per_edit: list[dict], expect_divergent: set
         record = entry["record"]
         missing = [k for k in RECORD_KEYS if k not in record]
         assert not missing, f"run record lacks {missing}"
+        if torch_node and record.get("executed", True):
+            assert record["determinism"]["not_forced"] == ["dataloader_workers"], record["determinism"]
         assert record["process"]["killed_with"] is None
         assert "sealed" not in record  # the manager view never shows the test metric
     *per_edit, repeat = per_edit
+    if torch_node:
+        assert repeat["determinism"]["not_forced"] == ["dataloader_workers"], repeat["determinism"]
     assert repeat["outcome"]["kind"] == "ok" and repeat["outcome"]["value"] == baseline["record"]["outcome"]["value"], (
         "a second baseline run with the same seeds gave a different metric", repeat["outcome"], baseline["record"]["outcome"])
     for index, record in enumerate(per_edit, start=1):

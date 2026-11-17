@@ -16,11 +16,19 @@ validation keys derived from AR_SPLIT_SEED for the selection metric
 ``AR_TEST test_return=``.  Loss log: ``step <env steps> loss <PPO total loss>``
 after every update (policy.py's progress bar is disabled so these lines start
 at the beginning of a line).  JAX runs with deterministic GPU ops and without
-pre-allocating GPU memory (set below, before jax is imported).
+pre-allocating GPU memory (set below, before jax is imported).  When the runner
+assigns a GPU (non-empty CUDA_VISIBLE_DEVICES) and JAX's first device is not a
+GPU, the wrapper prints ``AR_INFRA …`` and exits 6 before the editable code is
+imported (the node's infrastructure pattern).  The result lines (AR_STEPS,
+AR_METRIC, AR_TEST) are written to a copy of the standard output descriptor taken
+before the editable code is imported, and the run ends with ``os._exit(0)`` after
+them.
 """
 import argparse
 import os
 import sys
+
+_OUT_FD = os.dup(1)  # the wrapper's result lines; taken before the editable code is imported
 
 os.environ["XLA_FLAGS"] = (os.environ.get("XLA_FLAGS", "") + " --xla_gpu_deterministic_ops=true").strip()
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
@@ -43,6 +51,26 @@ N_VAL_KEYS = 5
 EXIT_BAD_INVOCATION = 2
 EXIT_BUDGET_NOT_REACHED = 3
 EXIT_BAD_EDITABLE_API = 4
+EXIT_INFRA = 6
+
+
+def emit(line: str) -> None:
+    """One of the wrapper's result lines, on the saved descriptor (editable code cannot rewrite it through sys.stdout)."""
+    try:
+        sys.stdout.flush()
+    except Exception:  # noqa: BLE001
+        pass
+    os.write(_OUT_FD, (line + "\n").encode("utf-8"))
+
+
+def finish() -> None:
+    """End the run after the last result line: no atexit handler or later output of the editable code runs."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:  # noqa: BLE001
+            pass
+    os._exit(0)
 
 
 def fail(code: int, message: str) -> None:
@@ -86,6 +114,11 @@ def main() -> None:
     budget = read_budget()
     train_seed, split_seed = read_seeds()
     device = jax.devices()[0]
+    if os.environ.get("CUDA_VISIBLE_DEVICES", "").strip() and device.platform != "gpu":
+        # A GPU was assigned but JAX runs elsewhere (wrong UUID, CPU-only jax): a silent CPU fallback is a
+        # STOP for the census.  This runs before the editable network is imported, so no proposal causes it.
+        print("AR_INFRA a GPU was assigned (CUDA_VISIBLE_DEVICES set) but CUDA is unavailable", flush=True)
+        sys.exit(EXIT_INFRA)
     print(f"AR_DEVICE {device.platform} {getattr(device, 'device_kind', '')} jax={jax.__version__} "
           f"workers={os.environ.get('AR_NUM_WORKERS', '0')}", flush=True)
 
@@ -116,15 +149,16 @@ def main() -> None:
                                                        on_update=on_update)
     if total_steps != expected_steps or total_steps < budget:
         fail(EXIT_BUDGET_NOT_REACHED, f"took {total_steps} environment steps, expected {expected_steps}")
-    print(f"AR_STEPS env_steps={total_steps}", flush=True)
+    emit(f"AR_STEPS env_steps={total_steps}")
 
     env, env_params = gymnax.make(ENV_NAME)
     val = evaluate_policy.mean_return(env, env_params, model, final_params, validation_keys(split_seed))
-    print(f"AR_METRIC val_return={val:.6f}", flush=True)
+    emit(f"AR_METRIC val_return={val:.6f}")
     test = evaluate_policy.mean_return(env, env_params, model, final_params,
                                        [jax.random.PRNGKey(s) for s in TEST_SEEDS])
-    print(f"AR_TEST test_return={test:.6f}", flush=True)
+    emit(f"AR_TEST test_return={test:.6f}")
 
 
 if __name__ == "__main__":
     main()
+    finish()  # no output of the editable code after the result lines

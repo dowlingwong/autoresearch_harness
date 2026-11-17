@@ -6,8 +6,25 @@ byte-identically into every node of the port (the port tests check this).
 ``prepare_data.py`` (the node's one-off setup step) writes the task data as
 files into a directory outside the node, records every file's sha256 and the
 data source in ``data_manifest.json``, and links that directory into the node
-as ``data``.  The wrapper calls :func:`load_verified` at the start of every run,
-so a run on changed or incomplete data stops before training.
+as ``data``.  The wrapper calls :func:`verify` at the start of every run, so a
+run on changed, incomplete or added data stops before training: every listed
+file must have its recorded size and sha256, and no other file may exist in the
+directory except under the setup-only subdirectories the manifest names (raw
+downloads that no run reads).
+
+Known limits (the editable code runs in the wrapper's process): the setup makes
+the directory read-only, which makes accidental writes by a run fail, but code
+running as the directory's owner can restore the write bits (and as root the bits
+do not apply), and it could rewrite the manifest together with the data.  After
+the census records the manifest's sha256, pin it and give the data another owner
+or a read-only mount on the census host.
+
+The wrapper's own result lines go through :func:`emit`, which writes to a copy of
+the standard output descriptor taken when this module is imported (before the
+editable code is), and the wrapper ends with :func:`finish` (``os._exit(0)``), so
+editable code cannot rewrite those lines by replacing ``sys.stdout`` or add lines
+after them from an ``atexit`` handler.  It can still print a forged line and exit
+before the wrapper prints its own.
 """
 from __future__ import annotations
 
@@ -17,6 +34,7 @@ import os
 import sys
 from pathlib import Path
 
+_OUT_FD = os.dup(1)  # the wrapper's result lines; taken at import, before the editable code runs
 MANIFEST_NAME = "data_manifest.json"
 MANIFEST_SCHEMA = "trackg_node_data/v1"
 EXIT_DATA = 5
@@ -30,16 +48,51 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def write_manifest(data_dir: Path, node: str, files: list[str], source: dict) -> str:
-    """Hash *files* (names relative to *data_dir*) and write the manifest once."""
+def emit(line: str) -> None:
+    """Print one of the wrapper's result lines (AR_METRIC, AR_TEST, AR_STEPS, AR_TOKENS) on the saved descriptor."""
+    try:
+        sys.stdout.flush()
+    except Exception:  # noqa: BLE001 - the editable code may have replaced or closed sys.stdout
+        pass
+    os.write(_OUT_FD, (line.rstrip("\n") + "\n").encode("utf-8"))
+
+
+def finish() -> None:
+    """End the run after the wrapper's last line: no atexit handler or later output of the editable code runs."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:  # noqa: BLE001
+            pass
+    os._exit(0)
+
+
+def write_manifest(data_dir: Path, node: str, files: list[str], source: dict,
+                   setup_only: tuple[str, ...] = ()) -> str:
+    """Hash *files* (names relative to *data_dir*) and write the manifest once.  *setup_only* names
+    subdirectories that hold setup's raw downloads (never read by a run); every other file in
+    *data_dir* must be listed in *files*."""
     data_dir = Path(data_dir)
     entries = {name: {"sha256": sha256_file(data_dir / name), "bytes": (data_dir / name).stat().st_size}
                for name in sorted(files)}
     payload = {"schema": MANIFEST_SCHEMA, "node": node, "source": source, "files": entries}
+    if setup_only:
+        payload["setup_only"] = sorted(str(d).strip("/") for d in setup_only)
     text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     with (data_dir / MANIFEST_NAME).open("x", encoding="utf-8") as handle:
         handle.write(text)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def make_read_only(data_dir: Path) -> None:
+    """Remove write permission from every file and directory under *data_dir* (after the manifest is
+    written), so accidental writes by a run fail.  Code running as the owner can restore the bits."""
+    data_dir = Path(data_dir)
+    for path in sorted(data_dir.rglob("*"), reverse=True):
+        if path.is_symlink():
+            continue
+        path.chmod(path.stat().st_mode & ~0o222)
+    data_dir.chmod(data_dir.stat().st_mode & ~0o222)
 
 
 def data_dir_of(script: str) -> Path:
@@ -47,9 +100,24 @@ def data_dir_of(script: str) -> Path:
     return Path(script).resolve().parent / "data"
 
 
+def unlisted_files(data_dir: Path, manifest: dict) -> list[str]:
+    """Files under *data_dir* that are neither listed, the manifest itself, nor under a setup-only subdirectory."""
+    listed = set(manifest.get("files", {})) | {MANIFEST_NAME}
+    setup_only = tuple(f"{d}/" for d in manifest.get("setup_only", []))
+    out = []
+    for path in sorted(Path(data_dir).rglob("*")):
+        if path.is_dir() and not path.is_symlink():
+            continue
+        rel = path.relative_to(data_dir).as_posix()
+        if rel not in listed and not rel.startswith(setup_only):
+            out.append(rel)
+    return out
+
+
 def verify(data_dir: Path, node: str, names: list[str]) -> dict:
-    """Check that the manifest exists, belongs to *node*, lists *names*, and that every
-    listed file has the recorded size and sha256.  Exit with code 5 otherwise."""
+    """Check that the manifest exists, belongs to *node*, lists *names*, that every listed file
+    has the recorded size and sha256, and that no unlisted file exists outside the setup-only
+    subdirectories.  Exit with code 5 otherwise."""
     data_dir = Path(data_dir)
     manifest_path = data_dir / MANIFEST_NAME
     if not manifest_path.is_file():
@@ -70,6 +138,10 @@ def verify(data_dir: Path, node: str, names: list[str]) -> dict:
         if not path.is_file() or path.stat().st_size != entry["bytes"] or sha256_file(path) != entry["sha256"]:
             print(f"AR_ERROR data file {name} differs from the manifest", flush=True)
             sys.exit(EXIT_DATA)
+    extra = unlisted_files(data_dir, manifest)
+    if extra:
+        print(f"AR_ERROR data directory holds files the manifest does not list: {extra[:5]}", flush=True)
+        sys.exit(EXIT_DATA)
     digest = hashlib.sha256(manifest_bytes).hexdigest()
     print(f"AR_DATA manifest_sha256={digest} files={len(files)}", flush=True)
     return manifest
