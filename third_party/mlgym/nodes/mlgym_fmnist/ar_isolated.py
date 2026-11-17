@@ -2,9 +2,9 @@
 
 FROZEN: copied byte-identically into every isolated node and listed in its ``frozen_paths``; the master copy
 is ``autoresearch/trackg/node_lib/ar_isolated.py`` in the harness (the port tests compare the copies).
-Standard library and NumPy only; ``torch`` is imported lazily by the CUDA helpers.
+Standard library and NumPy only (imported on first use); ``torch`` is imported lazily by the CUDA helpers.
 
-The runner starts the node's frozen **parent** script directly (no shell, ``python -E -s``); the name of the
+The runner starts the node's frozen **parent** script directly (no shell, ``python -s``); the name of the
 runner's result socket is in ``AR_RESULT_SOCKET``.  Importing this module in that process makes it
 non-dumpable at once (before NumPy is imported), so another process of the same user can neither open its file
 descriptors through ``/proc`` nor ``ptrace`` it from then on.  The parent:
@@ -20,20 +20,25 @@ descriptors through ``/proc`` nor ``ptrace`` it from then on.  The parent:
 5. writes the metric line with :meth:`ResultChannel.write` (the runner refuses a run whose channel holds more
    or fewer than one metric line, or whose output holds a metric line), and exits.
 
-**Worker sandbox** (when the runner sets ``AR_ISOLATION_SANDBOX``, a JSON object): the worker is started in new
-user, mount, PID, network and cgroup namespaces.  Before ``exec`` the child maps the run's uid and gid to 0 in
-the new user namespace, makes the mount tree private, bind-mounts every ``protect`` path read-only (the
-runner's runs tree, the node kit, the data, the home directory, and the parent's Python installation), gives
-each ``writable`` path (the run's working copy) back write access, and mounts private ``tmpfs`` file systems on
-``private`` paths (``/tmp``, ``/var/tmp``, ``/run/user/<uid>``); the config's ``env`` (a home directory and cache
-directories inside the working copy) is set in the worker's environment.  After ``exec``, :func:`worker_connect` forks:
-the child is PID 1 of the new PID namespace, mounts a fresh ``/proc``, drops every capability (bounding set,
+**Worker sandbox** (when the runner sets ``AR_ISOLATION_SANDBOX``, a JSON object): the worker is started in its
+own session and in new user, mount, PID, network and cgroup namespaces.  Before ``exec`` the child maps the run's
+uid and gid to 0 in the new user namespace, makes the mount tree private and builds a new root file system that
+holds only an allow-list: a private ``/tmp``; read-only binds of the ``ro`` paths (system directories, the run
+interpreter's installation and ``sys.path``, the data, the determinism shim); ``/sys`` read-only with an empty
+read-only ``tmpfs`` over ``/sys/fs/cgroup`` and every cgroup file system below it; the ``rw`` paths (the run's
+working copy) writable, with the ``ro_in_rw`` paths (its frozen files) read-only again; ``/dev``; and the host
+``/proc`` for the moment.  It then enters that root with ``pivot_root``, detaches the old one and makes the new
+root read-only.  Nothing else exists for the worker: no home directory, no runs tree (other runs' results), no
+``/run``, no socket of a daemon outside.  The config's ``env`` (a home directory, cache directories and the
+determinism record inside the working copy) is set in the worker's environment.  After ``exec``, :func:`worker_connect` forks:
+the child is PID 1 of the new PID namespace, mounts a fresh ``/proc`` over the host one, drops every capability (bounding set,
 ambient set, permitted / effective / inheritable sets, locked secure bits) and sets ``no_new_privs`` before the
 editable code is imported; the outer process only waits and passes on the exit code.  So the editable code
-cannot see or signal any process outside its PID namespace (the runner, the parent), cannot reach the network
-(abstract Unix sockets included), cannot write the runs tree, the kit, the data, the home directory or the
-Python installation (mounts made in a more privileged namespace stay locked in a nested one), cannot gain
-privileges through set-uid programs, and when PID 1 dies the kernel kills every process of the namespace.
+cannot see or signal any process outside its PID namespace and process group (the runner, the parent), cannot
+reach the network (abstract Unix sockets included) or any pathname socket outside its root, cannot read or write
+anything outside the allow-list, cannot change its own frozen files, cannot gain privileges through set-uid
+programs or regain capabilities (mounts made in a more privileged namespace stay locked in a nested one), and
+when PID 1 dies the kernel kills every process of the namespace.
 
 Messages are a fixed magic, an 8-byte header length, a JSON header and the raw bytes of each array (no
 pickle).  Arrays are checked against a dtype whitelist and their declared shape.  For large outputs the parent
@@ -71,7 +76,18 @@ import struct  # noqa: E402
 import subprocess  # noqa: E402
 import sys  # noqa: E402
 
-import numpy as np  # noqa: E402
+
+
+class _LazyNumpy:
+    """NumPy, imported on first use: the worker's PID-1 fork (:func:`worker_connect`) must happen before any library
+    starts threads (OpenBLAS starts its pool when NumPy is imported; a fork of a threaded process can deadlock)."""
+
+    def __getattr__(self, name):
+        import numpy
+        return getattr(numpy, name)
+
+
+np = _LazyNumpy()
 
 MAGIC = b"ARI1"
 WORKER_FD_ENV = "AR_WORKER_FD"
@@ -144,15 +160,29 @@ def _write_proc(name: str, text: str) -> None:
 
 
 def _sandbox_preexec(config: dict):
-    """Child setup before exec (see the module docstring); every failure is reported on fd 2 and raised."""
-    protect = [str(p) for p in config.get("protect", []) if os.path.exists(p)]
-    writable = [str(p) for p in config.get("writable", []) if os.path.isdir(p)]
-    private = [str(p) for p in config.get("private", []) if os.path.isdir(p)]
+    """Child setup before exec (see the module docstring): namespaces, then a new root file system that holds only
+    the allow-listed paths, then ``pivot_root`` into it.  Every failure is reported on fd 2 and raised."""
+    root = str(config["root"])
+    ro = [str(p) for p in config.get("ro", []) if os.path.lexists(p)]
+    ro_flat = [str(p) for p in config.get("ro_flat", []) if os.path.isdir(p)]
+    rw = [str(p) for p in config.get("rw", []) if os.path.isdir(p)]
+    ro_in_rw = [str(p) for p in config.get("ro_in_rw", []) if os.path.lexists(p)]
+    dev = str(config.get("dev", "/dev"))
     uid, gid = os.getuid(), os.getgid()
     result_fds = list(_RESULT_FD)
 
+    def target(path: str) -> bytes:
+        return (root + path).encode()
+
+    def make_parents(path: str, is_dir: bool) -> None:
+        full = root + path
+        os.makedirs(full if is_dir else os.path.dirname(full), exist_ok=True)
+        if not is_dir and not os.path.lexists(full):
+            os.close(os.open(full, os.O_WRONLY | os.O_CREAT, 0o600))
+
     def setup() -> None:
         step = "close result socket"
+        cwd = os.getcwd()   # the child's working directory (subprocess entered it before this runs)
         try:
             for fd in result_fds:
                 try:
@@ -171,23 +201,78 @@ def _sandbox_preexec(config: dict):
             _write_proc("gid_map", f"0 {gid} 1")
             step = "private mounts"
             _check(libc.mount(b"none", b"/", None, ctypes.c_ulong(_MS_REC | _MS_PRIVATE), None), "make / private")
-            for path in protect:
-                step = f"protect {path}"
-                raw = path.encode()
-                _check(libc.mount(raw, raw, None, ctypes.c_ulong(_MS_BIND | _MS_REC), None), "bind")
-                _check(libc.mount(None, raw, None, ctypes.c_ulong(_MS_BIND | _MS_REMOUNT | _MS_RDONLY), None),
-                       "read-only")
-            for path in writable:
+            step = "new root"
+            _check(libc.mount(b"tmpfs", root.encode(), b"tmpfs", ctypes.c_ulong(_MS_NOSUID | _MS_NODEV),
+                              b"mode=0755"), "tmpfs root")
+
+            def bind(path: str, read_only: bool, recursive: bool = True) -> None:
+                src = os.path.realpath(path) if not os.path.islink(path) else path
+                if os.path.islink(path):          # e.g. /lib -> usr/lib on merged-/usr systems
+                    full = root + path
+                    os.makedirs(os.path.dirname(full), exist_ok=True)
+                    if not os.path.lexists(full):
+                        os.symlink(os.readlink(path), full)
+                    return
+                make_parents(path, os.path.isdir(src))
+                flags = _MS_BIND | (_MS_REC if recursive else 0)
+                _check(libc.mount(src.encode(), target(path), None, ctypes.c_ulong(flags), None), "bind")
+                remount = _MS_BIND | _MS_REMOUNT | _MS_NOSUID | (_MS_RDONLY if read_only else 0)
+                _check(libc.mount(None, target(path), None, ctypes.c_ulong(remount), None), "remount")
+
+            # a private /tmp first: allow-listed paths below /tmp are bound on top of it
+            step = "private /tmp"
+            make_parents("/tmp", True)
+            _check(libc.mount(b"tmpfs", target("/tmp"), b"tmpfs", ctypes.c_ulong(_MS_NOSUID | _MS_NODEV),
+                              b"mode=1777"), "tmpfs /tmp")
+            for path in ro:
+                step = f"read-only {path}"
+                bind(path, True)
+            for path in ro_flat:
+                # with its submounts (a user namespace cannot split them off), then an empty read-only tmpfs over
+                # each cgroup file system below it, so the worker cannot reach any cgroup.kill or cgroup.procs
+                step = f"read-only {path}"
+                bind(path, True)
+                for line in open("/proc/self/mountinfo").read().splitlines():
+                    left, _, right = line.partition(" - ")
+                    point = left.split()[4] if len(left.split()) > 4 else ""
+                    if right.split()[:1] in (["cgroup"], ["cgroup2"]) and (point == path or point.startswith(path + "/")):
+                        step = f"hide {point}"
+                        if os.path.isdir(root + point):
+                            _check(libc.mount(b"tmpfs", target(point), b"tmpfs",
+                                              ctypes.c_ulong(_MS_NOSUID | _MS_NODEV | _MS_RDONLY), b"size=4k"),
+                                   "tmpfs over a cgroup file system")
+                if os.path.isdir(root + path + "/fs/cgroup"):      # and over the directory that holds them
+                    step = f"hide {path}/fs/cgroup"
+                    _check(libc.mount(b"tmpfs", target(path + "/fs/cgroup"), b"tmpfs",
+                                      ctypes.c_ulong(_MS_NOSUID | _MS_NODEV | _MS_RDONLY), b"size=4k"),
+                           "tmpfs over /sys/fs/cgroup")
+            for path in rw:
                 step = f"writable {path}"
-                raw = path.encode()
-                _check(libc.mount(raw, raw, None, ctypes.c_ulong(_MS_BIND | _MS_REC), None), "bind")
-                _check(libc.mount(None, raw, None, ctypes.c_ulong(_MS_BIND | _MS_REMOUNT), None), "read-write")
-            for path in private:
-                step = f"private {path}"
-                _check(libc.mount(b"tmpfs", path.encode(), b"tmpfs", ctypes.c_ulong(_MS_NOSUID | _MS_NODEV),
-                                  b"mode=1777"), "tmpfs")
-            step = "chdir"   # the working directory was entered before the mounts: enter it again through them
-            os.chdir(os.getcwd())
+                bind(path, False)
+            for path in ro_in_rw:
+                step = f"read-only inside the working copy {path}"
+                bind(path, True)
+            step = f"devices {dev}"
+            make_parents("/dev", True)
+            _check(libc.mount(dev.encode(), target("/dev"), None, ctypes.c_ulong(_MS_BIND | _MS_REC), None),
+                   "bind /dev")
+            make_parents("/proc", True)
+            # the host /proc for the moment (PID 1 mounts a fresh one over it before any editable code runs; the
+            # kernel lets a user namespace mount proc only where a fully visible proc mount already exists)
+            _check(libc.mount(b"/proc", target("/proc"), None, ctypes.c_ulong(_MS_BIND | _MS_REC), None), "bind /proc")
+            step = "pivot_root"
+            os.makedirs(root + "/.old_root", exist_ok=True)
+            number = {"x86_64": 155, "aarch64": 41}.get(os.uname().machine)
+            if number is None:
+                raise OSError(f"pivot_root: unknown syscall number on {os.uname().machine}")
+            _check(libc.syscall(ctypes.c_long(number), root.encode(), (root + "/.old_root").encode()), "pivot_root")
+            os.chdir("/")
+            _check(libc.umount2(b"/.old_root", ctypes.c_int(2)), "detach the old root")   # MNT_DETACH
+            os.rmdir("/.old_root")
+            _check(libc.mount(None, b"/", None, ctypes.c_ulong(_MS_BIND | _MS_REMOUNT | _MS_RDONLY | _MS_NOSUID),
+                              None), "read-only root")
+            step = "chdir"
+            os.chdir(cwd)
         except BaseException as error:  # noqa: BLE001 - subprocess reports only "Exception occurred in preexec_fn"
             os.write(2, f"AR_ERROR isolation: worker sandbox setup failed at {step}: {error!r}\n".encode())
             raise
@@ -243,9 +328,10 @@ class Worker:
             child_env.update({str(k): str(v) for k, v in (sandbox.get("env") or {}).items()})
             preexec = _sandbox_preexec(sandbox)
         child_env[WORKER_FD_ENV] = str(child_sock.fileno())
+        # its own session and process group: kill(0, ...) in the worker cannot reach the parent
         self.process = subprocess.Popen([sys.executable, script, *args], env=child_env, cwd=cwd,
                                         stdin=subprocess.DEVNULL, pass_fds=(child_sock.fileno(),),
-                                        close_fds=True, preexec_fn=preexec)
+                                        close_fds=True, preexec_fn=preexec, start_new_session=True)
         child_sock.close()
         self.conn = Connection(parent_sock)
         self.sandboxed = sandbox is not None
