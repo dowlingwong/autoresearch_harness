@@ -41,7 +41,7 @@ a model that updates itself in ``forward`` cannot train on the validation shard.
 ``model(x)`` must return a plain ``torch.Tensor`` (a subclass is refused, exit 4)
 and the frozen arithmetic runs with torch-function dispatch disabled, so no
 editable ``__torch_function__`` subclass or mode runs inside it, and no torch
-function or dispatch mode may be active then (exit 4); eval mode, the device and
+dispatch mode may be active then (exit 4); eval mode, the device and
 the weight fingerprint read the modules' own ``_modules`` / ``_parameters`` /
 ``_buffers`` dicts, so no (overridable) method of the model is called; after the
 evaluation, prepare's attributes (dunder names aside: ``warnings`` may add
@@ -120,10 +120,18 @@ def causality_probe(model, x, torch) -> float:
 
 
 def no_active_modes(torch) -> None:
-    """Refuse a torch-function or torch-dispatch mode left active by the editable code (DisableTorchFunction does
-    not reach dispatch modes; both stacks are empty in a clean run)."""
-    if torch._C._len_torch_dispatch_stack() or torch._C._len_torch_function_stack():
-        fail(EXIT_BAD_EDITABLE_API, "a torch function or dispatch mode is active during the frozen evaluation")
+    """Refuse a torch-dispatch mode left active by the editable code (DisableTorchFunction, used around the frozen
+    arithmetic, does not reach dispatch modes; the stack is empty in a clean run).  Torch-function modes are kept out
+    by DisableTorchFunction and not refused: an ordinary edit can leave one (``torch.set_default_device``)."""
+    if torch._C._len_torch_dispatch_stack():
+        fail(EXIT_BAD_EDITABLE_API, "a torch dispatch mode is active during the frozen evaluation")
+
+
+def real_dict(module) -> dict:
+    """The module's instance dict through nn.Module's own ``__dict__`` descriptor (``vars()`` would honour a
+    ``__dict__`` property defined by the model's class)."""
+    import torch
+    return torch.nn.Module.__dict__["__dict__"].__get__(module)
 
 
 def module_tree(model) -> list:
@@ -136,7 +144,7 @@ def module_tree(model) -> list:
             continue
         seen.add(id(module))
         out.append(module)
-        stack.extend(child for child in vars(module).get("_modules", {}).values() if child is not None)
+        stack.extend(child for child in real_dict(module).get("_modules", {}).values() if child is not None)
     return out
 
 
@@ -145,7 +153,7 @@ def module_tensors(model) -> list:
     out = []
     for index, module in enumerate(module_tree(model)):
         for kind in ("_parameters", "_buffers"):
-            for name, tensor in vars(module).get(kind, {}).items():
+            for name, tensor in real_dict(module).get(kind, {}).items():
                 if tensor is not None:
                     out.append((f"{index}{kind}.{name}", tensor))
     return out
@@ -275,7 +283,7 @@ def main() -> None:
         fail(EXIT_BAD_EDITABLE_API, "the model has no parameters")
     device_type = tensors[0][1].device.type
     for module in module_tree(model):  # eval mode without calling any method of the model
-        vars(module)["training"] = False
+        real_dict(module)["training"] = False
     weights_before = weights_fingerprint(model, torch)
     with torch.amp.autocast(device_type=device_type, dtype=torch.bfloat16, enabled=device_type in ("cuda", "cpu")):
         val_bpb = frozen_bpb(model, tokenizer, batch_size, make, get_token_bytes, max_seq_len, eval_tokens, torch,

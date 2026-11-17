@@ -155,6 +155,8 @@ class Filter:
         real.flush()
 sys.stdout = Filter()                                                  # a rewrite of the wrapper's line
 """, 0, None),
+    "sets_the_default_device": (MODEL_HEAD.replace("SHIFT(x)", "x") + "torch.set_default_device('cpu')  # an ordinary edit\n",
+                                0, None),
     "peeks_at_the_next_token": (MODEL_HEAD.replace("SHIFT(x)", "torch.roll(x, -1, dims=1)"), 9, "not causal"),
     "peeks_with_an_infinite_logit": (MODEL_HEAD.replace("SHIFT(x)", "torch.roll(x, -1, dims=1)").replace(
         "        logits = self.e(", "        logits = self.e(").replace(
