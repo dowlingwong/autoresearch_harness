@@ -63,6 +63,20 @@ def emit(line: str) -> None:
     os.write(_OUT_FD, (line + "\n").encode("utf-8"))
 
 
+def seal() -> None:
+    """Point descriptors 1 and 2 at /dev/null just before the final result lines (they use the saved copy), so
+    threads of the editable code cannot print into the log while they are written."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:  # noqa: BLE001
+            pass
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull, 1)
+    os.dup2(devnull, 2)
+    os.close(devnull)
+
+
 def finish() -> None:
     """End the run after the last result line: no atexit handler or later output of the editable code runs."""
     for stream in (sys.stdout, sys.stderr):
@@ -153,9 +167,11 @@ def main() -> None:
 
     env, env_params = gymnax.make(ENV_NAME)
     val = evaluate_policy.mean_return(env, env_params, model, final_params, validation_keys(split_seed))
-    emit(f"AR_METRIC val_return={val:.6f}")
     test = evaluate_policy.mean_return(env, env_params, model, final_params,
                                        [jax.random.PRNGKey(s) for s in TEST_SEEDS])
+    # Both rollouts (editable network) run before the first result line; nothing editable runs after it.
+    seal()  # stdout/stderr to /dev/null: threads of the editable code cannot print now
+    emit(f"AR_METRIC val_return={val:.6f}")
     emit(f"AR_TEST test_return={test:.6f}")
 
 

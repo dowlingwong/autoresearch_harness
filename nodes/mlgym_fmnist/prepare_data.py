@@ -12,7 +12,8 @@ and links --out into the node as ``data``.
 Re-running with a complete --out only re-checks and re-links it.
 --out must lie under ``$AR_TRACKG_DATA_ROOT``.  A first run needs an empty or
 new --out (a partial earlier attempt is never reused); the manifest is written
-last and the directory is then made read-only, so runs cannot change the data.
+last and the directory is then made read-only, so accidental writes by a run fail
+(the owner can restore the write bits; see ar_data).
 """
 import argparse
 import json
@@ -64,7 +65,7 @@ def main() -> None:
                   "datasets": datasets.__version__, "shapes": shapes}
         digest = ar_data.write_manifest(out, NODE, FILES, source)
         print(f"wrote {out / ar_data.MANIFEST_NAME} sha256 {digest}")
-        ar_data.make_read_only(out)  # runs cannot change the shared data or leave files in it
+        ar_data.make_read_only(out)  # accidental writes by a run fail; the owner can restore the bits
     manifest = ar_data.verify(out, NODE, FILES)
     ar_data.link_data(node_dir, out)
     print(json.dumps({"node": NODE, "data": str(out), "files": sorted(manifest["files"])}))
