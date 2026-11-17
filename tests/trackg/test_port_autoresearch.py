@@ -85,7 +85,7 @@ def test_budget_closure_counts_refuses_and_guards_validation():
     def loader(tokenizer, B, T, split, *a, **k):
         calls.append(split)
         return iter([("x", "y")] * 10)
-    make, served, open_validation = ar_budget.budgeted(loader, 3 * 2 * 4)
+    make, served, violations, open_validation = ar_budget.budgeted(loader, 3 * 2 * 4)
     it = make(None, 2, 4, "train")
     for _ in range(3):
         next(it)
@@ -95,6 +95,7 @@ def test_budget_closure_counts_refuses_and_guards_validation():
     with pytest.raises(ar_budget.ValidationRequested):
         make(None, 2, 4, "val")
     assert "val" not in calls                    # refused before the real loader is built
+    assert violations() == ["budget", "validation"]  # recorded even if train.py catches the exceptions
     open_validation()
     assert next(make(None, 2, 4, "val")) == ("x", "y")
     assert not hasattr(ar_budget, "_served")     # no writable module counter
@@ -126,6 +127,35 @@ PROBES = {   # train.py stand-ins (budget 2 x 256 tokens) and the exit the wrapp
     "validation": (PROBE_HEAD + "make_dataloader(tokenizer, 1, MAX_SEQ_LEN, 'val')\n", 8, "validation split"),
     "forged_exit": (PROBE_HEAD + "next(loader); next(loader)\nprint('AR_METRIC val_bpb=0.1')\n"
                     "import sys; sys.exit(0)\n", 4, "SystemExit"),
+    "caught_validation": (PROBE_HEAD + "try:\n    make_dataloader(tokenizer, 1, MAX_SEQ_LEN, 'val')\n"
+                          "except BaseException:\n    pass\nnext(loader); next(loader)\n", 8, "caught the refusal"),
+}
+
+MODEL_HEAD = PROBE_HEAD + """next(loader); next(loader)
+import torch
+class M(torch.nn.Module):
+    def __init__(self, vocab):
+        super().__init__()
+        self.e = torch.nn.Embedding(vocab, vocab)
+    def forward(self, x, targets=None, reduction="mean"):
+        logits = self.e(SHIFT(x)).float()
+        if targets is None:
+            return logits
+        return torch.zeros_like(targets, dtype=torch.float32)   # an edited loss: zero (the metric must ignore it)
+model = M(tokenizer.get_vocab_size())
+"""
+EVALUATED = {   # train.py stand-ins that use the whole budget and leave a model; (exit, check of stdout)
+    "causal_with_forgeries": (MODEL_HEAD.replace("SHIFT(x)", "x") + """import atexit, sys
+atexit.register(lambda: print("AR_METRIC val_bpb=0.1", flush=True))   # a line after the wrapper's
+real = sys.stdout
+class Filter:
+    def write(self, text):
+        return real.write(text.replace("AR_METRIC val_bpb=", "AR_METRIC val_bpb=0.0001 # "))
+    def flush(self):
+        real.flush()
+sys.stdout = Filter()                                                  # a rewrite of the wrapper's line
+""", 0, None),
+    "peeks_at_the_next_token": (MODEL_HEAD.replace("SHIFT(x)", "torch.roll(x, -1, dims=1)"), 9, "not causal"),
 }
 
 
@@ -144,6 +174,42 @@ def test_wrapper_budget_exits(tmp_path, monkeypatch, probe):
     assert res.returncode == want, (res.returncode, res.stdout[-2000:], res.stderr[-2000:])
     assert message in res.stdout
     assert "AR_TOKENS consumed" not in res.stdout
+
+
+@pytest.mark.parametrize("probe", sorted(EVALUATED))
+def test_wrapper_metric_is_frozen(tmp_path, monkeypatch, probe):
+    """Review round 2, findings 1 and 3: the metric's cross-entropy is computed by the wrapper from the logits (an
+    edited zero loss does not reach it), a model that reads the next token is refused (exit 9), and the wrapper's
+    result line can be neither rewritten through sys.stdout nor followed by an atexit line."""
+    if not ps.have("torch", "pyarrow", "tiktoken", "rustbpe"):
+        pytest.skip("needs torch, pyarrow, tiktoken and rustbpe in the test interpreter")
+    work = _prepare_smoke_copy(tmp_path, monkeypatch)
+    code, want, message = EVALUATED[probe]
+    (work / "train.py").write_text(code)
+    env = dict(os.environ, AR_TRAIN_SEED="8001", AR_SPLIT_SEED="8001")
+    res = subprocess.run([sys.executable, "run_fixed_budget.py", "--tokens", "512"], cwd=work, env=env,
+                         capture_output=True, text=True, timeout=600)
+    assert res.returncode == want, (res.returncode, res.stdout[-2000:], res.stderr[-2000:])
+    metric_lines = [line for line in res.stdout.splitlines() if line.startswith("AR_METRIC")]
+    if message is not None:
+        assert message in res.stdout and not metric_lines
+        return
+    assert len(metric_lines) == 1 and res.stdout.rstrip().splitlines()[-1] == metric_lines[0], res.stdout[-1000:]
+    value = float(metric_lines[0].split("=", 1)[1])
+    assert value > 1.0   # an untrained embedding: far from the forged 0.1 / 0.0001 and from the zero edited loss
+
+
+def test_unlisted_data_file_refused(tmp_path):
+    """Review round 2, finding 2: a file the manifest does not list (a planted shard) stops the run (exit 5)."""
+    ar_data = ps.load_node_module(NODE, "ar_data")
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "shard_00000.parquet").write_bytes(b"a")
+    ar_data.write_manifest(tmp_path, NODE, ["data/shard_00000.parquet"], {"test": True})
+    assert ar_data.verify(tmp_path, NODE, ["data/shard_00000.parquet"])["node"] == NODE
+    (tmp_path / "data" / "shard_00010.parquet").write_bytes(b"planted")
+    with pytest.raises(SystemExit) as stop:
+        ar_data.verify(tmp_path, NODE, ["data/shard_00000.parquet"])
+    assert stop.value.code == ar_data.EXIT_DATA
 
 
 def test_synthetic_smoke(tmp_path, monkeypatch):

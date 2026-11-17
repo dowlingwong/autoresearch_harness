@@ -14,10 +14,33 @@ legal opinion.
 | Code actually ported | the harness's `nodes/autoresearch-macos` (fork https://github.com/miolini/autoresearch-macos), imported at harness commit `fb405e1` and changed at `d075bb3` (the platform check, and an `AUTORESEARCH_CACHE_DIR` override of the cache directory in `prepare.py`, which the port relies on), read at `717ad835`; so the frozen `prepare.py` is the harness's modified copy, not the fork's file. No fork commit sha was recorded at import. The fork's README carries the same `## License: MIT` statement; neither upstream nor the fork has a LICENSE file or a copyright line. The fork is not covered by U1. |
 | Attribution | "autoresearch by Andrej Karpathy (MIT, as declared in its README), via the miolini/autoresearch-macos fork" |
 
-The MIT terms as named by the README (no upstream licence file, and no copyright holder named): permission
-is granted, free of charge, to use, copy, modify, merge, publish, distribute, sublicense and sell copies,
-provided the copyright notice and this permission notice are included in all copies or substantial portions;
-the software is provided "as is", without warranty of any kind.
+The licence text, copied here as U1 §2 recommends: the standard MIT licence (https://opensource.org/license/mit),
+which the README names. Upstream ships no licence file and names no copyright holder; the bracketed line below
+says so instead of inventing one.
+
+```
+MIT License
+
+Copyright (c) [no copyright holder named upstream; the README credits Andrej Karpathy]
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
 
 ## Baseline differences from upstream karpathy/autoresearch (`228791fb`)
 
@@ -28,6 +51,10 @@ The fork, and so this baseline, differs from upstream's `train.py` and environme
   the loss pattern or a non-finite `val_bpb`);
 - attention through PyTorch SDPA with an explicit mask instead of Flash-Attention-3 kernels;
 - torch 2.6.0 (`requirements.txt`) instead of upstream's torch 2.9.1 / cu128.
+- smaller code differences that should not change results on CUDA: device selection (the fork also accepts MPS
+  and CPU; upstream is CUDA-only); `torch.compile` is applied to the fused optimizer steps when the optimizer is
+  built rather than by decorator, and the model is compiled only on CUDA (upstream always compiles it), which can
+  change speed, not results; scalar casts of the optimizer's hyperparameters.
 
 Upstream's README recommends exactly this kind of reduction (smaller depth, "L" windows, smaller batches) for
 small compute. The fork was chosen because upstream loads its Flash-Attention-3 kernels from the Hugging Face

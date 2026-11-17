@@ -9,8 +9,8 @@ prepare.py on those shards).  Then it hashes every file into the data manifest
 and links --out into the node as ``data``.  The dataset revision must be the
 one the U1 audit observed (prefix ``915333b``) unless ``--accept-revision``
 names another the author has accepted; the shards are downloaded from that
-exact revision (``prepare.BASE_URL`` is pointed at it; prepare.py itself is
-unchanged).  Data are never redistributed: they stay outside the node.
+exact revision (``prepare.BASE_URL`` is pointed at it and the download workers
+are forked so they inherit it; prepare.py itself is unchanged).  Data are never redistributed: they stay outside the node.
 
     python3 prepare_data.py --out "$AR_TRACKG_DATA_ROOT/autoresearch_fixedtokens"
 
@@ -65,7 +65,11 @@ def main() -> None:
         if not revision.startswith(expected):
             raise SystemExit(f"{DATASET} is at revision {revision}, not the reviewed {expected}; "
                              "nothing downloaded (the author may accept it with --accept-revision)")
-        # prepare.py downloads from .../resolve/main; pin the download to the checked revision.
+        # prepare.py downloads from .../resolve/main; pin the download to the checked revision.  Its download
+        # workers are a multiprocessing Pool: under "spawn"/"forkserver" they would re-import prepare and use
+        # its own BASE_URL, so the workers are forked (they inherit the pinned BASE_URL).
+        import multiprocessing
+        multiprocessing.set_start_method("fork", force=True)
         prepare.BASE_URL = f"https://huggingface.co/datasets/{DATASET}/resolve/{revision}"
         prepare.download_data(NUM_SHARDS)
         present = sorted(p.name for p in (out / "data").glob("*.parquet"))
@@ -75,8 +79,12 @@ def main() -> None:
             raise SystemExit(f"download incomplete or unexpected (missing {missing}, extra {extra}); no manifest "
                              "written: move this --out aside and run again into a new one")
         prepare.train_tokenizer()
+        leftovers = sorted(str(p.relative_to(out)) for p in out.rglob("*.tmp"))
+        if leftovers:
+            raise SystemExit(f"temporary download files remain ({leftovers[:3]}); no manifest written: move this "
+                             "--out aside and run again into a new one")
         files = sorted(str(p.relative_to(out)) for sub in ("data", "tokenizer")
-                       for p in (out / sub).rglob("*") if p.is_file() and not p.name.endswith(".tmp"))
+                       for p in (out / sub).rglob("*") if p.is_file())
         source = {"preparation": "prepare.download_data(10) + prepare.train_tokenizer()",
                   "dataset": DATASET, "revision": revision, "base_url": prepare.BASE_URL, "num_shards": NUM_SHARDS, "val_shard": prepare.VAL_FILENAME,
                   "vocab_size": prepare.VOCAB_SIZE}

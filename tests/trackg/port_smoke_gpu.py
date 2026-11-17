@@ -24,6 +24,7 @@ from pathlib import Path
 from . import port_support as ps
 
 SUITE_MODULES = ("test_port_mlagentbench", "test_port_mlgym", "test_port_autoresearch")
+CPU_ONLY_NODES = frozenset({"mlgym_houseprice"})  # the only port node that runs without a GPU
 
 
 def smoke_entry(node: str) -> dict:
@@ -49,12 +50,14 @@ def cpu_list(text: str) -> tuple[int, ...]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--node", required=True)
-    parser.add_argument("--gpu-uuid", default=None, help="GPU-... or MIG-...; omit only for a CPU-only node")
+    parser.add_argument("--gpu-uuid", default=None, help="GPU-... or MIG-...; required except for a CPU-only node")
     parser.add_argument("--cpus", required=True, help="CPU list, e.g. 0-7 or 0,2,4")
     parser.add_argument("--memory-limit", required=True, help="what enforces the memory cap (recorded)")
     parser.add_argument("--runs-root", required=True, type=Path)
     parser.add_argument("--provisional-timeout", type=float, default=1800.0)
     args = parser.parse_args(argv)
+    if not args.gpu_uuid and args.node not in CPU_ONLY_NODES:
+        parser.error(f"--gpu-uuid is required for {args.node} (a smoke without a GPU would run on the CPU)")
     entry = smoke_entry(args.node)
     work = ps.node_dir(args.node)
     if not (work / "data").is_symlink() and entry.get("make") is not None:

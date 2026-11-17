@@ -15,7 +15,9 @@ train.py runs.  That factory
 Both exceptions are BaseExceptions, so ``except Exception`` in edited code does
 not hide them, and the wrapper turns each into its own non-zero exit.  The
 token counter lives in a closure, not in a module global that train.py could
-assign; the wrapper keeps the ``served`` and ``open_validation`` callables.
+assign; the wrapper keeps the ``served``, ``violations`` and ``open_validation``
+callables.  Each refusal is also recorded before it is raised, so a train.py
+that catches the BaseException still fails the run (``violations``).
 ``TRAIN_TOKENS`` is informational (train.py reads it to plan its steps).
 """
 
@@ -32,12 +34,13 @@ class ValidationRequested(BaseException):
 
 
 def budgeted(make_dataloader, tokens: int):
-    """(make, served, open_validation): the budgeted loader factory and its two controls."""
-    state = {"served": 0, "validation_open": False}
+    """(make, served, violations, open_validation): the budgeted loader factory and its controls."""
+    state = {"served": 0, "validation_open": False, "violations": []}
 
     def make(tokenizer, B, T, split, *args, **kwargs):
         if split != "train":
             if not state["validation_open"]:
+                state["violations"].append("validation")
                 raise ValidationRequested(f"split {split!r} requested while train.py runs")
             return make_dataloader(tokenizer, B, T, split, *args, **kwargs)
         loader = make_dataloader(tokenizer, B, T, split, *args, **kwargs)
@@ -45,6 +48,7 @@ def budgeted(make_dataloader, tokens: int):
         def train_batches():
             for batch in loader:
                 if state["served"] + B * T > tokens:
+                    state["violations"].append("budget")
                     raise BudgetExhausted(f"batch of {B * T} tokens requested after {state['served']} of {tokens}")
                 state["served"] += B * T
                 yield batch
@@ -54,7 +58,10 @@ def budgeted(make_dataloader, tokens: int):
     def served() -> int:
         return state["served"]
 
+    def violations() -> list:
+        return list(state["violations"])
+
     def open_validation() -> None:
         state["validation_open"] = True
 
-    return make, served, open_validation
+    return make, served, violations, open_validation
