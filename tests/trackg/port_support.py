@@ -149,7 +149,17 @@ def check_static(node: str, port_nodes: list[str]) -> None:
     if spec.selection.test_scored:
         assert re.search(r'emit\(f"AR_TEST ' + re.escape(spec.selection.test_metric_name) + "=", wrapper)
     assert not re.search(r'print\(f?"AR_(METRIC|TEST|STEPS|TOKENS) ', wrapper), "result lines must go through emit"
-    assert "finish()" in wrapper
+    assert re.search(r'\nif __name__ == "__main__":\n    main\(\)\n    (ar_data\.)?finish\(\)', wrapper), \
+        "the wrapper must end the process with finish() right after main()"
+    # The output is sealed (descriptors 1 and 2 to /dev/null) right before the first AR_METRIC line, and from there
+    # to the end of main() only result lines follow: no editable code runs after it.
+    head = wrapper[:wrapper.rindex("\n", 0, wrapper.index('emit(f"AR_METRIC'))].rstrip().splitlines()
+    assert head and head[-1].strip().startswith(("ar_data.seal()", "seal()")), "seal() must precede the AR_METRIC line"
+    tail = wrapper[wrapper.index('emit(f"AR_METRIC'):wrapper.index('\nif __name__ == "__main__":')]
+    for line in tail.splitlines()[1:]:
+        text = line.strip()
+        assert not text or text.startswith(("ar_data.emit(", "emit(", "ar_data.finish()", "finish()", "#")), \
+            f"code after the first AR_METRIC line: {text!r}"
     for rel in spec.editable_paths:
         text = (base / rel).read_text()
         for prefix in METRIC_PREFIXES + ("AR_STEPS", "AR_TOKENS"):

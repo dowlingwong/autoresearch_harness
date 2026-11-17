@@ -25,19 +25,31 @@ per byte on the pinned validation shard, as ``prepare.evaluate_bpb`` defines it
 (``EVAL_TOKENS`` tokens in rows of ``MAX_SEQ_LEN``, special tokens of byte length
 0 excluded), but the per-token cross-entropy is computed here from the model's
 logits (``model(x)``, shape (B, T, vocab)), so an edited loss cannot change it.
-Before that, a causality probe compares the model's logits on validation rows
-with its logits on the same rows whose suffix after a cut position was replaced:
-the logits before the cut must not change (exit 9 otherwise; tolerance
-``CAUSAL_ATOL``), so a model that reads later tokens (the targets) is refused.
+The tokenizer is the frozen one (``prepare.Tokenizer.from_directory()``), not an
+object train.py left behind; ``torch.nn.functional.cross_entropy`` is bound before
+train.py runs; prepare's module attributes are restored to their state before
+train.py ran (undoing patches such as a changed ``VAL_FILENAME`` or a reload); the
+data are checked again after train.py returns (a run that changed them fails itself,
+with ``AR_ERROR train.py changed the data:``).  Before the sum, a causality probe
+compares the model's logits on validation rows with its logits on the same rows
+whose suffix after a cut position was replaced: the logits before the cut must not
+change (exit 9 otherwise; tolerance ``CAUSAL_ATOL``; equal infinities count as
+equal), so a model that reads later tokens (the targets) is refused; the largest
+change is printed as ``AR_INFO causal_probe_max_change=`` for the census.  The
+model's parameters and buffers must be unchanged by the evaluation (exit 10), so
+a model that updates itself in ``forward`` cannot train on the validation shard.
 
 Output: the result lines (``AR_TOKENS``, ``AR_METRIC``) go to a copy of the
-standard output descriptor taken before train.py runs, and the run ends with
+standard output descriptor taken before train.py runs; just before the metric the
+process's descriptors 1 and 2 are pointed at /dev/null (ar_data.seal), so threads
+train.py started cannot print into the log any more; and the run ends with
 ``os._exit(0)`` right after the metric (ar_data.emit / finish), so train.py
-cannot rewrite them through ``sys.stdout`` or add lines from an ``atexit``
+cannot rewrite the lines through ``sys.stdout`` or add lines from an ``atexit``
 handler.  Known in-process limits (the editable code runs in this process): it
 can print a forged ``AR_METRIC`` line and end the process itself (``os._exit``)
-before the wrapper prints, patch the wrapper's or prepare's functions at run
-time, introspect the budget closure, read the parquet files directly (including
+before the wrapper prints, write to the saved descriptor itself, patch the
+wrapper's, ar_data's or torch's functions at run time (prepare's attributes are
+restored before the evaluation), introspect the budget closure, read the parquet files directly (including
 the validation shard), call prepare's internal readers, keep a background thread
 running into the evaluation, or present a model that behaves causally only on
 the probe; the checks above narrow these, they do not close them.  Such code is
@@ -49,12 +61,15 @@ import random
 import runpy
 import sys
 
+import ar_data  # takes the copy of the output descriptor for the result lines, before train.py runs
+
 EXIT_BAD_INVOCATION = 2
 EXIT_BUDGET_NOT_REACHED = 3
 EXIT_BAD_EDITABLE_API = 4
 EXIT_OVER_BUDGET = 7
 EXIT_VALIDATION_REQUESTED = 8
 EXIT_NOT_CAUSAL = 9
+EXIT_WEIGHTS_CHANGED = 10
 CAUSAL_ATOL = 0.05  # logits are soft-capped at 15; bf16 noise between two forwards is far below this
 PROBE_CUTS = (0.25, 0.5, 0.75)  # fractions of the row length
 REQUIRED_FILES = ["tokenizer/tokenizer.pkl", "tokenizer/token_bytes.pt", "data/shard_06542.parquet",
@@ -67,32 +82,45 @@ def fail(code: int, message: str) -> None:
     sys.exit(code)
 
 
-def causality_probe(model, x, torch):
-    """Logits before each cut must not depend on the tokens after it."""
+def causality_probe(model, x, torch) -> float:
+    """Logits before each cut must not depend on the tokens after it; returns the largest change seen."""
     T = x.shape[1]
+    worst = 0.0
     with torch.no_grad():
         base = model(x)
         if not torch.is_tensor(base) or base.ndim != 3 or base.shape[:2] != x.shape:
             fail(EXIT_BAD_EDITABLE_API, "model(x) must return logits of shape (B, T, vocab)")
-        if not torch.isfinite(base.float()).all():
-            return  # a non-finite metric follows; nothing to compare
+        base = base.float()
+        if torch.isnan(base).any():
+            return float("nan")  # a non-finite metric follows; nothing to compare
         for frac in PROBE_CUTS:
             cut = max(1, int(T * frac))
             altered = x.clone()
             altered[:, cut:] = torch.roll(x, shifts=1, dims=0)[:, cut:]
             if torch.equal(altered, x):
                 altered[:, cut:] = (x[:, cut:] + 1) % base.shape[-1]
-            diff = (model(altered).float()[:, :cut] - base.float()[:, :cut]).abs().max().item()
+            after = model(altered).float()[:, :cut]
+            before = base[:, :cut]
+            change = torch.where(after == before, torch.zeros_like(before), (after - before).abs())  # inf == inf: 0
+            diff = change.nan_to_num(nan=float("inf")).max().item()
+            worst = max(worst, diff)
             if not diff <= CAUSAL_ATOL:
                 fail(EXIT_NOT_CAUSAL, f"logits before position {cut} changed by {diff:.4g} when later tokens "
                                       f"changed (tolerance {CAUSAL_ATOL}): the model is not causal")
+    return worst
 
 
-def frozen_bpb(model, tokenizer, batch_size, make_dataloader, get_token_bytes, max_seq_len, eval_tokens, torch):
+def weights_fingerprint(model, torch) -> list:
+    """Per tensor (sum, sum of squares) of the model's parameters and buffers, to detect changes during evaluation."""
+    with torch.no_grad():
+        return [(name, float(t.double().sum()).hex(), float(t.double().square().sum()).hex())  # hex: nan == nan
+                for name, t in model.state_dict().items() if torch.is_tensor(t)]
+
+
+def frozen_bpb(model, tokenizer, batch_size, make_dataloader, get_token_bytes, max_seq_len, eval_tokens, torch,
+               cross_entropy):
     """prepare.evaluate_bpb with the cross-entropy computed here from the model's logits."""
     import math
-
-    import torch.nn.functional as F
 
     device = next(model.parameters()).device
     token_bytes = get_token_bytes(device=device)
@@ -103,11 +131,12 @@ def frozen_bpb(model, tokenizer, batch_size, make_dataloader, get_token_bytes, m
         for index in range(steps):
             x, y, _ = next(val_loader)
             if index == 0:
-                causality_probe(model, x, torch)  # the evaluation batch shape: no recompilation
+                worst = causality_probe(model, x, torch)  # the evaluation batch shape: no recompilation
+                print(f"AR_INFO causal_probe_max_change={worst:.3g} (tolerance {CAUSAL_ATOL})", flush=True)
             logits = model(x)
             if not torch.is_tensor(logits) or logits.ndim != 3 or logits.shape[:2] != x.shape:
                 fail(EXIT_BAD_EDITABLE_API, "model(x) must return logits of shape (B, T, vocab)")
-            nats = F.cross_entropy(logits.float().reshape(-1, logits.shape[-1]), y.reshape(-1), reduction="none")
+            nats = cross_entropy(logits.float().reshape(-1, logits.shape[-1]), y.reshape(-1), reduction="none")
             nbytes = token_bytes[y.reshape(-1)]
             total_nats += (nats * (nbytes > 0)).sum().item()
             total_bytes += nbytes.sum().item()
@@ -131,8 +160,6 @@ def main() -> None:
     print(f"AR_SEEDS train={train_seed}{'' if raw_train is not None else ' (default, autoresearch seed)'} "
           f"split={os.environ.get('AR_SPLIT_SEED')} (no effect: fixed validation shard)", flush=True)
 
-    import ar_data
-
     data_dir = ar_data.data_dir_of(__file__)
     ar_data.verify(data_dir, NODE, REQUIRED_FILES)
     os.environ["AUTORESEARCH_CACHE_DIR"] = str(data_dir.resolve())
@@ -151,11 +178,14 @@ def main() -> None:
     import ar_budget
     import prepare
 
+    from torch.nn.functional import cross_entropy  # bound before train.py runs
+
     # Bound before train.py runs, so later patches of prepare's attributes do not reach the evaluation.
     get_token_bytes, max_seq_len, eval_tokens = prepare.get_token_bytes, prepare.MAX_SEQ_LEN, prepare.EVAL_TOKENS
     ar_budget.TRAIN_TOKENS = budget  # read by train.py; the budget itself is enforced by the closure below
     make, served, violations, open_validation = ar_budget.budgeted(prepare.make_dataloader, budget)
     prepare.make_dataloader = make
+    prepare_snapshot = dict(vars(prepare))  # restored before the evaluation (undoes patches and reload)
     try:
         namespace = runpy.run_path("train.py", run_name="__main__")  # the editable training script
     except ar_budget.BudgetExhausted as exc:
@@ -171,23 +201,36 @@ def main() -> None:
     if served() != budget:
         fail(EXIT_BUDGET_NOT_REACHED, f"train.py used {served()} of {budget} training tokens")
     ar_data.emit(f"AR_TOKENS consumed={served()}")
+    # The data are checked again: a run that changed them fails itself, not the runs after it.
+    ar_data.verify(data_dir, NODE, REQUIRED_FILES, prefix="AR_ERROR train.py changed the data:")
+    for key in [k for k in vars(prepare) if k not in prepare_snapshot]:
+        delattr(prepare, key)
+    for key, value in prepare_snapshot.items():
+        setattr(prepare, key, value)
     open_validation()
 
-    model, tokenizer = namespace.get("model"), namespace.get("tokenizer")
-    if not isinstance(model, torch.nn.Module) or tokenizer is None:
-        fail(EXIT_BAD_EDITABLE_API, "train.py must leave the trained `model` and the `tokenizer` in its globals")
+    model = namespace.get("model")
+    if not isinstance(model, torch.nn.Module):
+        fail(EXIT_BAD_EDITABLE_API, "train.py must leave the trained `model` in its globals")
+    tokenizer = prepare.Tokenizer.from_directory()  # the frozen tokenizer, not an object train.py left behind
     batch_size = namespace.get("DEVICE_BATCH_SIZE")
     if isinstance(batch_size, bool) or not isinstance(batch_size, int) or not 1 <= batch_size <= 512:
         batch_size = 16
     device_type = next(model.parameters()).device.type
     model.eval()
+    weights_before = weights_fingerprint(model, torch)
     with torch.amp.autocast(device_type=device_type, dtype=torch.bfloat16, enabled=device_type in ("cuda", "cpu")):
-        val_bpb = frozen_bpb(model, tokenizer, batch_size, make, get_token_bytes, max_seq_len, eval_tokens, torch)
+        val_bpb = frozen_bpb(model, tokenizer, batch_size, make, get_token_bytes, max_seq_len, eval_tokens, torch,
+                             cross_entropy)
+    if weights_fingerprint(model, torch) != weights_before:
+        fail(EXIT_WEIGHTS_CHANGED, "the model's weights or buffers changed during the evaluation")
     if torch.cuda.is_available():
         print(f"AR_INFO peak_vram_mb={torch.cuda.max_memory_allocated() / 2**20:.1f}", flush=True)
+    ar_data.seal()  # stdout/stderr to /dev/null: threads of the editable code cannot print now
     ar_data.emit(f"AR_METRIC val_bpb={val_bpb:.6f}")
     ar_data.finish()  # no output of the editable code after the metric
 
 
 if __name__ == "__main__":
     main()
+    ar_data.finish()  # main() already ended the process after the metric; kept for the shared static check

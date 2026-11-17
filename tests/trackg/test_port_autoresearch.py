@@ -156,6 +156,18 @@ class Filter:
 sys.stdout = Filter()                                                  # a rewrite of the wrapper's line
 """, 0, None),
     "peeks_at_the_next_token": (MODEL_HEAD.replace("SHIFT(x)", "torch.roll(x, -1, dims=1)"), 9, "not causal"),
+    "peeks_with_an_infinite_logit": (MODEL_HEAD.replace("SHIFT(x)", "torch.roll(x, -1, dims=1)").replace(
+        "        logits = self.e(", "        logits = self.e(").replace(
+        "        if targets is None:", "        logits = logits.clone(); logits[..., -1] = float('-inf')\n        if targets is None:"),
+        9, "not causal"),
+    "updates_weights_in_forward": (MODEL_HEAD.replace("SHIFT(x)", "x").replace(
+        "        if targets is None:", "        with torch.no_grad():\n            self.e.weight.add_(1e-3)\n        if targets is None:"),
+        10, "weights or buffers changed"),
+    "plants_a_data_file": (MODEL_HEAD.replace("SHIFT(x)", "x") + """import os, pathlib
+d = pathlib.Path("data").resolve() / "data"
+os.chmod(d, 0o755)
+(d / "shard_00010.parquet").write_bytes(b"planted")
+""", 5, "train.py changed the data"),
 }
 
 

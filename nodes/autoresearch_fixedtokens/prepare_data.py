@@ -90,7 +90,7 @@ def main() -> None:
                   "vocab_size": prepare.VOCAB_SIZE}
         digest = ar_data.write_manifest(out, NODE, files, source)
         print(f"wrote {out / ar_data.MANIFEST_NAME} sha256 {digest}")
-        ar_data.make_read_only(out)  # runs cannot change the shared data or leave files in it
+        ar_data.make_read_only(out)  # accidental writes by a run fail; the owner can restore the bits
     manifest = ar_data.verify(out, NODE, REQUIRED_FILES)
     ar_data.link_data(node_dir, out)
     print(json.dumps({"node": NODE, "data": str(out), "files": len(manifest["files"])}))
