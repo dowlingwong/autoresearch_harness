@@ -140,7 +140,7 @@ def main() -> None:
     rows = eval_tokens // max_seq_len
     batch_size = min(EVAL_BATCH_SIZE, rows)
     if rows % batch_size:
-        P.fail(P.EXIT_WORKER, f"EVAL_TOKENS / MAX_SEQ_LEN = {rows} rows is not a multiple of the evaluation batch "
+        P.fail(P.EXIT_BAD_INVOCATION, f"EVAL_TOKENS / MAX_SEQ_LEN = {rows} rows is not a multiple of the evaluation batch "
                               f"size {batch_size}")
     steps = rows // batch_size
     # Kit review round 1, M3: every validation batch is read before the worker starts, so the editable code
