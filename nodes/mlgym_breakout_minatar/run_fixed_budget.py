@@ -75,6 +75,7 @@ def seal() -> None:
     os.dup2(devnull, 1)
     os.dup2(devnull, 2)
     os.close(devnull)
+    os.write(_OUT_FD, b"\n")  # ends any partial line the editable code left, so the result lines start a line
 
 
 def finish() -> None:
@@ -157,7 +158,7 @@ def main() -> None:
     model, params = networks.get_model_ready(rng_list[1], config)
 
     def on_update(total_steps, metrics):
-        print(f"step {total_steps} loss {float(np.asarray(metrics['total_loss'])):.6f}", flush=True)
+        emit(f"step {total_steps} loss {float(np.asarray(metrics['total_loss'])):.6f}")  # not through sys.stdout
 
     _, _, final_params, total_steps = policy.train_ppo(rng_list[0], config, model, params, None,
                                                        on_update=on_update)

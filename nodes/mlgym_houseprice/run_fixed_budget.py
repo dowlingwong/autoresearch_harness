@@ -101,13 +101,15 @@ def main() -> None:
         return pred
 
     pred_tr = predict(x_tr)
-    print(f"step 1 loss {rmse(y_tr, pred_tr) if np.all(np.isfinite(pred_tr)) else float('nan'):.6f}", flush=True)
+    ar_data.emit(f"step 1 loss {rmse(y_tr, pred_tr) if np.all(np.isfinite(pred_tr)) else float('nan'):.6f}")
     ar_data.emit("AR_STEPS completed=1")
     pred_val = predict(x_val)
     val_rmse = rmse(y_val, pred_val) if np.all(np.isfinite(pred_val)) else float("nan")
     print(f"AR_INFO val_r2={r2_score(y_val, pred_val) if np.isfinite(val_rmse) else float('nan'):.6f}", flush=True)
     pred_te = predict(x_te)
     test_rmse = rmse(y_te, pred_te) if np.all(np.isfinite(pred_te)) else float("nan")
+    # The data are checked again: a run whose editable code changed them fails itself, not the runs after it.
+    ar_data.verify(data_dir, NODE, FILES, prefix="AR_ERROR the editable code changed the data:")
     # Both predictions (editable code) run before the first result line; nothing editable runs after it.
     ar_data.seal()  # stdout/stderr to /dev/null: threads of the editable code cannot print now
     ar_data.emit(f"AR_METRIC val_rmse={val_rmse:.6f}")

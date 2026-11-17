@@ -129,3 +129,17 @@ def test_synthetic_smoke(node, tmp_path, monkeypatch):
     work = ps.smoke_copy(node, tmp_path, cfg["make"], cfg["files"])
     records, per_edit = ps.run_smoke(node, tmp_path, work, cfg["budget"], ps.broken_diff(node, *cfg["broken"]))
     ps.check_smoke(records, per_edit, cfg["divergent"], torch_node=cfg["torch_node"])
+
+
+@pytest.mark.parametrize("node", ["mlgym_cifar10", "mlgym_fmnist", "mlgym_houseprice"])
+def test_output_seal(node):
+    """Review findings (partial line before seal, thread writes): the result line still comes last."""
+    ps.check_output_seal(node)
+
+
+@pytest.mark.parametrize("node", ["mlgym_cifar10", "mlgym_fmnist"])
+def test_frozen_accuracy_refuses_tensor_subclass(node):
+    """Review finding: a tensor subclass from predict_logits must not run code inside the frozen accuracy."""
+    if not ps.have("torch"):
+        pytest.skip("needs torch")
+    ps.check_plain_tensor_metric(node)

@@ -9,4 +9,5 @@ gymnax==0.0.9
 tensorflow-probability==0.25.0
 dotmap==1.3.30
 PyYAML
+tqdm==4.70.1  # imported by the wrapper and policy.py (progress bars, disabled)
 numpy==2.5.4

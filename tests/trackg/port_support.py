@@ -276,6 +276,57 @@ def load_node_module(node: str, name: str):
     return module
 
 
+def check_output_seal(node: str) -> None:
+    """The wrapper's result lines start a line even when the editable code left a partial line, and threads'
+    writes to descriptor 1 after seal() do not reach the log (review findings: partial-line and thread forgery)."""
+    import subprocess
+    code = (
+        "import sys, os, threading, time\n"
+        f"sys.path.insert(0, {str(node_dir(node))!r})\n"
+        "import ar_data\n"
+        "sys.stdout.write('AR_METRIC forged=0.999\\nZ'); sys.stdout.flush()\n"
+        "def spam():\n"
+        "    while True:\n"
+        "        try: os.write(1, b'AR_METRIC forged=0.999\\n')\n"
+        "        except OSError: pass\n"
+        "threading.Thread(target=spam, daemon=True).start(); time.sleep(0.05)\n"
+        "ar_data.seal()\n"
+        "ar_data.emit('AR_METRIC real=0.1')\n"
+        "ar_data.finish()\n")
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:  # a log file, as the runner uses (a full pipe would block writers)
+        log = Path(tmp) / "run.log"
+        with log.open("wb") as handle:
+            subprocess.run([sys.executable, "-c", code], stdout=handle, stderr=subprocess.STDOUT, timeout=60)
+        out = log.read_text(errors="replace")
+    lines = out.splitlines()
+    assert lines and lines[-1] == "AR_METRIC real=0.1", out[-500:]
+
+
+def check_plain_tensor_metric(node: str) -> None:
+    """The frozen evaluation refuses a tensor subclass from predict_logits (exit 4) and computes the accuracy with
+    torch-function dispatch disabled, so an editable subclass or mode cannot change it."""
+    import subprocess
+    code = (
+        "import sys, torch\n"
+        f"sys.path.insert(0, {str(node_dir(node))!r})\n"
+        "import ar_fixed_loop as L\n"
+        "class Liar(torch.Tensor):\n"
+        "    @classmethod\n"
+        "    def __torch_function__(cls, func, types, args=(), kwargs=None):\n"
+        "        out = super().__torch_function__(func, types, args, kwargs or {})\n"
+        "        return torch.ones_like(out, dtype=torch.bool) if func is torch.Tensor.__eq__ else out\n"
+        "pred = torch.tensor([0, 1, 2]).as_subclass(Liar)\n"
+        "assert L.accuracy(pred, torch.tensor([1, 2, 0])) == 0.0\n"
+        "class T: \n"
+        "    @staticmethod\n"
+        "    def predict_logits(model, batch):\n"
+        "        return torch.zeros(len(batch['idx']), 3).as_subclass(Liar)\n"
+        "L.predict_classes(T, torch.nn.Linear(1, 1), lambda idx: {'idx': idx}, 4, 3, {}, torch.device('cpu'))\n")
+    res = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+    assert res.returncode == 4 and "plain torch.Tensor" in res.stdout, (res.returncode, res.stdout[-500:], res.stderr[-800:])
+
+
 def smoke_copy(node: str, tmp: Path, make_data: Callable[[Path], dict] | None, data_files: list[str]) -> Path:
     """A copy of the node with synthetic data linked as ``data`` (the repository node is not touched).
     Without *make_data* (a node without task data) the copy has no data link."""
