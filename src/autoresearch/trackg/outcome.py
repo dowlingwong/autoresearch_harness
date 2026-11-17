@@ -182,6 +182,9 @@ def classify_run(
         if any(start < t_end and t_start < end for t_start, t_end in test_spans):
             return RunOutcome.divergent("metric_regex_matches_test_line", line=match.group(0).strip())
     metrics = [m.group(1) for m in metric_matches]
+    if result_text is not None and test_metric_regex and \
+            len(re.findall(test_metric_regex, result_text, re.MULTILINE)) > 1:
+        return RunOutcome.divergent("result_channel_test_metric_lines")
     if len(metrics) > 1:
         reason = "result_channel_metric_lines" if result_text is not None else "multiple_metric_lines"
         return RunOutcome.divergent(reason, count=len(metrics))
@@ -209,6 +212,13 @@ def parse_run_log(log_path: str | Path, process: ProcessExit, spec: Any, *,
     """Classify a run from its log file with the rules of a ``TrackGNodeSpec`` (*result_text*: the result
     channel of an isolated run)."""
     text = Path(log_path).read_text(encoding="utf-8", errors="replace") if Path(log_path).exists() else ""
+    return parse_run_text(text, process, spec, timeout_is_proposal_failure=timeout_is_proposal_failure,
+                          result_text=result_text)
+
+
+def parse_run_text(text: str, process: ProcessExit, spec: Any, *, timeout_is_proposal_failure: bool = False,
+                   result_text: str | None = None) -> RunOutcome:
+    """:func:`parse_run_log` on log text the caller already holds (an isolated run's verified bytes)."""
     patterns = tuple(DEFAULT_INFRASTRUCTURE_LOG_PATTERNS) + tuple(spec.metric.infrastructure_log_patterns)
     budget_steps = spec.run_budget.value if spec.run_budget.kind == "steps" else None
     return classify_run(

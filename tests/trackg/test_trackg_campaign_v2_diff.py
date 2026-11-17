@@ -55,7 +55,7 @@ def test_campaign_keeps_discards_and_records_invalid_and_not_run(tmp_path):
     chat = ScriptedChat([reply(lr("0.1", "0.2"), "lr up"), "not json", reply(lr("0.2", "0.15")),
                          reply(lr("0.2", "0.15")), reply(MODE_CRASH), reply(lr("0.2", "0.2  # same"))])
     entries = run_v2_diff_campaign(spec(), node, tmp_path / "runs", V2DiffManager(chat, "fixture", seed=7),
-                                   LIMITS, 6, enable_v2_diff=True)
+                                   LIMITS, 6, enable_v2_diff=True, unisolated_reason="test fixture (not isolated)")
     assert [e["decision"] for e in entries] == ["baseline", "kept", "invalid_proposal", "discarded",
                                                 "not_run_duplicate", "discarded_divergent", "not_run_inert"]
     assert entries[2]["manager_call"]["parse_error"] and entries[2]["runs"] == []
@@ -76,10 +76,10 @@ def test_measured_timeout_is_a_proposal_failure_and_is_never_rerun(tmp_path):
     """R1-TRACKG-PORT-DECISIONS (4): under a measured timeout, a timeout is the proposal's failure, not rerun."""
     node = make_node(tmp_path)
     fast = ResourceLimits(uncapped_reason="test fixture", measured_run_seconds=0.5, timeout_factor=1.0,
-                          kill_grace_seconds=0.2)
+                          kill_grace_seconds=0.2, isolation_waivers={"timeout_factor": "short test timeout"})
     chat = ScriptedChat([reply(MODE_SLEEP, "sleepy"), reply(MODE_SLEEP, "sleepy again")])
     entries = run_v2_diff_campaign(spec(), node, tmp_path / "runs", V2DiffManager(chat, "m"), fast, 2,
-                                   enable_v2_diff=True)
+                                   enable_v2_diff=True, unisolated_reason="test fixture (not isolated)")
     assert entries[0]["runs"][0]["outcome"]["kind"] == "ok"
     first = entries[1]
     assert [(r["outcome"]["kind"], r["outcome"]["reason"]) for r in first["runs"]] == [("divergent", "timeout")]
@@ -94,7 +94,7 @@ def test_repeated_provisional_timeout_becomes_divergent_after_two_and_is_never_r
                           kill_grace_seconds=0.2)
     chat = ScriptedChat([reply(MODE_SLEEP, "sleepy"), reply(MODE_SLEEP, "sleepy again")])
     entries = run_v2_diff_campaign(spec(), node, tmp_path / "runs", V2DiffManager(chat, "m"), fast, 2,
-                                   enable_v2_diff=True)
+                                   enable_v2_diff=True, unisolated_reason="test fixture (not isolated)")
     assert entries[0]["runs"][0]["outcome"]["kind"] == "ok"            # a real ok baseline under the short timeout
     first = entries[1]
     assert [r["outcome"]["reason"] for r in first["runs"]] == ["timeout", "timeout"]
@@ -126,7 +126,7 @@ def test_other_infrastructure_failures_rerun_and_do_not_count_toward_the_cap(tmp
     infra = RunOutcome.infrastructure_failure("infrastructure_log_pattern", pattern="DUE TO TIME LIMIT")
     _scripted_parse(monkeypatch, {"s001": [infra, infra, infra]})
     entries = run_v2_diff_campaign(spec(), node, tmp_path / "runs", V2DiffManager(ScriptedChat([reply(lr("0.1", "0.3"))]), "m"),
-                                   LIMITS, 1, enable_v2_diff=True, max_infra_reruns=2)
+                                   LIMITS, 1, enable_v2_diff=True, unisolated_reason="test fixture (not isolated)", max_infra_reruns=2)
     step = entries[1]
     assert [r["run_id"] for r in step["runs"]] == ["s001", "s001_r1", "s001_r2"]
     assert all(r["executed"] is True for r in step["runs"])                 # really rerun, not refused
@@ -144,7 +144,7 @@ def test_timeouts_interleaved_with_infra_failures_and_across_steps(tmp_path, mon
     _scripted_parse(monkeypatch, {"s001": [t_out, infra, t_out]})
     entries = run_v2_diff_campaign(spec(), node, tmp_path / "runs",
                                    V2DiffManager(ScriptedChat([reply(lr("0.1", "0.3"))]), "m"), LIMITS, 1,
-                                   enable_v2_diff=True)
+                                   enable_v2_diff=True, unisolated_reason="test fixture (not isolated)")
     step = entries[1]
     assert [r["outcome"]["reason"] for r in step["runs"]] == ["timeout", "killed", "timeout"]
     assert step["final_outcome"]["reason"] == "timeout_repeated" and step["decision"] == "discarded_divergent"
@@ -158,7 +158,7 @@ def test_baseline_failure_is_rerun_then_stops_with_a_ledger_line(tmp_path, monke
     _scripted_parse(monkeypatch, {"s000_baseline": [t_out, t_out]})
     with pytest.raises(V2DiffCampaignError, match="baseline"):
         run_v2_diff_campaign(spec(), node, tmp_path / "runs", V2DiffManager(ScriptedChat([]), "m"), LIMITS, 1,
-                             enable_v2_diff=True)
+                             enable_v2_diff=True, unisolated_reason="test fixture (not isolated)")
     ledger = [json.loads(s) for s in (tmp_path / "runs" / "campaign_ledger.jsonl").read_text().splitlines()]
     assert len(ledger) == 1 and ledger[0]["decision"] == "baseline_failed"
     assert [r["run_id"] for r in ledger[0]["runs"]] == ["s000_baseline", "s000_baseline_r1"]
@@ -170,7 +170,7 @@ def test_baseline_infra_failure_then_ok_is_used(tmp_path, monkeypatch):
     _scripted_parse(monkeypatch, {"s000_baseline": [RunOutcome.infrastructure_failure("killed", signal=9)]})
     entries = run_v2_diff_campaign(spec(), node, tmp_path / "runs",
                                    V2DiffManager(ScriptedChat([reply(lr("0.1", "0.05"))]), "m"), LIMITS, 1,
-                                   enable_v2_diff=True)
+                                   enable_v2_diff=True, unisolated_reason="test fixture (not isolated)")
     assert entries[0]["decision"] == "baseline" and entries[0]["best_after"] == pytest.approx(0.6)
     assert entries[1]["decision"] == "discarded"                            # 0.55 < 0.6: not kept unconditionally
 
@@ -182,7 +182,7 @@ def test_extra_payload_cannot_override_pinned_fields_and_requests_are_recorded(t
     chat = ScriptedChat([reply(lr("0.1", "0.2"))])
     entries = run_v2_diff_campaign(spec(), node, tmp_path / "runs",
                                    V2DiffManager(chat, "fixture", seed=3, extra_payload={"cache_prompt": False}),
-                                   LIMITS, 1, enable_v2_diff=True)
+                                   LIMITS, 1, enable_v2_diff=True, unisolated_reason="test fixture (not isolated)")
     req = entries[1]["manager_call"]["request"]
     assert req["model"] == "fixture" and req["cache_prompt"] is False and req["seed"] == entries[1]["manager_call"]["seed"]
     assert "messages" not in req and entries[1]["manager_call"]["base_seed"] == 3
@@ -197,7 +197,7 @@ def test_transport_stop_is_recorded_in_the_ledger(tmp_path):
     node = make_node(tmp_path)
     with pytest.raises(ManagerTransportStop):
         run_v2_diff_campaign(spec(), node, tmp_path / "runs", V2DiffManager(broken, "m"), LIMITS, 2,
-                             enable_v2_diff=True)
+                             enable_v2_diff=True, unisolated_reason="test fixture (not isolated)")
     ledger = [json.loads(s) for s in (tmp_path / "runs" / "campaign_ledger.jsonl").read_text().splitlines()]
     assert [e["decision"] for e in ledger] == ["baseline", "stop_transport"]
     assert ledger[1]["manager_call"]["prompt_sha256"]
@@ -250,3 +250,30 @@ def test_transport_failure_stops():
         node = make_node(Path(d))
         with pytest.raises(RuntimeError, match="STOP: v2-diff manager transport failed"):
             V2DiffManager(broken, "m").propose(spec(), node, [], 1)
+
+
+MODE_TAMPER = '--- a/train.py\n+++ b/train.py\n@@ -7,1 +7,1 @@\n-MODE = "ok"\n+MODE = "tamper_kit"\n'
+
+
+def test_unisolated_node_needs_a_reason(tmp_path):
+    """R1-HARNESS-ISOLATION: a campaign on a node without an isolation block needs an explicit reason."""
+    node = make_node(tmp_path)
+    with pytest.raises(V2DiffCampaignError, match="not isolated"):
+        run_v2_diff_campaign(spec(), node, tmp_path / "runs", V2DiffManager(ScriptedChat([]), "m"), LIMITS, 1,
+                             enable_v2_diff=True)
+
+
+def test_a_run_that_changes_the_incumbent_stops_the_campaign(tmp_path, monkeypatch):
+    """Review round 1, B1: the frozen files are pinned from the kit at the start; a later working copy that differs
+    (here a non-isolated run wrote into the incumbent's snapshot) is an integrity STOP with a ledger line, not a
+    proposal outcome."""
+    from autoresearch.trackg.runner import IntegrityError
+    node = make_node(tmp_path)
+    # the run writes into the current incumbent: the baseline's code snapshot
+    monkeypatch.setenv("FAKE_KIT", str(tmp_path / "runs" / "s000_baseline" / "code"))
+    chat = ScriptedChat([reply(MODE_TAMPER, "tamper"), reply(lr("0.1", "0.3"), "lr")])
+    with pytest.raises(IntegrityError, match="pin"):
+        run_v2_diff_campaign(spec(), node, tmp_path / "runs", V2DiffManager(chat, "m"), LIMITS, 2,
+                             enable_v2_diff=True, unisolated_reason="test fixture (not isolated)")
+    lines = [json.loads(x) for x in (tmp_path / "runs" / "campaign_ledger.jsonl").read_text().splitlines()]
+    assert lines[-1]["decision"] == "stop_integrity" and "evaluate.py" in lines[-1]["error"]
