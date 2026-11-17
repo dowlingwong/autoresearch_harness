@@ -493,13 +493,16 @@ def test_the_worker_gets_an_allow_listed_environment(tmp_path, monkeypatch):
     """Review round 3, F1: credentials in the runner's environment do not reach the sandboxed worker."""
     monkeypatch.setenv("LLM_API_SECRET", "sk-test")
     monkeypatch.setenv("AR_FAKE_KEEP", "1")
+    monkeypatch.setenv("TOKENIZERS_PARALLELISM", "false")      # kept by name although it contains TOKEN
     for name in ("HF_TOKEN", "TORCH_HUB_TOKEN", "AR_FAKE_API_KEY", "CUDA_FAKE_PASSWORD"):   # review round 4, N1
         monkeypatch.setenv(name, "x")
     result = run(tmp_path, "env_report")
-    line = (result.run_dir / "run.log").read_text().split("env report:")[1].splitlines()[0]
-    assert "LLM_API_SECRET" not in line and "AR_FAKE_KEEP" in line, line
+    names = set((result.run_dir / "run.log").read_text().split("env report:")[1].splitlines()[0].split())
+    line = " ".join(sorted(names))
+    assert "HOME" in names and "PATH" in names, line            # the report lists every name
+    assert "LLM_API_SECRET" not in names and {"AR_FAKE_KEEP", "TOKENIZERS_PARALLELISM"} <= names, line
     for name in ("HF_TOKEN", "TORCH_HUB_TOKEN", "AR_FAKE_API_KEY", "CUDA_FAKE_PASSWORD"):
-        assert name not in line, (name, line)
+        assert name not in names, (name, line)
 
 
 def test_dev_shm_is_private_unless_the_node_opts_out(tmp_path):
