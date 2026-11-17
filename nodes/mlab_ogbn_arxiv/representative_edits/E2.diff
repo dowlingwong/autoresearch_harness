@@ -1,0 +1,11 @@
+--- a/train.py
++++ b/train.py
+@@ -23,7 +23,7 @@
+ HIDDEN = 16
+ NUM_LAYERS = 2
+ DROPOUT = 0.0
+-LEARNING_RATE = 1.0
++LEARNING_RATE = 0.01
+ 
+ 
+ class MLP(torch.nn.Module):

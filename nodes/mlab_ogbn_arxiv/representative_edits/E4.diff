@@ -1,0 +1,51 @@
+--- a/train.py
++++ b/train.py
+@@ -23,7 +23,7 @@
+ HIDDEN = 16
+ NUM_LAYERS = 2
+ DROPOUT = 0.0
+-LEARNING_RATE = 1.0
++LEARNING_RATE = 0.01
+ 
+ 
+ class MLP(torch.nn.Module):
+@@ -45,8 +45,38 @@
+         return torch.log_softmax(self.lins[-1](h), dim=-1)
+ 
+ 
++class SAGE(torch.nn.Module):
++    """Two-layer GraphSAGE (mean aggregation over in- and out-neighbours), full-graph forward."""
++
++    def __init__(self, x, edge_index, num_nodes, in_channels, hidden_channels, out_channels, dropout):
++        super().__init__()
++        self.x = x
++        src, dst = edge_index
++        self.src = torch.cat([src, dst])
++        self.dst = torch.cat([dst, src])
++        deg = torch.zeros(num_nodes, device=x.device).index_add_(0, self.dst, torch.ones_like(self.dst, dtype=x.dtype))
++        self.inv_deg = 1.0 / deg.clamp(min=1).unsqueeze(1)
++        self.self1 = torch.nn.Linear(in_channels, hidden_channels)
++        self.neigh1 = torch.nn.Linear(in_channels, hidden_channels, bias=False)
++        self.self2 = torch.nn.Linear(hidden_channels, out_channels)
++        self.neigh2 = torch.nn.Linear(hidden_channels, out_channels, bias=False)
++        self.bn = torch.nn.BatchNorm1d(hidden_channels)
++        self.dropout = dropout
++
++    def aggregate(self, h):
++        out = torch.zeros_like(h).index_add_(0, self.dst, h[self.src])
++        return out * self.inv_deg
++
++    def forward(self, idx):
++        h = self.self1(self.x) + self.neigh1(self.aggregate(self.x))
++        h = F.dropout(F.relu(self.bn(h)), p=self.dropout, training=self.training)
++        h = self.self2(h) + self.neigh2(self.aggregate(h))
++        return torch.log_softmax(h[idx], dim=-1)
++
++
+ def build_model(info):
+-    model = MLP(info["x"], info["x"].shape[1], HIDDEN, info["num_classes"], NUM_LAYERS, DROPOUT)
++    model = SAGE(info["x"], info["edge_index"], info["num_nodes"], info["x"].shape[1], 128,
++                 info["num_classes"], 0.5)
+     return model.to(info["device"])
+ 
+ 

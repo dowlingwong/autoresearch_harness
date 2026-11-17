@@ -1,0 +1,103 @@
+"""Port kit U3, suite MLAgentBench: nodes mlab_cifar10, mlab_imdb, mlab_ogbn_arxiv.
+
+Static checks always run.  The synthetic smoke needs torch (and transformers
+for mlab_imdb) in the interpreter running the tests; it uses random data of
+the real shapes, never the task data, and a reduced step budget.
+"""
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from . import port_support as ps
+
+NODES = ["mlab_cifar10", "mlab_imdb", "mlab_ogbn_arxiv"]
+
+
+@pytest.mark.parametrize("node", NODES)
+def test_static(node):
+    ps.check_static(node, NODES)
+
+
+@pytest.mark.parametrize("node", NODES)
+def test_manifest_complete(node):
+    ps.check_manifest(node)
+
+
+@pytest.mark.parametrize("node", NODES)
+def test_frozen_path_edit_refused(node):
+    ps.check_scope(node)
+
+
+# --------------------------------------------------------------------------- synthetic data
+
+def cifar_data(d: Path) -> dict:
+    rng = np.random.RandomState(0)
+    np.save(d / "train_x.npy", rng.randint(0, 256, (5400, 32, 32, 3)).astype(np.uint8))
+    np.save(d / "train_y.npy", rng.randint(0, 10, 5400).astype(np.int64))
+    np.save(d / "test_x.npy", rng.randint(0, 256, (300, 32, 32, 3)).astype(np.uint8))
+    np.save(d / "test_y.npy", rng.randint(0, 10, 300).astype(np.int64))
+    return {"shapes": "random uint8 images"}
+
+
+def imdb_data(d: Path) -> dict:
+    from transformers import DistilBertConfig, DistilBertModel
+
+    rng = np.random.RandomState(0)
+    for split, n in (("train", 2600), ("test", 200)):
+        np.save(d / f"{split}_ids.npy", rng.randint(0, 1000, (n, 512)).astype(np.int32))
+        np.save(d / f"{split}_mask.npy", np.ones((n, 512), dtype=np.uint8))
+        np.save(d / f"{split}_y.npy", rng.randint(0, 2, n).astype(np.int64))
+    config = DistilBertConfig(vocab_size=1000, dim=32, n_layers=1, n_heads=2, hidden_dim=64,
+                              max_position_embeddings=512)
+    DistilBertModel(config).save_pretrained(d / "pretrained")
+    return {"shapes": "random token ids; tiny random DistilBERT"}
+
+
+def ogbn_data(d: Path) -> dict:
+    rng = np.random.RandomState(0)
+    n = 2000
+    np.save(d / "x.npy", rng.randn(n, 128).astype(np.float32))
+    np.save(d / "y.npy", rng.randint(0, 40, n).astype(np.int64))
+    np.save(d / "edge_index.npy", rng.randint(0, n, (2, 8000)).astype(np.int64))
+    perm = rng.permutation(n)
+    np.save(d / "train_idx.npy", np.sort(perm[:1200]).astype(np.int64))
+    np.save(d / "valid_idx.npy", np.sort(perm[1200:1600]).astype(np.int64))
+    np.save(d / "test_idx.npy", np.sort(perm[1600:]).astype(np.int64))
+    return {"shapes": "random graph"}
+
+
+SMOKE = {
+    "mlab_cifar10": dict(make=cifar_data, files=["train_x.npy", "train_y.npy", "test_x.npy", "test_y.npy"],
+                         budget=30, modules=("torch",), divergent={"E4"},
+                         broken=('    return F.cross_entropy(logits, batch["y"])\n',
+                                 '    return F.cross_entropy(logits, batch["y"]) * float("nan")\n')),
+    "mlab_imdb": dict(make=imdb_data,
+                      files=["train_ids.npy", "train_mask.npy", "train_y.npy", "test_ids.npy", "test_mask.npy",
+                             "test_y.npy", "pretrained/config.json", "pretrained/model.safetensors"],
+                      budget=6, modules=("torch", "transformers"), divergent=set(),
+                      broken=('    return F.cross_entropy(logits.float(), batch["y"])\n',
+                              '    return F.cross_entropy(logits.float(), batch["y"]) * float("nan")\n')),
+    "mlab_ogbn_arxiv": dict(make=ogbn_data,
+                            files=["x.npy", "y.npy", "edge_index.npy", "train_idx.npy", "valid_idx.npy",
+                                   "test_idx.npy"],
+                            budget=20, modules=("torch",), divergent=set(),
+                            broken=('    return F.nll_loss(model(batch["idx"]), batch["y"])\n',
+                                    '    return F.nll_loss(model(batch["idx"]), batch["y"]) * float("nan")\n')),
+}
+
+
+@pytest.mark.parametrize("node", NODES)
+def test_synthetic_smoke(node, tmp_path, monkeypatch):
+    cfg = SMOKE[node]
+    if not ps.have(*cfg["modules"]):
+        pytest.skip(f"needs {cfg['modules']} in the test interpreter")
+    # The run command calls ``python3``: use the test interpreter's directory first on PATH.
+    monkeypatch.setenv("PATH", os.path.dirname(sys.executable) + os.pathsep + os.environ.get("PATH", ""))
+    work = ps.smoke_copy(node, tmp_path, cfg["make"], cfg["files"])
+    records, per_edit = ps.run_smoke(node, tmp_path, work, cfg["budget"], ps.broken_diff(node, *cfg["broken"]))
+    ps.check_smoke(records, per_edit, cfg["divergent"])

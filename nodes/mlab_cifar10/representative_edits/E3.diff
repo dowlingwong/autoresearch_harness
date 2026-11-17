@@ -1,0 +1,14 @@
+--- a/train.py
++++ b/train.py
+@@ -50,8 +50,9 @@
+ 
+ 
+ def build_optimizer(model, total_steps):
+-    optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM)
+-    return optimizer, None
++    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
++    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps)
++    return optimizer, scheduler
+ 
+ 
+ def training_step(model, batch, step):

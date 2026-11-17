@@ -1,0 +1,188 @@
+"""Frozen fixed-step training loop for Track G torch nodes (trackg_node/v1).
+
+FROZEN: listed in the node's frozen_paths; a diff that touches it is refused.
+The same file is copied byte-identically into every torch node of the port
+(the port tests check this).
+
+The editable ``train.py`` of a node provides
+
+  CONFIG                       dict; ``batch_size`` (int) is required, optional
+                               ``grad_clip`` (float or None) and ``amp_bf16`` (bool)
+  build_model(info)            -> torch.nn.Module (info: dict described by the node wrapper)
+  build_optimizer(model, total_steps)
+                               -> (optimizer, scheduler or None); the scheduler is
+                                  stepped once after every optimizer step
+  training_step(model, batch, step)
+                               -> scalar loss tensor for one batch (dict of tensors)
+  predict_logits(model, batch) -> logits for an evaluation batch (dict without labels)
+
+This module owns everything a diff must not change: the step budget (exactly
+``--steps`` optimizer steps), the seeds, the order of the training batches,
+the loss log the outcome parser reads (``step <n> loss <mean over the last
+LOG_EVERY steps>``), and the metric lines, which the node wrapper prints after
+training returns (``AR_METRIC ...`` for validation, ``AR_TEST ...`` for the
+sealed test metric).
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import random
+import sys
+
+import numpy as np
+import torch
+
+LOG_EVERY = 10
+EVAL_BATCH_SIZE = 1024
+EXIT_BAD_INVOCATION = 2
+EXIT_BUDGET_NOT_REACHED = 3
+EXIT_BAD_EDITABLE_API = 4
+
+
+def fail(code: int, message: str) -> None:
+    print(f"AR_ERROR {message}", flush=True)
+    sys.exit(code)
+
+
+def read_budget(argv: list[str] | None = None) -> int:
+    """The fixed step budget: ``--steps N`` from the run command; it must agree with
+    ``AR_BUDGET_VALUE``/``AR_BUDGET_KIND`` when the runner sets them."""
+    parser = argparse.ArgumentParser(description="Track G fixed-step wrapper")
+    parser.add_argument("--steps", type=int, required=True)
+    args = parser.parse_args(argv)
+    if args.steps < 1:
+        fail(EXIT_BAD_INVOCATION, f"--steps must be positive, got {args.steps}")
+    kind = os.environ.get("AR_BUDGET_KIND")
+    if kind is not None and kind != "steps":
+        fail(EXIT_BAD_INVOCATION, f"AR_BUDGET_KIND={kind!r}, this wrapper runs a step budget")
+    value = os.environ.get("AR_BUDGET_VALUE")
+    if value is not None and int(value) != args.steps:
+        fail(EXIT_BAD_INVOCATION, f"--steps {args.steps} disagrees with AR_BUDGET_VALUE={value}")
+    return args.steps
+
+
+def read_seeds(default_train: int = 0, default_split: int = 0) -> tuple[int, int]:
+    """Training and split seeds from AR_TRAIN_SEED / AR_SPLIT_SEED (the node spec's seed_env)."""
+    raw_train, raw_split = os.environ.get("AR_TRAIN_SEED"), os.environ.get("AR_SPLIT_SEED")
+    train = int(raw_train) if raw_train is not None else default_train
+    split = int(raw_split) if raw_split is not None else default_split
+    print(f"AR_SEEDS train={train}{'' if raw_train is not None else ' (default)'} "
+          f"split={split}{'' if raw_split is not None else ' (default)'}", flush=True)
+    return train, split
+
+
+def seed_everything(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed % (2**32))
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def num_workers() -> int:
+    """The fixed data-loader worker count the runner advertises (AR_NUM_WORKERS).
+    These nodes keep their data in device memory and use no worker processes;
+    the count is read and printed so the run log shows it."""
+    return int(os.environ.get("AR_NUM_WORKERS", "0"))
+
+
+def pick_device() -> torch.device:
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    name = torch.cuda.get_device_name(0) if device.type == "cuda" else "cpu"
+    print(f"AR_DEVICE {device.type} {name} torch={torch.__version__} workers={num_workers()}", flush=True)
+    return device
+
+
+def check_api(train_mod) -> dict:
+    for name in ("build_model", "build_optimizer", "training_step", "predict_logits"):
+        if not callable(getattr(train_mod, name, None)):
+            fail(EXIT_BAD_EDITABLE_API, f"train.py must define {name}()")
+    config = getattr(train_mod, "CONFIG", None)
+    if not isinstance(config, dict):
+        fail(EXIT_BAD_EDITABLE_API, "train.py must define CONFIG as a dict")
+    batch_size = config.get("batch_size")
+    if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1:
+        fail(EXIT_BAD_EDITABLE_API, f"CONFIG['batch_size'] must be a positive int, got {batch_size!r}")
+    return config
+
+
+class FixedStepSampler:
+    """Exactly ``budget`` batches of training indices: epochs of a seeded permutation,
+    the last incomplete batch of each epoch dropped.  The order depends only on the
+    training seed, the number of training items and the batch size."""
+
+    def __init__(self, n_items: int, batch_size: int, budget: int, seed: int, max_batch_size: int):
+        if batch_size > max_batch_size:
+            fail(EXIT_BAD_EDITABLE_API, f"CONFIG['batch_size']={batch_size} exceeds this node's cap {max_batch_size}")
+        if batch_size > n_items:
+            fail(EXIT_BAD_EDITABLE_API, f"CONFIG['batch_size']={batch_size} exceeds the {n_items} training items")
+        self.n_items, self.batch_size, self.budget = n_items, batch_size, budget
+        self.generator = torch.Generator().manual_seed(int(seed))
+        self.served = 0
+
+    def __iter__(self):
+        per_epoch = self.n_items // self.batch_size
+        while self.served < self.budget:
+            order = torch.randperm(self.n_items, generator=self.generator)
+            for k in range(per_epoch):
+                if self.served >= self.budget:
+                    return
+                self.served += 1
+                yield order[k * self.batch_size:(k + 1) * self.batch_size]
+
+
+def train_fixed_steps(train_mod, model, optimizer, scheduler, sampler: FixedStepSampler, make_batch,
+                      config: dict, device: torch.device) -> int:
+    """Run exactly ``sampler.budget`` optimizer steps and print the loss log."""
+    amp = bool(config.get("amp_bf16", False)) and device.type == "cuda"
+    clip = config.get("grad_clip")
+    running = torch.zeros((), dtype=torch.float64, device=device)
+    count = 0
+    step = 0
+    for idx in sampler:
+        step += 1
+        model.train()
+        batch = make_batch(idx.to(device))
+        with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp):
+            loss = train_mod.training_step(model, batch, step)
+        if not torch.is_tensor(loss) or loss.ndim != 0:
+            fail(EXIT_BAD_EDITABLE_API, "training_step must return a scalar tensor")
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        if clip:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), float(clip))
+        optimizer.step()
+        if scheduler is not None:
+            scheduler.step()
+        running += loss.detach().double()
+        count += 1
+        if step % LOG_EVERY == 0 or step == sampler.budget:
+            print(f"step {step} loss {(running / count).item():.6f}", flush=True)
+            running.zero_()
+            count = 0
+    if step != sampler.budget or sampler.served != sampler.budget:
+        fail(EXIT_BUDGET_NOT_REACHED, f"ran {step} of {sampler.budget} steps")
+    print(f"AR_STEPS completed={step}", flush=True)
+    return step
+
+
+@torch.no_grad()
+def predict_classes(train_mod, model, make_eval_batch, n_items: int, n_classes: int, config: dict,
+                    device: torch.device) -> torch.Tensor:
+    """Class predictions for items 0..n_items-1 of an evaluation set, in order."""
+    amp = bool(config.get("amp_bf16", False)) and device.type == "cuda"
+    model.eval()
+    out = []
+    for start in range(0, n_items, EVAL_BATCH_SIZE):
+        idx = torch.arange(start, min(n_items, start + EVAL_BATCH_SIZE), device=device)
+        with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp):
+            logits = train_mod.predict_logits(model, make_eval_batch(idx))
+        if not torch.is_tensor(logits) or tuple(logits.shape) != (len(idx), n_classes):
+            fail(EXIT_BAD_EDITABLE_API, f"predict_logits must return shape ({len(idx)}, {n_classes})")
+        out.append(logits.float().argmax(dim=1))
+    return torch.cat(out)
+
+
+def accuracy(pred: torch.Tensor, labels: torch.Tensor) -> float:
+    return float((pred.to(labels.device) == labels).double().mean().item())

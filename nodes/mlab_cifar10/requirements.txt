@@ -1,0 +1,6 @@
+# Node mlab_cifar10 (frozen). Runs: torch, numpy. Setup only: torchvision.
+# Versions of the port's local CPU check (17 Nov 2026); the Ada/L40S deployment pins its own CUDA build
+# and records the versions in the census and run records.
+torch==2.6.0
+numpy==2.5.4
+torchvision  # setup_command only (download and md5 check of the CIFAR-10 archive)

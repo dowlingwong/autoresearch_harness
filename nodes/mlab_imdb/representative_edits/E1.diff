@@ -1,0 +1,11 @@
+--- a/train.py
++++ b/train.py
+@@ -17,7 +17,7 @@
+     "amp_bf16": True,
+ }
+ MAX_LEN = 256  # the stored reviews have 512 tokens; this baseline uses the first 256
+-LEARNING_RATE = 2e-5
++LEARNING_RATE = 3e-5
+ WEIGHT_DECAY = 0.01
+ 
+ 

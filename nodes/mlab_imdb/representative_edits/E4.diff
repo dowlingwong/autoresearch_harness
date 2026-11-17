@@ -1,0 +1,16 @@
+--- a/train.py
++++ b/train.py
+@@ -12,11 +12,11 @@
+ import torch.nn.functional as F
+ 
+ CONFIG = {
+-    "batch_size": 16,
++    "batch_size": 32,
+     "grad_clip": 1.0,
+     "amp_bf16": True,
+ }
+-MAX_LEN = 256  # the stored reviews have 512 tokens; this baseline uses the first 256
++MAX_LEN = 128  # the stored reviews have 512 tokens; this edit uses the first 128
+ LEARNING_RATE = 2e-5
+ WEIGHT_DECAY = 0.01
+ 

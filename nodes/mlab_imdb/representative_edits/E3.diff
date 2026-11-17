@@ -1,0 +1,13 @@
+--- a/train.py
++++ b/train.py
+@@ -36,8 +36,9 @@
+         {"params": [p for n, p in model.named_parameters() if n.endswith(no_decay)], "weight_decay": 0.0},
+     ]
+     optimizer = torch.optim.AdamW(groups, lr=LEARNING_RATE)
++    warmup = max(1, total_steps // 10)
+     scheduler = torch.optim.lr_scheduler.LambdaLR(
+-        optimizer, lambda step: max(0.0, 1.0 - step / total_steps))
++        optimizer, lambda step: min((step + 1) / warmup, max(0.0, (total_steps - step) / (total_steps - warmup))))
+     return optimizer, scheduler
+ 
+ 

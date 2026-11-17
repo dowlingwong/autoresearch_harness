@@ -1,0 +1,11 @@
+--- a/train.py
++++ b/train.py
+@@ -16,7 +16,7 @@
+     "grad_clip": None,
+     "amp_bf16": False,
+ }
+-LEARNING_RATE = 0.1
++LEARNING_RATE = 0.05
+ MOMENTUM = 0.9
+ 
+ 
