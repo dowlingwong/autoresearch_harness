@@ -340,6 +340,16 @@ def check_plain_tensor_metric(node: str) -> None:
         "L.accuracy(torch.tensor([0, 1]), torch.tensor([0, 1]))\n")
     res = subprocess.run([sys.executable, "-c", mode], capture_output=True, text=True, timeout=120)
     assert res.returncode == 4 and "dispatch mode is active" in res.stdout, (res.returncode, res.stdout[-500:])
+    # An ordinary edit may leave a torch-function mode active (set_default_device): not refused, result unchanged.
+    device = (
+        "import sys, torch\n"
+        f"sys.path.insert(0, {str(node_dir(node))!r})\n"
+        "import ar_fixed_loop as L\n"
+        "torch.set_default_device('cpu')\n"
+        "assert torch._C._len_torch_function_stack() == 1\n"
+        "print('ACC', L.accuracy(torch.tensor([0, 1, 2]), torch.tensor([0, 1, 0])))\n")
+    res = subprocess.run([sys.executable, "-c", device], capture_output=True, text=True, timeout=120)
+    assert res.returncode == 0 and "ACC 0.666" in res.stdout, (res.returncode, res.stdout[-500:], res.stderr[-800:])
 
 
 def smoke_copy(node: str, tmp: Path, make_data: Callable[[Path], dict] | None, data_files: list[str]) -> Path:

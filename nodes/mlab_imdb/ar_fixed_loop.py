@@ -195,10 +195,12 @@ def train_fixed_steps(train_mod, model, optimizer, scheduler, sampler: FixedStep
 
 
 def no_active_modes() -> None:
-    """Refuse a torch-function or torch-dispatch mode the editable code left active: DisableTorchFunction does not
-    reach dispatch modes, which could rewrite the frozen arithmetic below (both stacks are empty in a clean run)."""
-    if torch._C._len_torch_dispatch_stack() or torch._C._len_torch_function_stack():
-        fail(EXIT_BAD_EDITABLE_API, "a torch function or dispatch mode is active during the frozen evaluation")
+    """Refuse a torch-dispatch mode the editable code left active: DisableTorchFunction (used around the frozen
+    arithmetic below) does not reach dispatch modes, which could rewrite it; the dispatch stack is empty in a clean
+    run.  Torch-function modes are not refused: DisableTorchFunction already keeps them out of the frozen
+    arithmetic, and an ordinary edit can leave one active (``torch.set_default_device`` pushes a DeviceContext)."""
+    if torch._C._len_torch_dispatch_stack():
+        fail(EXIT_BAD_EDITABLE_API, "a torch dispatch mode is active during the frozen evaluation")
 
 
 @torch.no_grad()
@@ -223,8 +225,8 @@ def predict_classes(train_mod, model, make_eval_batch, n_items: int, n_classes: 
 
 
 def accuracy(pred: torch.Tensor, labels: torch.Tensor) -> float:
-    """Frozen accuracy, computed with torch-function dispatch disabled and no mode active (no editable subclass or
-    mode code); a patch of torch itself (e.g. ``torch.Tensor.__eq__``) is not detected."""
+    """Frozen accuracy, computed with torch-function dispatch disabled and no dispatch mode active (no editable
+    subclass or mode code); a patch of torch itself (e.g. ``torch.Tensor.__eq__``) is not detected."""
     no_active_modes()
     with torch._C.DisableTorchFunction():
         return float((pred.to(labels.device) == labels).double().mean().item())
