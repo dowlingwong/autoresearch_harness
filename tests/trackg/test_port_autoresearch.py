@@ -163,6 +163,14 @@ sys.stdout = Filter()                                                  # a rewri
     "updates_weights_in_forward": (MODEL_HEAD.replace("SHIFT(x)", "x").replace(
         "        if targets is None:", "        with torch.no_grad():\n            self.e.weight.add_(1e-3)\n        if targets is None:"),
         10, "weights or buffers changed"),
+    "returns_a_tensor_subclass": (MODEL_HEAD.replace("SHIFT(x)", "x").replace(
+        "model = M(tokenizer.get_vocab_size())", """class Liar(torch.Tensor):
+    @classmethod
+    def __torch_function__(cls, func, types, args=(), kwargs=None):
+        return super().__torch_function__(func, types, args, kwargs or {})
+_forward = M.forward
+M.forward = lambda self, x, targets=None, reduction="mean": _forward(self, x, targets, reduction).as_subclass(Liar)
+model = M(tokenizer.get_vocab_size())"""), 4, "plain torch.Tensor"),
     "plants_a_data_file": (MODEL_HEAD.replace("SHIFT(x)", "x") + """import os, pathlib
 d = pathlib.Path("data").resolve() / "data"
 os.chmod(d, 0o755)
@@ -252,3 +260,9 @@ def test_prepare_data_requires_the_exact_shard_set_and_a_data_root(tmp_path, mon
         prepare_data.main()
     run = ps.load_node_module(NODE, "run_fixed_budget")
     assert sorted(run.REQUIRED_FILES) == sorted(prepare_data.REQUIRED_FILES)
+
+
+@pytest.mark.parametrize("node", [NODE])
+def test_output_seal(node):
+    """Review findings (partial line before seal, thread writes): the result line still comes last."""
+    ps.check_output_seal(node)

@@ -77,6 +77,7 @@ def seal() -> None:
     os.dup2(devnull, 1)
     os.dup2(devnull, 2)
     os.close(devnull)
+    os.write(_OUT_FD, b"\n")  # ends any partial line the editable code left, so the result lines start a line
 
 
 def finish() -> None:

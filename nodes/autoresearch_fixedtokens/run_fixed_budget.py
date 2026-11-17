@@ -38,6 +38,12 @@ equal), so a model that reads later tokens (the targets) is refused; the largest
 change is printed as ``AR_INFO causal_probe_max_change=`` for the census.  The
 model's parameters and buffers must be unchanged by the evaluation (exit 10), so
 a model that updates itself in ``forward`` cannot train on the validation shard.
+``model(x)`` must return a plain ``torch.Tensor`` (a subclass is refused, exit 4)
+and the frozen arithmetic runs with torch-function dispatch disabled, so no
+editable ``__torch_function__`` subclass or mode runs inside it; eval mode, the
+device and the weight fingerprint use the unbound ``nn.Module`` methods, not the
+model's own; after the evaluation, prepare's attributes and the data are checked
+once more (the model's own code ran during it).
 
 Output: the result lines (``AR_TOKENS``, ``AR_METRIC``) go to a copy of the
 standard output descriptor taken before train.py runs; just before the metric the
@@ -87,22 +93,21 @@ def causality_probe(model, x, torch) -> float:
     T = x.shape[1]
     worst = 0.0
     with torch.no_grad():
-        base = model(x)
-        if not torch.is_tensor(base) or base.ndim != 3 or base.shape[:2] != x.shape:
-            fail(EXIT_BAD_EDITABLE_API, "model(x) must return logits of shape (B, T, vocab)")
-        base = base.float()
-        if torch.isnan(base).any():
-            return float("nan")  # a non-finite metric follows; nothing to compare
+        base = plain_logits(model(x), x, torch)
+        with torch._C.DisableTorchFunction():
+            if torch.isnan(base).any():
+                return float("nan")  # a non-finite metric follows; nothing to compare
         for frac in PROBE_CUTS:
             cut = max(1, int(T * frac))
             altered = x.clone()
             altered[:, cut:] = torch.roll(x, shifts=1, dims=0)[:, cut:]
             if torch.equal(altered, x):
                 altered[:, cut:] = (x[:, cut:] + 1) % base.shape[-1]
-            after = model(altered).float()[:, :cut]
-            before = base[:, :cut]
-            change = torch.where(after == before, torch.zeros_like(before), (after - before).abs())  # inf == inf: 0
-            diff = change.nan_to_num(nan=float("inf")).max().item()
+            after = plain_logits(model(altered), x, torch)
+            with torch._C.DisableTorchFunction():
+                after, before = after[:, :cut], base[:, :cut]
+                change = torch.where(after == before, torch.zeros_like(before), (after - before).abs())  # inf == inf
+                diff = change.nan_to_num(nan=float("inf")).max().item()
             worst = max(worst, diff)
             if not diff <= CAUSAL_ATOL:
                 fail(EXIT_NOT_CAUSAL, f"logits before position {cut} changed by {diff:.4g} when later tokens "
@@ -110,11 +115,23 @@ def causality_probe(model, x, torch) -> float:
     return worst
 
 
+def plain_logits(logits, x, torch):
+    """The model's output as plain float32 logits (B, T, vocab); a tensor subclass is refused, so no editable
+    ``__torch_function__`` runs inside the frozen metric."""
+    if type(logits) is not torch.Tensor or logits.ndim != 3 or tuple(logits.shape[:2]) != tuple(x.shape):
+        fail(EXIT_BAD_EDITABLE_API, "model(x) must return a plain torch.Tensor of logits of shape (B, T, vocab)")
+    with torch._C.DisableTorchFunction():
+        return logits.float()
+
+
 def weights_fingerprint(model, torch) -> list:
-    """Per tensor (sum, sum of squares) of the model's parameters and buffers, to detect changes during evaluation."""
-    with torch.no_grad():
+    """Per tensor (sum, sum of squares) of the model's parameters and all buffers, to detect changes during the
+    evaluation.  The unbound nn.Module methods are used, so a model's own overrides are not consulted."""
+    nn = torch.nn
+    tensors = list(nn.Module.named_parameters(model)) + list(nn.Module.named_buffers(model))
+    with torch.no_grad(), torch._C.DisableTorchFunction():
         return [(name, float(t.double().sum()).hex(), float(t.double().square().sum()).hex())  # hex: nan == nan
-                for name, t in model.state_dict().items() if torch.is_tensor(t)]
+                for name, t in tensors]
 
 
 def frozen_bpb(model, tokenizer, batch_size, make_dataloader, get_token_bytes, max_seq_len, eval_tokens, torch,
@@ -122,7 +139,7 @@ def frozen_bpb(model, tokenizer, batch_size, make_dataloader, get_token_bytes, m
     """prepare.evaluate_bpb with the cross-entropy computed here from the model's logits."""
     import math
 
-    device = next(model.parameters()).device
+    device = next(torch.nn.Module.parameters(model)).device
     token_bytes = get_token_bytes(device=device)
     val_loader = make_dataloader(tokenizer, batch_size, max_seq_len, "val")
     steps = eval_tokens // (batch_size * max_seq_len)
@@ -133,13 +150,12 @@ def frozen_bpb(model, tokenizer, batch_size, make_dataloader, get_token_bytes, m
             if index == 0:
                 worst = causality_probe(model, x, torch)  # the evaluation batch shape: no recompilation
                 print(f"AR_INFO causal_probe_max_change={worst:.3g} (tolerance {CAUSAL_ATOL})", flush=True)
-            logits = model(x)
-            if not torch.is_tensor(logits) or logits.ndim != 3 or logits.shape[:2] != x.shape:
-                fail(EXIT_BAD_EDITABLE_API, "model(x) must return logits of shape (B, T, vocab)")
-            nats = cross_entropy(logits.float().reshape(-1, logits.shape[-1]), y.reshape(-1), reduction="none")
-            nbytes = token_bytes[y.reshape(-1)]
-            total_nats += (nats * (nbytes > 0)).sum().item()
-            total_bytes += nbytes.sum().item()
+            logits = plain_logits(model(x), x, torch)
+            with torch._C.DisableTorchFunction():  # no __torch_function__ subclass or mode of the editable code
+                nats = cross_entropy(logits.reshape(-1, logits.shape[-1]), y.reshape(-1), reduction="none")
+                nbytes = token_bytes[y.reshape(-1)]
+                total_nats += (nats * (nbytes > 0)).sum().item()
+                total_bytes += nbytes.sum().item()
     return total_nats / (math.log(2) * total_bytes)
 
 
@@ -216,14 +232,20 @@ def main() -> None:
     batch_size = namespace.get("DEVICE_BATCH_SIZE")
     if isinstance(batch_size, bool) or not isinstance(batch_size, int) or not 1 <= batch_size <= 512:
         batch_size = 16
-    device_type = next(model.parameters()).device.type
-    model.eval()
+    device_type = next(torch.nn.Module.parameters(model)).device.type
+    for module in torch.nn.Module.modules(model):  # eval mode without calling the model's own eval()
+        module.training = False
     weights_before = weights_fingerprint(model, torch)
     with torch.amp.autocast(device_type=device_type, dtype=torch.bfloat16, enabled=device_type in ("cuda", "cpu")):
         val_bpb = frozen_bpb(model, tokenizer, batch_size, make, get_token_bytes, max_seq_len, eval_tokens, torch,
                              cross_entropy)
     if weights_fingerprint(model, torch) != weights_before:
         fail(EXIT_WEIGHTS_CHANGED, "the model's weights or buffers changed during the evaluation")
+    # The model's own code ran during the evaluation: prepare and the data are checked once more.
+    if any(vars(prepare).get(k, object()) is not v for k, v in prepare_snapshot.items()) or \
+            set(vars(prepare)) != set(prepare_snapshot):
+        fail(EXIT_BAD_EDITABLE_API, "prepare's attributes changed during the evaluation")
+    ar_data.verify(data_dir, NODE, REQUIRED_FILES, prefix="AR_ERROR train.py changed the data:")
     if torch.cuda.is_available():
         print(f"AR_INFO peak_vram_mb={torch.cuda.max_memory_allocated() / 2**20:.1f}", flush=True)
     ar_data.seal()  # stdout/stderr to /dev/null: threads of the editable code cannot print now

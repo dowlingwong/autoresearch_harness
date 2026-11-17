@@ -11,9 +11,20 @@ from the frozen ar_budget.py) instead of seconds; each micro-step fetches its
 own batch (no prefetch beyond the budget); the seeding moved to the frozen
 wrapper (it seeds from AR_TRAIN_SEED before this file runs); the progress
 line is printed once per step on its own line; the final evaluation and
-summary moved to the frozen wrapper, which evaluates ``model`` with
-prepare.evaluate_bpb after this file returns.  The allocator setting is in
-the run command (the determinism shim imports torch first).
+summary moved to the frozen wrapper.  The allocator setting is in the run
+command (the determinism shim imports torch first).
+
+Contract with the frozen wrapper (run_fixed_budget.py): after this file
+returns, the global ``model`` is evaluated on the validation shard with the
+frozen tokenizer.  ``model(x)`` on a token batch ``x`` of shape (B, T) must
+return causal logits of shape (B, T, vocab) for every position (not only the
+last); the wrapper computes the cross-entropy itself (bits per byte, as
+prepare.evaluate_bpb defines it), so a changed training loss does not change
+the metric; a model whose logits before a position depend on later tokens,
+or whose weights change during the evaluation, is refused.  The training
+data come only from prepare.make_dataloader(..., "train"), which serves
+exactly the token budget; the validation split is refused while this file
+runs.
 Run by: python3 run_fixed_budget.py --tokens {budget}
 """
 
