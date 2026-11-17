@@ -2,7 +2,7 @@
 
 FROZEN: copied byte-identically into every isolated node and listed in its ``frozen_paths``; the master copy
 is ``autoresearch/trackg/node_lib/ar_isolated.py`` in the harness (the port tests compare the copies).
-Standard library and NumPy only; ``torch`` is imported lazily by the CUDA helpers.
+Standard library and NumPy only (imported on first use); ``torch`` is imported lazily by the CUDA helpers.
 
 The runner starts the node's frozen **parent** script directly (no shell, ``python -s``); the name of the
 runner's result socket is in ``AR_RESULT_SOCKET``.  Importing this module in that process makes it
@@ -76,7 +76,18 @@ import struct  # noqa: E402
 import subprocess  # noqa: E402
 import sys  # noqa: E402
 
-import numpy as np  # noqa: E402
+
+
+class _LazyNumpy:
+    """NumPy, imported on first use: the worker's PID-1 fork (:func:`worker_connect`) must happen before any library
+    starts threads (OpenBLAS starts its pool when NumPy is imported; a fork of a threaded process can deadlock)."""
+
+    def __getattr__(self, name):
+        import numpy
+        return getattr(numpy, name)
+
+
+np = _LazyNumpy()
 
 MAGIC = b"ARI1"
 WORKER_FD_ENV = "AR_WORKER_FD"
