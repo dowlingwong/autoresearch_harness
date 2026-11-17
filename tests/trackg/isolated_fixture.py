@@ -207,7 +207,7 @@ TRAIN_PY = textwrap.dedent('''\
                         except OSError as error:
                             result = type(error).__name__
                     print(f"escape migration={result}", flush=True)
-                    os.execvp("sleep", ["sleep", os.environ.get("AR_FAKE_ESCAPE_TOKEN", "300")])
+                    os.execvp("sleep", ["sleep", os.environ.get("AR_FAKE_ESCAPE_ID", "300")])
                 os._exit(0)
             time.sleep(0.5)
         if MODE == "sleep":
@@ -216,7 +216,7 @@ TRAIN_PY = textwrap.dedent('''\
             open("started.txt", "w").write("x")   # in the working copy: the test's helper waits for it
             time.sleep(1.0)
         if MODE == "shm_stash":
-            path = "/dev/shm/ar_fake_stash_" + os.environ.get("AR_FAKE_TOKEN", "x")
+            path = "/dev/shm/ar_fake_stash_" + os.environ.get("AR_FAKE_STASH_ID", "x")
             print("stash seen:", os.path.exists(path), flush=True)
             open(path, "w").write("state from an earlier run")
         if MODE == "env_report":
