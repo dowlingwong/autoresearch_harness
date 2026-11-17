@@ -64,7 +64,8 @@ Not closed here (stated in the record's ``isolation.limits`` and the kits' threa
 every file the run's uid can read, including the data and the validation and test labels (a read-only mount
 does not hide them); it computes the training itself, so the budget accounting and the loss lines stay in the
 editable process; it can answer the parent's evaluation requests differently from a fixed model (the kits'
-probes narrow this); ``/dev/shm`` stays shared and writable (torch's CUDA IPC reference counters live there);
+probes narrow this); a node that sets ``shared_dev_shm`` (needed for torch's CUDA IPC reference counters) gives the
+worker the host's ``/dev/shm``, through which it can keep state between runs or reach concurrent runs;
 the parent's environment and Python installation are trusted as the run's uid left them before the campaign
 (the worker cannot write them; another process of that uid outside the run could); CUDA IPC across the PID
 namespace is exercised by the kits' GPU smoke only; its output
@@ -612,7 +613,7 @@ def limits_text() -> list[str]:
         "the worker can read every file the run's uid can read (data, validation and test labels included)",
         "budget accounting and loss lines stay in the worker (editable) process",
         "a worker can answer the parent's evaluation requests differently from a fixed model (kit probes only)",
-        "/dev/shm is shared with the worker (torch CUDA IPC reference counters)",
+        "with shared_dev_shm (CUDA IPC), /dev/shm is shared with the worker and can carry state between runs",
         "the Python installation and the kit are trusted as the uid left them before the campaign (frozen_pin_sha256 "
         "should be committed by the census)",
         "an infrastructure log pattern printed by the worker makes the run an infrastructure_failure",

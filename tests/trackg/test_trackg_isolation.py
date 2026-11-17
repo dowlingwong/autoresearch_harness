@@ -219,16 +219,16 @@ def test_the_sandbox_confines_the_worker(tmp_path, monkeypatch):
     the run directory, the kit and the home directory are read-only, the working copy is writable; it cannot
     signal the runner."""
     kit = tmp_path / "kit_marker"
-    monkeypatch.setenv("FAKE_RUNNER_PID", str(os.getpid()))
-    monkeypatch.setenv("FAKE_REAL_HOME", os.environ.get("HOME", "/root"))
+    monkeypatch.setenv("AR_FAKE_RUNNER_PID", str(os.getpid()))
+    monkeypatch.setenv("AR_FAKE_REAL_HOME", os.environ.get("HOME", "/root"))
     node = make_isolated_node(tmp_path / "sb", "sandbox_report")
-    monkeypatch.setenv("FAKE_KIT", str(node))
+    monkeypatch.setenv("AR_FAKE_KIT", str(node))
     import socket
     sock_dir = Path(tempfile.mkdtemp(prefix="ar_daemon_", dir="/tmp"))
     daemon = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     daemon.bind(str(sock_dir / "s"))
     daemon.listen(1)
-    monkeypatch.setenv("FAKE_SOCKET", str(sock_dir / "s"))
+    monkeypatch.setenv("AR_FAKE_SOCKET", str(sock_dir / "s"))
     spec = TrackGNodeSpec.from_mapping(isolated_spec_mapping())
     try:
         result = WorkingCopyRunner(spec, node, tmp_path / "sb" / "runs").run("r1", limits())
@@ -241,7 +241,7 @@ def test_the_sandbox_confines_the_worker(tmp_path, monkeypatch):
     assert report["kit"] != "writable" and report["work"] == "writable", report
     assert result.record["isolation"]["log_intact"]
     assert report["home"] != "writable" and report["net"] != "connected", report
-    assert report["FAKE_RUNNER_PID"] != "signal_ok" and report["caps"] == "0000000000000000", report
+    assert report["AR_FAKE_RUNNER_PID"] != "signal_ok" and report["caps"] == "0000000000000000", report
     assert report["socket"] != "connected", report            # review round 2, B1: no pathname socket outside
     assert report["cgroupfs"] in ([], "FileNotFoundError"), report   # round 2, M2: no cgroup file system
     assert result.record["determinism"]["shim_loaded"] is True  # round 2, M3
@@ -265,9 +265,11 @@ def test_a_tampered_kit_or_incumbent_is_an_integrity_stop(tmp_path):
 def test_elapsed_time_beyond_the_timeout_is_a_timeout_even_after_a_normal_exit(tmp_path):
     """Review round 1, B4: a run that ends by itself after the deadline (here the runner is stopped meanwhile by an
     outside helper, as a worker could once do) is a timeout: the runner's monotonic clock keeps running."""
-    node = make_isolated_node(tmp_path)
+    node = make_isolated_node(tmp_path, "mark_started")
     runner = WorkingCopyRunner(TrackGNodeSpec.from_mapping(isolated_spec_mapping()), node, tmp_path / "runs")
-    helper = subprocess.Popen(["/bin/sh", "-c", f"sleep 0.3; kill -STOP {os.getpid()}; sleep 4; kill -CONT {os.getpid()}"])
+    marker = tmp_path / "runs" / "r1" / "work" / "started.txt"   # written by the worker once it runs
+    helper = subprocess.Popen(["/bin/sh", "-c", f"while [ ! -e {marker} ]; do sleep 0.02; done; "
+                                                f"kill -STOP {os.getpid()}; sleep 4; kill -CONT {os.getpid()}"])
     try:
         result = runner.run("r1", limits(measured_run_seconds=1.0))
     finally:
@@ -335,7 +337,7 @@ def test_escaped_daemon_is_killed_whether_or_not_it_leaves_the_cgroup(tmp_path, 
     token = f"{300 + (os.getpid() % 97)}.{time.monotonic_ns() % 10**6}"
     target = cgroup_parent / "cgroup.procs"
     result = run(tmp_path, "escape", limits(cgroup_parent),
-                 env={"FAKE_CGROUP_TARGET": str(target), "FAKE_ESCAPE_TOKEN": token})
+                 env={"AR_FAKE_CGROUP_TARGET": str(target), "AR_FAKE_ESCAPE_TOKEN": token})
     assert result.outcome.kind == OK, result.record["outcome"]
     assert "escape migration=" in (result.run_dir / "run.log").read_text()
     deadline = time.monotonic() + 5
@@ -485,3 +487,27 @@ def test_killing_its_process_group_does_not_reach_the_parent(tmp_path):
     result = run(tmp_path, "kill_group")
     assert result.outcome.kind != INFRASTRUCTURE_FAILURE, result.record["outcome"]
     assert result.record["process"]["returncode"] in (0, 12), result.record["process"]
+
+
+def test_the_worker_gets_an_allow_listed_environment(tmp_path, monkeypatch):
+    """Review round 3, F1: credentials in the runner's environment do not reach the sandboxed worker."""
+    monkeypatch.setenv("LLM_API_SECRET", "sk-test")
+    monkeypatch.setenv("AR_FAKE_KEEP", "1")
+    result = run(tmp_path, "env_report")
+    line = (result.run_dir / "run.log").read_text().split("env report:")[1].splitlines()[0]
+    assert "LLM_API_SECRET" not in line and "AR_FAKE_KEEP" in line, line
+
+
+def test_dev_shm_is_private_unless_the_node_opts_out(tmp_path):
+    """Review round 3, F2: a file a run leaves in /dev/shm is not seen by the next run."""
+    spec = TrackGNodeSpec.from_mapping(isolated_spec_mapping())
+    assert spec.isolation.shared_dev_shm is False
+    shared = TrackGNodeSpec.from_mapping(isolated_spec_mapping(isolation={"entry": "parent.py", "args": ["{budget}"],
+                                                                          "shared_dev_shm": True}))
+    assert shared.isolation.shared_dev_shm is True
+    token = f"{os.getpid()}_{time.monotonic_ns()}"
+    first = run(tmp_path / "a", "shm_stash", env={"AR_FAKE_TOKEN": token})
+    second = run(tmp_path / "b", "shm_stash", env={"AR_FAKE_TOKEN": token})
+    assert "stash seen: False" in (first.run_dir / "run.log").read_text()
+    assert "stash seen: False" in (second.run_dir / "run.log").read_text()
+    assert not Path(f"/dev/shm/ar_fake_stash_{token}").exists()
