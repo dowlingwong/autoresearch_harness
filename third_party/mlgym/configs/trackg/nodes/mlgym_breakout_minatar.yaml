@@ -1,0 +1,102 @@
+# Track G node (trackg_node/v1): MLGym rlBreakoutMinAtar, fixed-step port.
+# Port kit: TRACKG_PORT_CHECKLIST.md (paper repo); harness r1-local-trackg-v2-20261114 @ 717ad835;
+# isolated per R1-HARNESS-ISOLATION (harness mac-harness-isolation-20261117).
+schema: trackg_node/v1
+name: mlgym_breakout_minatar
+description: >-
+  MLGym task rlBreakoutMinAtar (CC BY-NC 4.0; PPO adapted from gymnax-blines): reinforcement learning on the
+  gymnax Breakout-MinAtar environment with the suite's PPO (frozen policy.py), its actor-critic network
+  (editable networks.py) and its hyperparameters (editable config.yaml). One model per run, trained from
+  the training seed as MLGym's first checkpoint; the frozen parent evaluates it with MLGym's rollout
+  (256 environments, up to 999 frames): validation keys from the split seed for selection, MLGym's test
+  keys 0-4 for the sealed test return. The fixed budget is 2,000,000 environment steps (MLGym's default
+  is 10,000,000 for each of five checkpoints), proposed from an estimate of 1-2 min on an L40S; the census
+  measures it.
+suite: mlgym
+domain: RL
+
+editable_paths:
+  - config.yaml
+  - networks.py
+frozen_paths:
+  - run_fixed_budget.py
+  - ar_worker.py
+  - ar_parent.py
+  - ar_isolated.py
+  - ar_data.py
+  - policy.py
+  - helpers.py
+  - evaluate_policy.py
+  - requirements.txt
+  - requirements_gpu.txt
+  - LICENCES.md
+  - representative_edits/
+allow_new_files: false
+
+setup_command: ""
+run_command: "python3 run_fixed_budget.py --steps {budget}"
+# R1-HARNESS-ISOLATION: the runner starts the frozen parent directly (no shell); the parent holds the
+# result channel and starts ar_worker.py, the only process that imports the editable code.
+isolation:
+  entry: run_fixed_budget.py
+  args: ["--steps", "{budget}"]
+
+metric_name: val_return
+metric_direction: maximize
+metric:
+  metric_regex: '^AR_METRIC val_return=(\S+)$'
+  loss_regex: '^step \d+ loss (\S+)$'
+  steps_regex: '^AR_STEPS env_steps=(\d+)$'
+  test_metric_regex: '^AR_TEST test_return=(\S+)$'
+  infrastructure_log_patterns:
+    # the worker's GPU check, printed before the editable code is imported (no AR_DEVICE line before it)
+    - '\A(?:(?!AR_DEVICE ).*\n)*?AR_INFRA a GPU was assigned \(CUDA_VISIBLE_DEVICES set\) but CUDA is unavailable$'
+
+run_budget:
+  kind: steps
+  value: 2000000
+
+workers:
+  dataloader_workers: 0
+  threads: 4
+
+selection:
+  test_scored: true
+  selection_split: validation
+  test_metric_name: test_return
+
+determinism:
+  cudnn_benchmark: false
+  deterministic_algorithms: true
+  cublas_workspace_config: ":4096:8"
+  pythonhashseed: "0"
+  deterministic_warn_only: false
+
+seed_env:
+  train: AR_TRAIN_SEED
+  split: AR_SPLIT_SEED
+
+default_budget:
+  trials: 20
+
+failure_categories:
+  - syntax_error
+  - runtime_error
+  - metric_missing
+  - invalid_edit_scope
+  - divergent
+  - infrastructure_failure
+
+external_benchmark:
+  name: MLGym
+  repository: https://github.com/facebookresearch/MLGym
+  commit: 9d40c1b5035202018cd7091fb4e83a9c68b377c0
+  task: rlBreakoutMinAtar
+  license: CC-BY-NC-4.0 (non-commercial; attribution and changes in LICENCES.md)
+  data: none (simulated environment gymnax Breakout-MinAtar)
+
+notes:
+  python_env: jax (separate environment from the torch nodes; see requirements.txt)
+  requirements: requirements.txt (local CPU check); requirements_gpu.txt on the GPU host
+  jax_settings: the worker sets XLA_FLAGS --xla_gpu_deterministic_ops=true, XLA_PYTHON_CLIENT_PREALLOCATE=false and TF_CUDNN_DETERMINISTIC=1 before importing jax
+  determinism_shim: the torch shim has nothing to force here. In the torch-free JAX environment the run record's not_forced is cudnn.benchmark=False, dataloader_workers, torch.set_num_threads and torch.use_deterministic_algorithms(True) (reason torch_absent); XLA CPU threads are not bounded by the shim

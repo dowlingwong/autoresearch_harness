@@ -1,5 +1,7 @@
 # autoresearch_harness
 
+> **Licence scope.** This repository is MIT-licensed (`LICENSE`), except `third_party/mlgym/`, which holds the Track G nodes ported from MLGym and is licensed under CC BY-NC 4.0 (`third_party/mlgym/LICENSE`).
+
 **Auditable Autonomous Experimentation with Bounded Execution and Explicit Keep/Discard Control**
 
 A governed autonomous experimentation framework for evaluating agentic optimization under bounded execution constraints.

@@ -1,0 +1,99 @@
+# Track G node (trackg_node/v1): MLGym imageClassificationCifar10, fixed-step port.
+# Port kit: TRACKG_PORT_CHECKLIST.md (paper repo); harness r1-local-trackg-v2-20261114 @ 717ad835;
+# isolated per R1-HARNESS-ISOLATION (harness mac-harness-isolation-20261117).
+schema: trackg_node/v1
+name: mlgym_cifar10
+description: >-
+  MLGym task imageClassificationCifar10 (CC BY-NC 4.0): image classification on CIFAR-10 with the suite's
+  baseline, a two-layer CNN trained with the Hugging Face Trainer defaults (AdamW lr 5e-5, 500 warmup steps,
+  linear decay, clip 1.0, batch 64), written out in train.py. The editable train.py holds model, optimizer,
+  schedule, loss and preprocessing; the frozen parent and worker hold the data, the split (45,000 train / 5,000
+  validation drawn from the training set by the split seed; the suite's 10,000 test images as the sealed
+  test set), the training loop and the metric. The fixed budget is 7,820 optimizer steps, the length of the
+  suite baseline's own run (10 epochs of 782 batches of 64).
+suite: mlgym
+domain: vision
+
+editable_paths:
+  - train.py
+frozen_paths:
+  - run_fixed_budget.py
+  - ar_worker.py
+  - ar_parent.py
+  - ar_isolated.py
+  - ar_fixed_loop.py
+  - ar_data.py
+  - prepare_data.py
+  - requirements.txt
+  - LICENCES.md
+  - data/
+  - representative_edits/
+allow_new_files: false
+
+setup_command: 'test -n "$AR_TRACKG_DATA_ROOT" && python3 prepare_data.py --out "$AR_TRACKG_DATA_ROOT/mlgym_cifar10"'
+run_command: "python3 run_fixed_budget.py --steps {budget}"
+# R1-HARNESS-ISOLATION: the runner starts the frozen parent directly (no shell); the parent holds the
+# result channel and starts ar_worker.py, the only process that imports the editable code.
+isolation:
+  entry: run_fixed_budget.py
+  args: ["--steps", "{budget}"]
+
+metric_name: val_accuracy
+metric_direction: maximize
+metric:
+  metric_regex: '^AR_METRIC val_accuracy=(\S+)$'
+  loss_regex: '^step \d+ loss (\S+)$'
+  steps_regex: '^step (\d+) loss \S+$'
+  test_metric_regex: '^AR_TEST test_accuracy=(\S+)$'
+  infrastructure_log_patterns:
+    # the worker's GPU check, printed before the editable code is imported (no AR_DEVICE line before it)
+    - '\A(?:(?!AR_DEVICE ).*\n)*?AR_INFRA a GPU was assigned \(CUDA_VISIBLE_DEVICES set\) but CUDA is unavailable$'
+
+run_budget:
+  kind: steps
+  value: 7820
+
+workers:
+  dataloader_workers: 0
+  threads: 4
+
+selection:
+  test_scored: true
+  selection_split: validation
+  test_metric_name: test_accuracy
+
+determinism:
+  cudnn_benchmark: false
+  deterministic_algorithms: true
+  cublas_workspace_config: ":4096:8"
+  pythonhashseed: "0"
+  deterministic_warn_only: false
+
+seed_env:
+  train: AR_TRAIN_SEED
+  split: AR_SPLIT_SEED
+
+default_budget:
+  trials: 20
+
+failure_categories:
+  - syntax_error
+  - runtime_error
+  - metric_missing
+  - invalid_edit_scope
+  - divergent
+  - infrastructure_failure
+
+external_benchmark:
+  name: MLGym
+  repository: https://github.com/facebookresearch/MLGym
+  commit: 9d40c1b5035202018cd7091fb4e83a9c68b377c0
+  task: imageClassificationCifar10
+  license: CC-BY-NC-4.0 (non-commercial; attribution and changes in LICENCES.md)
+  data: CIFAR-10, Hugging Face dataset uoft-cs/cifar10 (revision recorded in the data manifest)
+
+notes:
+  python_env: torch
+  requirements: requirements.txt
+  data_location: setup links data/ to $AR_TRACKG_DATA_ROOT/mlgym_cifar10 (outside the node)
+  dataloader: data live in device memory; no loader worker processes (AR_NUM_WORKERS is read and logged)
