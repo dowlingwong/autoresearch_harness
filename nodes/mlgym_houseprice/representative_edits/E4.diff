@@ -1,0 +1,20 @@
+--- a/train.py
++++ b/train.py
+@@ -10,6 +10,7 @@
+ """
+ import numpy as np
+ from sklearn.compose import ColumnTransformer
++from sklearn.ensemble import GradientBoostingRegressor
+ from sklearn.impute import SimpleImputer
+ from sklearn.linear_model import Ridge
+ from sklearn.pipeline import Pipeline
+@@ -34,7 +35,8 @@
+         ("num", numeric_transformer, numeric_features),
+         ("cat", categorical_transformer, categorical_features),
+     ])
+-    return Pipeline(steps=[("preprocess", preprocessor), ("model", Ridge(alpha=ALPHA))])
++    model = GradientBoostingRegressor(n_estimators=300, learning_rate=0.05, max_depth=3, random_state=seed)
++    return Pipeline(steps=[("preprocess", preprocessor), ("model", model)])
+ 
+ 
+ def transform_target(y):

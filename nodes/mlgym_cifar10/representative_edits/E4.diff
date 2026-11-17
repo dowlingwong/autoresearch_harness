@@ -1,0 +1,22 @@
+--- a/train.py
++++ b/train.py
+@@ -65,8 +65,18 @@
+     return optimizer, torch.optim.lr_scheduler.LambdaLR(optimizer, schedule)
+ 
+ 
++def augment(x):
++    """Random horizontal flip per image and one random shift of up to 4 pixels per batch."""
++    flip = torch.rand(x.shape[0], device=x.device) < 0.5
++    x = torch.where(flip[:, None, None, None], x.flip(3), x)
++    dy, dx = (int(v) for v in torch.randint(-4, 5, (2,)))
++    padded = F.pad(x, (4, 4, 4, 4))
++    h, w = x.shape[2], x.shape[3]
++    return padded[:, :, 4 + dy:4 + dy + h, 4 + dx:4 + dx + w]
++
++
+ def training_step(model, batch, step):
+-    return F.cross_entropy(model(preprocess(batch["x"])), batch["y"])
++    return F.cross_entropy(model(augment(preprocess(batch["x"]))), batch["y"])
+ 
+ 
+ def predict_logits(model, batch):

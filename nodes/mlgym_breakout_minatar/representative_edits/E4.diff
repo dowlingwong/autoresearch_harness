@@ -1,0 +1,20 @@
+--- a/config.yaml
++++ b/config.yaml
+@@ -6,7 +6,7 @@
+ train_config:
+   num_train_envs: 64 # Number of parallel env workers
+   max_grad_norm: 0.5  # Global norm to clip gradients by
+-  gamma: 0.999  # Discount factor
++  gamma: 0.99  # Discount factor
+   n_steps: 128 # "GAE n-steps"
+   n_minibatch: 8 # "Number of PPO minibatches"
+   lr_begin: 5e-04  # Start PPO learning rate
+@@ -14,7 +14,7 @@
+   lr_warmup: 0.05 # Prop epochs until warmup is completed
+   epoch_ppo: 4  # "Number of PPO epochs on a single batch"
+   clip_eps: 0.2 # "Clipping range"
+-  gae_lambda: 0.95 # "GAE lambda"
++  gae_lambda: 0.9 # "GAE lambda"
+   entropy_coeff: 0.01 # "Entropy loss coefficient"
+   critic_coeff: 0.5  # "Value loss coefficient"
+ 

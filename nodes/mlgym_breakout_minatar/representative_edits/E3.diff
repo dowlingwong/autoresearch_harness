@@ -1,0 +1,38 @@
+--- a/networks.py
++++ b/networks.py
+@@ -59,7 +59,7 @@
+         # Flatten a batch of 3d images into a batch of flat vectors
+         if self.flatten_3d and len(x.shape) > 3:
+             x = x.reshape(x.shape[0], -1)
+-        x_v = nn.relu(
++        x_v = nn.tanh(
+             nn.Dense(
+                 self.num_hidden_units,
+                 name=self.prefix_critic + "_fc_1",
+@@ -68,7 +68,7 @@
+         )
+         # Loop over rest of intermediate hidden layers
+         for i in range(1, self.num_hidden_layers):
+-            x_v = nn.relu(
++            x_v = nn.tanh(
+                 nn.Dense(
+                     self.num_hidden_units,
+                     name=self.prefix_critic + f"_fc_{i+1}",
+@@ -81,7 +81,7 @@
+             bias_init=default_mlp_init(),
+         )(x_v)
+ 
+-        x_a = nn.relu(
++        x_a = nn.tanh(
+             nn.Dense(
+                 self.num_hidden_units,
+                 bias_init=default_mlp_init(),
+@@ -89,7 +89,7 @@
+         )
+         # Loop over rest of intermediate hidden layers
+         for i in range(1, self.num_hidden_layers):
+-            x_a = nn.relu(
++            x_a = nn.tanh(
+                 nn.Dense(
+                     self.num_hidden_units,
+                     bias_init=default_mlp_init(),
