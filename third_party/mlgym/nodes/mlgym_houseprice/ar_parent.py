@@ -69,11 +69,17 @@ def start_worker() -> "iso.Worker":
 
 
 def call(worker: "iso.Worker", op: str, meta: dict | None = None, arrays: dict | None = None) -> tuple[dict, dict]:
-    """One worker request; a worker error, a crash or a malformed reply ends the run (exit 12)."""
+    """One worker request.  A worker that ended (a frozen check's exit, a crash) ends the run with the worker's
+    exit code when it is positive, otherwise with exit 12; an error reply or a malformed reply ends it with 12."""
     try:
         return worker.call(op, meta or {}, arrays or {})
     except (iso.IsolationProtocolError, OSError) as error:
-        fail(EXIT_WORKER, f"worker {op}: {error}")
+        try:
+            code = worker.process.wait(timeout=10)
+        except Exception:  # noqa: BLE001 - still running: an error reply
+            code = None
+        fail(code if isinstance(code, int) and code > 0 else EXIT_WORKER,
+             f"worker {op}: {error} (worker exit {code})")
     raise AssertionError("unreachable")
 
 

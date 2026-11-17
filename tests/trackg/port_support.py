@@ -41,6 +41,7 @@ import yaml
 from autoresearch.trackg.declared_edits import declare_edits
 from autoresearch.trackg.diff_support import apply_diff
 from autoresearch.trackg.node_template import TrackGNodeSpec, load_trackg_node_spec
+from autoresearch.trackg import isolation
 from autoresearch.trackg.runner import ResourceLimits, WorkingCopyRunner
 from autoresearch.trackg.smoke import run_smoke_campaign
 
@@ -223,8 +224,13 @@ def check_isolated(node: str) -> None:
     worker_text = (base / "ar_worker.py").read_text()
     assert "CONN = iso.worker_connect()" in worker_text and "iso.serve(" in worker_text
     worker_imports = _imports(ast.parse(worker_text))
+    runs_editable = any(f'run_path("{rel}"' in worker_text for rel in spec.editable_paths)
     if editable_modules:
-        assert worker_imports & editable_modules, "the worker entry does not import the editable code"
+        assert worker_imports & editable_modules or runs_editable, "the worker entry does not run the editable code"
+    for name, path in frozen_py.items():
+        if name != "ar_worker":
+            assert not any(f'run_path("{rel}"' in path.read_text() for rel in spec.editable_paths), \
+                f"{name} runs editable code"
     # No frozen file prints a result line to the run's output (the runner refuses a run whose output holds one).
     for path in frozen_files(node):
         if path.suffix == ".py":
@@ -332,6 +338,42 @@ def load_node_module(node: str, name: str):
     return module
 
 
+def run_parent(work: Path, argv: list[str], env: dict | None = None, timeout: float = 600.0):
+    """Run an isolated node's frozen parent the way the runner does, without the runner's limits or sandbox:
+    returns ``(returncode, output, result_channel_text)``."""
+    import secrets
+    import socket
+    import subprocess
+    import threading
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    name = "ar_test_" + secrets.token_hex(8)
+    listener.bind("\0" + name)
+    listener.listen(1)
+    channel: list[bytes] = []
+
+    def accept() -> None:
+        listener.settimeout(timeout)
+        try:
+            conn, _ = listener.accept()
+        except OSError:
+            return
+        with conn:
+            while True:
+                chunk = conn.recv(65536)
+                if not chunk:
+                    break
+                channel.append(chunk)
+
+    thread = threading.Thread(target=accept, daemon=True)
+    thread.start()
+    run_env = dict(env or os.environ, AR_RESULT_SOCKET=name)
+    res = subprocess.run([sys.executable, "-E", "-s", *argv], cwd=work, env=run_env, capture_output=True, text=True,
+                         timeout=timeout)
+    thread.join(5)
+    listener.close()
+    return res.returncode, res.stdout + res.stderr, b"".join(channel).decode("utf-8", errors="replace")
+
+
 def check_logits_array_refuses_subclass(node: str) -> None:
     """The worker-side evaluation (ar_fixed_loop.logits_array) refuses a tensor subclass from predict_logits (exit 4):
     its methods would be editable code in the frozen conversion."""
@@ -414,12 +456,20 @@ def limits(seconds: float = 600.0, gpu_uuids: tuple[str, ...] = (), cpu_list: tu
     # isolated runs (R1-HARNESS-ISOLATION) need a cgroup parent (AR_TEST_CGROUP_PARENT) or a recorded reason,
     # and a reason to run as root (a root run is recorded as not effective)
     cgroup = os.environ.get("AR_TEST_CGROUP_PARENT")
-    extra = {"cgroup_parent": cgroup} if cgroup else {"no_cgroup_reason": "port smoke without a cgroup parent"}
+    extra, waivers = {}, {}
+    if cgroup:
+        extra["cgroup_parent"] = cgroup
+    else:
+        waivers["no_cgroup"] = "port smoke without a cgroup parent (set AR_TEST_CGROUP_PARENT)"
     if os.geteuid() == 0:
-        extra["root_isolation_reason"] = "port smoke as root (test container)"
+        waivers["root"] = "port smoke as root (test container)"
+    scope = isolation.ptrace_scope()
+    if scope is None or scope < 1:
+        waivers["ptrace_scope"] = f"port smoke host ptrace_scope={scope}"
     return ResourceLimits(gpu_uuids=tuple(gpu_uuids), cpu_list=cpus, memory_bytes=None,
                           memory_method="external", external_limit=external_limit,
-                          provisional_timeout_seconds=seconds, kill_grace_seconds=2.0, **extra)
+                          provisional_timeout_seconds=seconds, kill_grace_seconds=2.0,
+                          isolation_waivers=waivers, **extra)
 
 
 def broken_diff(node: str, anchor: str, replacement: str, rel: str | None = None) -> str:
