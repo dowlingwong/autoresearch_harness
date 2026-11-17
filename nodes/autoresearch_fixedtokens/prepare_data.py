@@ -21,7 +21,8 @@ download only prints failures, so a partial download would otherwise train a
 different tokenizer); any missing or extra parquet file stops the setup without
 writing a manifest.  An ``--out`` that already holds parquet files from
 elsewhere is refused.  The manifest is written last, after prepare.py's
-tokenizer sanity check.  ``--out`` must lie under ``$AR_TRACKG_DATA_ROOT``.
+tokenizer sanity check, and the data directory is then made read-only.  ``--out`` must lie under
+``$AR_TRACKG_DATA_ROOT``.
 Re-running with a complete --out only re-checks and re-links it.
 """
 import argparse
@@ -81,6 +82,7 @@ def main() -> None:
                   "vocab_size": prepare.VOCAB_SIZE}
         digest = ar_data.write_manifest(out, NODE, files, source)
         print(f"wrote {out / ar_data.MANIFEST_NAME} sha256 {digest}")
+        ar_data.make_read_only(out)  # runs cannot change the shared data or leave files in it
     manifest = ar_data.verify(out, NODE, REQUIRED_FILES)
     ar_data.link_data(node_dir, out)
     print(json.dumps({"node": NODE, "data": str(out), "files": len(manifest["files"])}))
