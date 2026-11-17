@@ -14,8 +14,10 @@ Used by tests/trackg/test_port_<suite>.py.  Two tiers:
   of the real shapes (no task data), a reduced step budget, and the stub
   manager of ``run_smoke_campaign`` with a frozen-path diff, a deliberately
   broken diff (non-finite loss) and the first declared edit; plus every
-  declared edit run once on the baseline.  It checks the outcome classes and
-  that each run record is complete.  It measures nothing about the task.
+  declared edit run once on the baseline, and a second baseline run with the
+  same seeds, which must give the same metric (on the test host's CPU; the
+  GPU determinism check is G.1b's).  It checks the outcome classes and that
+  each run record is complete.  It measures nothing about the task.
 """
 from __future__ import annotations
 
@@ -100,7 +102,9 @@ def check_static(node: str, port_nodes: list[str]) -> None:
         if rel.rstrip("/") == "data":
             continue
         assert (base / rel.rstrip("/")).exists(), f"frozen {rel} missing"
-    assert "run_fixed_budget.py" in spec.frozen_paths and "data/" in spec.frozen_paths
+    assert "run_fixed_budget.py" in spec.frozen_paths
+    if (base / "prepare_data.py").exists():
+        assert "data/" in spec.frozen_paths and "prepare_data.py" in spec.frozen_paths
     assert "representative_edits/" in spec.frozen_paths
     assert not (base / "data").exists(), "the data link is made by setup, never committed"
     # No committed file is outside both scopes, so nothing is silently editable or unlisted.
@@ -172,7 +176,8 @@ def check_scope(node: str) -> None:
     rel = spec.editable_paths[0]
     ok = apply_diff(base, touch_diff(rel, (base / rel).read_text()), node_spec, write=False,
                     allow_new_files=False)
-    assert ok.status == "applied", ok.provenance
+    # In scope: applied, or inert when the touched first line is a comment (config.yaml).
+    assert ok.status in ("applied", "inert") and ok.provenance["scope"]["valid"], ok.provenance
 
 
 # --------------------------------------------------------------------------- synthetic smoke
@@ -188,10 +193,13 @@ def load_node_module(node: str, name: str):
     return module
 
 
-def smoke_copy(node: str, tmp: Path, make_data: Callable[[Path], dict], data_files: list[str]) -> Path:
-    """A copy of the node with synthetic data linked as ``data`` (the repository node is not touched)."""
+def smoke_copy(node: str, tmp: Path, make_data: Callable[[Path], dict] | None, data_files: list[str]) -> Path:
+    """A copy of the node with synthetic data linked as ``data`` (the repository node is not touched).
+    Without *make_data* (a node without task data) the copy has no data link."""
     work = tmp / "node" / node
     shutil.copytree(node_dir(node), work, ignore=shutil.ignore_patterns("__pycache__"))
+    if make_data is None:
+        return work
     data = tmp / "data" / node
     data.mkdir(parents=True)
     source = make_data(data)
@@ -213,8 +221,10 @@ def limits(seconds: float = 600.0) -> ResourceLimits:
                           provisional_timeout_seconds=seconds, kill_grace_seconds=2.0)
 
 
-def broken_diff(node: str, anchor: str, replacement: str) -> str:
-    rel = load(node).editable_paths[0]
+def broken_diff(node: str, anchor: str, replacement: str, rel: str | None = None) -> str:
+    """A diff of an editable file that should make the run divergent (default: the first editable file)."""
+    rel = rel or load(node).editable_paths[0]
+    assert rel in load(node).editable_paths
     text = (node_dir(node) / rel).read_text()
     assert text.count(anchor) == 1, anchor
     import difflib
@@ -223,7 +233,8 @@ def broken_diff(node: str, anchor: str, replacement: str) -> str:
 
 
 def run_smoke(node: str, tmp: Path, work: Path, budget: int, broken: str, interpreter: str = sys.executable):
-    """Stub-manager smoke on synthetic data; returns (smoke records, per-edit records)."""
+    """Stub-manager smoke on synthetic data; returns (smoke records, per-edit records).  The last
+    per-edit record is a second baseline run with the same seeds (repeatability check)."""
     spec = reduced_spec(node, budget)
     rel_frozen = "run_fixed_budget.py"
     frozen = touch_diff(rel_frozen, (work / rel_frozen).read_text())
@@ -235,7 +246,26 @@ def run_smoke(node: str, tmp: Path, work: Path, budget: int, broken: str, interp
         result = WorkingCopyRunner(spec, work, tmp / "runs_edits").run(
             f"E{index}", limits(), train_seed=8001, split_seed=8001, diff_text=diff, interpreter=interpreter)
         per_edit.append(result.record)
+    repeat = WorkingCopyRunner(spec, work, tmp / "runs_edits").run(
+        "B2", limits(), train_seed=8001, split_seed=8001, interpreter=interpreter)
+    per_edit.append(repeat.record)
+    check_baseline_log(spec, (tmp / "runs_smoke" / "s000_baseline" / "run.log").read_text(errors="replace"))
     return records, per_edit
+
+
+def check_baseline_log(spec: TrackGNodeSpec, log: str) -> None:
+    """The node's patterns really see the baseline's lines: loss lines (all finite), the metric
+    line, the step counter at the budget, the sealed test line, and no stray carriage returns."""
+    losses = re.findall(spec.metric.loss_regex, log, re.MULTILINE)
+    assert losses, "loss_regex matched no line of the baseline log"
+    assert all(float(v) == float(v) for v in losses)
+    assert len(re.findall(spec.metric.metric_regex, log, re.MULTILINE)) == 1
+    if spec.metric.steps_regex:
+        steps = [int(v) for v in re.findall(spec.metric.steps_regex, log, re.MULTILINE)]
+        assert steps and max(steps) >= spec.run_budget.value
+    if spec.selection.test_scored:
+        assert len(re.findall(spec.metric.test_metric_regex, log, re.MULTILINE)) == 1
+    assert "\r" not in log.replace("\r\n", "\n"), "carriage returns in the log can hide lines from ^-anchored patterns"
 
 
 def check_smoke(records: list[dict], per_edit: list[dict], expect_divergent: set[str] = frozenset(),
@@ -253,6 +283,9 @@ def check_smoke(records: list[dict], per_edit: list[dict], expect_divergent: set
         assert not missing, f"run record lacks {missing}"
         assert record["process"]["killed_with"] is None
         assert "sealed" not in record  # the manager view never shows the test metric
+    *per_edit, repeat = per_edit
+    assert repeat["outcome"]["kind"] == "ok" and repeat["outcome"]["value"] == baseline["record"]["outcome"]["value"], (
+        "a second baseline run with the same seeds gave a different metric", repeat["outcome"], baseline["record"]["outcome"])
     for index, record in enumerate(per_edit, start=1):
         assert record["diff"]["status"] == "applied", record["diff"]
         kind = record["outcome"]["kind"]
