@@ -8,7 +8,8 @@ Used by tests/trackg/test_port_<suite>.py.  Two tiers:
   metric lines; the committed representative-edits manifest is complete
   (3-5 edits, every E*.diff listed with its sha256, the spec hash and the
   baseline code-state hash are current, nothing measured) and re-declaring the
-  edits reproduces it; a diff that touches any frozen file is refused
+  edits reproduces it (byte for byte under the declaring Python 3.12; under
+  another minor version without the AST-based normalised code-state hashes); a diff that touches any frozen file is refused
   (``scope_violation``) and a diff that only touches an editable file applies.
 * synthetic smoke (skipped without the node's runtime packages): random data
   of the real shapes (no task data), a reduced step budget, and the stub
@@ -43,6 +44,8 @@ from autoresearch.trackg.smoke import run_smoke_campaign
 ROOT = Path(__file__).resolve().parents[2]
 SHARED_FROZEN = ("ar_data.py", "ar_fixed_loop.py")
 METRIC_PREFIXES = ("AR_METRIC", "AR_TEST")
+# The manifests were declared with Python 3.12 (scripts/trackg_declare_edits.py); see check_manifest.
+DECLARED_WITH_PYTHON = (3, 12)
 RECORD_KEYS = ("schema", "run_id", "node", "node_spec_sha256", "run_budget", "workers", "seeds", "limits",
                "diff", "incumbent_code_state_sha256", "code_state_sha256", "executed", "command",
                "environment_applied", "determinism", "process", "log_sha256", "outcome")
@@ -156,8 +159,24 @@ def check_manifest(node: str) -> dict:
         assert entry["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
         assert set(entry["files_touched"]) <= set(spec.editable_paths)
     again = declare_edits(spec, base, edits)
-    assert again == manifest, "re-declaring the edits does not reproduce the committed manifest"
+    if sys.version_info[:2] == DECLARED_WITH_PYTHON:
+        assert again == manifest, "re-declaring the edits does not reproduce the committed manifest"
+    else:
+        # The harness's normalised code-state hash is built from the interpreter's AST and differs
+        # between Python minor versions (3.12 vs 3.13 for these nodes); everything else must match.
+        assert strip_normalised_state(again) == strip_normalised_state(manifest), (
+            "re-declaring the edits does not reproduce the committed manifest (normalised code-state "
+            f"hashes not compared: declared with Python {DECLARED_WITH_PYTHON}, running {sys.version_info[:2]})")
     return manifest
+
+
+def strip_normalised_state(manifest: dict) -> dict:
+    out = copy.deepcopy(manifest)
+    out.pop("baseline_code_state_sha256")
+    for entry in out["edits"]:
+        entry.pop("code_state_sha256")
+        entry.pop("incumbent_code_state_sha256")
+    return out
 
 
 def check_scope(node: str) -> None:
