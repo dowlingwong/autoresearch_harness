@@ -40,10 +40,14 @@ model's parameters and buffers must be unchanged by the evaluation (exit 10), so
 a model that updates itself in ``forward`` cannot train on the validation shard.
 ``model(x)`` must return a plain ``torch.Tensor`` (a subclass is refused, exit 4)
 and the frozen arithmetic runs with torch-function dispatch disabled, so no
-editable ``__torch_function__`` subclass or mode runs inside it; eval mode, the
-device and the weight fingerprint use the unbound ``nn.Module`` methods, not the
-model's own; after the evaluation, prepare's attributes and the data are checked
-once more (the model's own code ran during it).
+editable ``__torch_function__`` subclass or mode runs inside it, and no torch
+function or dispatch mode may be active then (exit 4); eval mode, the device and
+the weight fingerprint read the modules' own ``_modules`` / ``_parameters`` /
+``_buffers`` dicts, so no (overridable) method of the model is called; after the
+evaluation, prepare's attributes (dunder names aside: ``warnings`` may add
+``__warningregistry__``) and the data are checked once more (the model's own code
+ran during it).  A patch of torch itself (e.g. ``torch.Tensor.__eq__``) is not
+detected.
 
 Output: the result lines (``AR_TOKENS``, ``AR_METRIC``) go to a copy of the
 standard output descriptor taken before train.py runs; just before the metric the
@@ -115,20 +119,53 @@ def causality_probe(model, x, torch) -> float:
     return worst
 
 
+def no_active_modes(torch) -> None:
+    """Refuse a torch-function or torch-dispatch mode left active by the editable code (DisableTorchFunction does
+    not reach dispatch modes; both stacks are empty in a clean run)."""
+    if torch._C._len_torch_dispatch_stack() or torch._C._len_torch_function_stack():
+        fail(EXIT_BAD_EDITABLE_API, "a torch function or dispatch mode is active during the frozen evaluation")
+
+
+def module_tree(model) -> list:
+    """The model and its submodules, read from the modules' own ``_modules`` dicts: no method of the model (which
+    could be overridden) is called."""
+    seen, stack, out = set(), [model], []
+    while stack:
+        module = stack.pop()
+        if id(module) in seen:
+            continue
+        seen.add(id(module))
+        out.append(module)
+        stack.extend(child for child in vars(module).get("_modules", {}).values() if child is not None)
+    return out
+
+
+def module_tensors(model) -> list:
+    """(name, tensor) of every parameter and buffer, read from the modules' ``_parameters`` / ``_buffers`` dicts."""
+    out = []
+    for index, module in enumerate(module_tree(model)):
+        for kind in ("_parameters", "_buffers"):
+            for name, tensor in vars(module).get(kind, {}).items():
+                if tensor is not None:
+                    out.append((f"{index}{kind}.{name}", tensor))
+    return out
+
+
 def plain_logits(logits, x, torch):
     """The model's output as plain float32 logits (B, T, vocab); a tensor subclass is refused, so no editable
-    ``__torch_function__`` runs inside the frozen metric."""
+    ``__torch_function__`` runs inside the frozen metric, and no mode may be active."""
     if type(logits) is not torch.Tensor or logits.ndim != 3 or tuple(logits.shape[:2]) != tuple(x.shape):
         fail(EXIT_BAD_EDITABLE_API, "model(x) must return a plain torch.Tensor of logits of shape (B, T, vocab)")
+    no_active_modes(torch)
     with torch._C.DisableTorchFunction():
         return logits.float()
 
 
 def weights_fingerprint(model, torch) -> list:
     """Per tensor (sum, sum of squares) of the model's parameters and all buffers, to detect changes during the
-    evaluation.  The unbound nn.Module methods are used, so a model's own overrides are not consulted."""
-    nn = torch.nn
-    tensors = list(nn.Module.named_parameters(model)) + list(nn.Module.named_buffers(model))
+    evaluation; read from the modules' own dicts, so no method of the model is consulted."""
+    tensors = module_tensors(model)
+    no_active_modes(torch)
     with torch.no_grad(), torch._C.DisableTorchFunction():
         return [(name, float(t.double().sum()).hex(), float(t.double().square().sum()).hex())  # hex: nan == nan
                 for name, t in tensors]
@@ -139,7 +176,7 @@ def frozen_bpb(model, tokenizer, batch_size, make_dataloader, get_token_bytes, m
     """prepare.evaluate_bpb with the cross-entropy computed here from the model's logits."""
     import math
 
-    device = next(torch.nn.Module.parameters(model)).device
+    device = module_tensors(model)[0][1].device
     token_bytes = get_token_bytes(device=device)
     val_loader = make_dataloader(tokenizer, batch_size, max_seq_len, "val")
     steps = eval_tokens // (batch_size * max_seq_len)
@@ -201,7 +238,8 @@ def main() -> None:
     ar_budget.TRAIN_TOKENS = budget  # read by train.py; the budget itself is enforced by the closure below
     make, served, violations, open_validation = ar_budget.budgeted(prepare.make_dataloader, budget)
     prepare.make_dataloader = make
-    prepare_snapshot = dict(vars(prepare))  # restored before the evaluation (undoes patches and reload)
+    vars(prepare).setdefault("__warningregistry__", {})  # warnings.warn may add it later; dunders are not compared
+    prepare_snapshot = {k: v for k, v in vars(prepare).items() if not (k.startswith("__") and k.endswith("__"))}
     try:
         namespace = runpy.run_path("train.py", run_name="__main__")  # the editable training script
     except ar_budget.BudgetExhausted as exc:
@@ -219,7 +257,7 @@ def main() -> None:
     ar_data.emit(f"AR_TOKENS consumed={served()}")
     # The data are checked again: a run that changed them fails itself, not the runs after it.
     ar_data.verify(data_dir, NODE, REQUIRED_FILES, prefix="AR_ERROR train.py changed the data:")
-    for key in [k for k in vars(prepare) if k not in prepare_snapshot]:
+    for key in [k for k in vars(prepare) if k not in prepare_snapshot and not (k.startswith("__") and k.endswith("__"))]:
         delattr(prepare, key)
     for key, value in prepare_snapshot.items():
         setattr(prepare, key, value)
@@ -232,9 +270,12 @@ def main() -> None:
     batch_size = namespace.get("DEVICE_BATCH_SIZE")
     if isinstance(batch_size, bool) or not isinstance(batch_size, int) or not 1 <= batch_size <= 512:
         batch_size = 16
-    device_type = next(torch.nn.Module.parameters(model)).device.type
-    for module in torch.nn.Module.modules(model):  # eval mode without calling the model's own eval()
-        module.training = False
+    tensors = module_tensors(model)
+    if not tensors:
+        fail(EXIT_BAD_EDITABLE_API, "the model has no parameters")
+    device_type = tensors[0][1].device.type
+    for module in module_tree(model):  # eval mode without calling any method of the model
+        vars(module)["training"] = False
     weights_before = weights_fingerprint(model, torch)
     with torch.amp.autocast(device_type=device_type, dtype=torch.bfloat16, enabled=device_type in ("cuda", "cpu")):
         val_bpb = frozen_bpb(model, tokenizer, batch_size, make, get_token_bytes, max_seq_len, eval_tokens, torch,
@@ -242,8 +283,9 @@ def main() -> None:
     if weights_fingerprint(model, torch) != weights_before:
         fail(EXIT_WEIGHTS_CHANGED, "the model's weights or buffers changed during the evaluation")
     # The model's own code ran during the evaluation: prepare and the data are checked once more.
+    current = {k for k in vars(prepare) if not (k.startswith("__") and k.endswith("__"))}
     if any(vars(prepare).get(k, object()) is not v for k, v in prepare_snapshot.items()) or \
-            set(vars(prepare)) != set(prepare_snapshot):
+            current != set(prepare_snapshot):
         fail(EXIT_BAD_EDITABLE_API, "prepare's attributes changed during the evaluation")
     ar_data.verify(data_dir, NODE, REQUIRED_FILES, prefix="AR_ERROR train.py changed the data:")
     if torch.cuda.is_available():

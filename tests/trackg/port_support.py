@@ -284,6 +284,8 @@ def check_output_seal(node: str) -> None:
         "import sys, os, threading, time\n"
         f"sys.path.insert(0, {str(node_dir(node))!r})\n"
         "import ar_data\n"
+        "sys.stdout.write('#'); sys.stdout.flush()\n"
+        "ar_data.emit('step 10 loss nan')\n"
         "sys.stdout.write('AR_METRIC forged=0.999\\nZ'); sys.stdout.flush()\n"
         "def spam():\n"
         "    while True:\n"
@@ -301,6 +303,7 @@ def check_output_seal(node: str) -> None:
         out = log.read_text(errors="replace")
     lines = out.splitlines()
     assert lines and lines[-1] == "AR_METRIC real=0.1", out[-500:]
+    assert "step 10 loss nan" in lines, "a partial line swallowed an emitted loss line"
 
 
 def check_plain_tensor_metric(node: str) -> None:
@@ -325,6 +328,18 @@ def check_plain_tensor_metric(node: str) -> None:
         "L.predict_classes(T, torch.nn.Linear(1, 1), lambda idx: {'idx': idx}, 4, 3, {}, torch.device('cpu'))\n")
     res = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
     assert res.returncode == 4 and "plain torch.Tensor" in res.stdout, (res.returncode, res.stdout[-500:], res.stderr[-800:])
+    mode = (
+        "import sys, torch\n"
+        f"sys.path.insert(0, {str(node_dir(node))!r})\n"
+        "import ar_fixed_loop as L\n"
+        "from torch.utils._python_dispatch import TorchDispatchMode\n"
+        "class M(TorchDispatchMode):\n"
+        "    def __torch_dispatch__(self, func, types, args=(), kwargs=None):\n"
+        "        return func(*args, **(kwargs or {}))\n"
+        "M().__enter__()\n"
+        "L.accuracy(torch.tensor([0, 1]), torch.tensor([0, 1]))\n")
+    res = subprocess.run([sys.executable, "-c", mode], capture_output=True, text=True, timeout=120)
+    assert res.returncode == 4 and "dispatch mode is active" in res.stdout, (res.returncode, res.stdout[-500:])
 
 
 def smoke_copy(node: str, tmp: Path, make_data: Callable[[Path], dict] | None, data_files: list[str]) -> Path:

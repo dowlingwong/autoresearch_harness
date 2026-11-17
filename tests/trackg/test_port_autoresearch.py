@@ -171,6 +171,17 @@ sys.stdout = Filter()                                                  # a rewri
 _forward = M.forward
 M.forward = lambda self, x, targets=None, reduction="mean": _forward(self, x, targets, reduction).as_subclass(Liar)
 model = M(tokenizer.get_vocab_size())"""), 4, "plain torch.Tensor"),
+    "leaves_a_dispatch_mode_active": (MODEL_HEAD.replace("SHIFT(x)", "x") + """from torch.utils._python_dispatch import TorchDispatchMode
+class Zero(TorchDispatchMode):
+    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        return func(*args, **(kwargs or {}))
+Zero().__enter__()
+""", 4, "dispatch mode is active"),
+    "hides_tensors_from_the_fingerprint": (MODEL_HEAD.replace("SHIFT(x)", "x").replace(
+        "        if targets is None:", "        with torch.no_grad():\n            self.e.weight.add_(1e-3)\n        if targets is None:").replace(
+        "model = M(tokenizer.get_vocab_size())", """M._named_members = lambda self, *a, **k: iter(())
+M.named_modules = lambda self, *a, **k: iter(())
+model = M(tokenizer.get_vocab_size())"""), 10, "weights or buffers changed"),
     "plants_a_data_file": (MODEL_HEAD.replace("SHIFT(x)", "x") + """import os, pathlib
 d = pathlib.Path("data").resolve() / "data"
 os.chmod(d, 0o755)
