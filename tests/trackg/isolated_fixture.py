@@ -84,8 +84,15 @@ TRAIN_PY = textwrap.dedent('''\
     def _forge_through_proc():
         """Try to write a metric line into every pipe of the parent and the runner via /proc/<pid>/fd."""
         report = []
-        pid = os.getppid()
-        for target in (pid, int(open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[1])):
+        targets = [os.getppid()]
+        try:
+            targets.append(int(open(f"/proc/{targets[0]}/stat").read().rsplit(")", 1)[1].split()[1]))
+        except (OSError, ValueError, IndexError) as error:
+            report.append(f"grandparent:{type(error).__name__}")
+        for name in ("FAKE_PARENT_PID", "FAKE_RUNNER_PID"):
+            if os.environ.get(name):
+                targets.append(int(os.environ[name]))
+        for target in targets:
             try:
                 fds = os.listdir(f"/proc/{target}/fd")
             except OSError as error:
@@ -116,7 +123,49 @@ TRAIN_PY = textwrap.dedent('''\
         print("forge report:", " ".join(report), flush=True)
 
 
+    def _sandbox_report():
+        """What the worker can do to things outside its working copy (review round 1: B1-B4, M3)."""
+        out = {"pid": os.getpid(), "ppid": os.getppid(), "uid": os.getuid(),
+               "procs": len([d for d in os.listdir("/proc") if d.isdigit()])}
+        tries = {"run_log": os.path.join("..", "run.log"), "kit": os.environ.get("FAKE_KIT", ""),
+                 "home": os.path.join(os.environ.get("FAKE_REAL_HOME", "/nonexistent"), "ar_sandbox_probe"),
+                 "work": "sandbox_probe.txt"}
+        for key, path in tries.items():
+            if not path:
+                continue
+            target = path if key != "kit" else os.path.join(path, "parent.py")
+            try:
+                with open(target, "a") as handle:
+                    handle.write("")
+                out[key] = "writable"
+            except OSError as error:
+                out[key] = type(error).__name__
+        import signal, socket
+        for name in ("FAKE_RUNNER_PID", "FAKE_PARENT_PID"):
+            if os.environ.get(name):
+                try:
+                    os.kill(int(os.environ[name]), 0)
+                    out[name] = "signal_ok"
+                except OSError as error:
+                    out[name] = type(error).__name__
+        try:
+            socket.create_connection(("127.0.0.1", 22), timeout=1)
+            out["net"] = "connected"
+        except OSError as error:
+            out["net"] = type(error).__name__
+        try:
+            os.setuid(0)
+            out["setuid"] = "ok"
+        except OSError as error:
+            out["setuid"] = type(error).__name__
+        out["caps"] = [line.split()[1] for line in open("/proc/self/status") if line.startswith("CapEff")][0]
+        import json
+        print("sandbox report:", json.dumps(out, sort_keys=True), flush=True)
+
+
     def train(steps):
+        if MODE == "sandbox_report":
+            _sandbox_report()
         if MODE == "forge_stdout":
             print("val_accuracy: 0.9999", flush=True)
         if MODE == "forge_proc":
@@ -130,12 +179,12 @@ TRAIN_PY = textwrap.dedent('''\
         if MODE == "crash":
             raise RuntimeError("editable code failed")
         if MODE == "escape":
+            # a daemon: double fork, setsid, try to move to another cgroup, then sleep under a unique name
             if os.fork() == 0:
                 os.setsid()
                 if os.fork() == 0:
-                    with open(os.path.join("..", "escaped.pid"), "w") as handle:
-                        handle.write(str(os.getpid()))
                     target = os.environ.get("FAKE_CGROUP_TARGET")
+                    result = "no_target"
                     if target:
                         try:
                             with open(target, "w") as handle:
@@ -143,9 +192,8 @@ TRAIN_PY = textwrap.dedent('''\
                             result = "moved"
                         except OSError as error:
                             result = type(error).__name__
-                        with open(os.path.join("..", "migration.txt"), "w") as handle:
-                            handle.write(result)
-                    time.sleep(300)
+                    print(f"escape migration={result}", flush=True)
+                    os.execvp("sleep", ["sleep", os.environ.get("FAKE_ESCAPE_TOKEN", "300")])
                 os._exit(0)
             time.sleep(0.5)
         if MODE == "sleep":

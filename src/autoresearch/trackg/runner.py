@@ -34,10 +34,13 @@ With ``limits.cgroup_parent`` the run's processes join a fresh cgroup v2
 directory, and a timeout or the end of the run kills the whole cgroup
 (R1-HARNESS-ISOLATION).  A node with an ``isolation`` block runs isolated:
 see :mod:`autoresearch.trackg.isolation` (frozen parent started without a
-shell, result channel, append-only log, frozen-file check); an isolated run
-needs a cgroup parent (or an explicit ``no_cgroup_reason``) and refuses to run
-as root unless ``root_isolation_reason`` is given (it is then recorded as not
-effective).
+shell, worker sandbox, result channel, append-only log, frozen files pinned).
+An isolated run refuses each missing host condition (no cgroup, root, no
+worker sandbox, ``ptrace_scope`` 0) unless ``limits.isolation_waivers`` names
+it with a reason; the record lists the waivers and says the run is then not
+fully isolated.  Every run's working copy must match the frozen-file pin taken
+from the node kit (and a campaign's expected incumbent code state) before it
+runs: a mismatch raises :class:`IntegrityError` (STOP).
 """
 from __future__ import annotations
 
@@ -57,7 +60,7 @@ from typing import Any, Literal
 from autoresearch.trackg import determinism, isolation
 from autoresearch.trackg.diff_support import DiffApplication, EvaluatedStates, apply_diff, code_state_hashes
 from autoresearch.trackg.node_template import TrackGNodeSpec
-from autoresearch.trackg.outcome import INFRASTRUCTURE_FAILURE, ProcessExit, RunOutcome, parse_run_log
+from autoresearch.trackg.outcome import INFRASTRUCTURE_FAILURE, ProcessExit, RunOutcome, parse_run_log, parse_run_text
 from autoresearch.trackg.selection import parse_sealed_test_metric
 
 RUN_RECORD_SCHEMA = "trackg_run/v1"
@@ -66,8 +69,16 @@ _COPY_IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".git")
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,127}$")
 
 
+WAIVERS = ("no_cgroup", "root", "no_worker_sandbox", "ptrace_scope", "timeout_factor")
+
+
 class RunnerError(ValueError):
     """Raised for an invalid runner configuration (before anything runs)."""
+
+
+class IntegrityError(RunnerError):
+    """The working copy's frozen files differ from the pin taken from the node kit, or the incumbent's code
+    state differs from the one the campaign expects: something outside the declared diffs changed them (STOP)."""
 
 
 @dataclass(frozen=True)
@@ -88,10 +99,8 @@ class ResourceLimits:
     external_limit: str | None = None
     uncapped_reason: str | None = None
     cgroup_parent: str | None = None
-    no_cgroup_reason: str | None = None
-    root_isolation_reason: str | None = None
-    cgroup_namespace: bool = True
-    no_cgroup_namespace_reason: str | None = None
+    # waiver name -> reason; names: no_cgroup, root, no_worker_sandbox, ptrace_scope, timeout_factor
+    isolation_waivers: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         for uuid in self.gpu_uuids:
@@ -114,10 +123,16 @@ class ResourceLimits:
             raise RunnerError("memory_method 'external' needs external_limit (what enforces it)")
         if self.memory_method != "external" and self.external_limit:
             raise RunnerError("external_limit is only for memory_method 'external'")
-        if self.cgroup_parent is not None and self.no_cgroup_reason:
-            raise RunnerError("give cgroup_parent or no_cgroup_reason, not both")
-        if not self.cgroup_namespace and not self.no_cgroup_namespace_reason:
-            raise RunnerError("cgroup_namespace=False needs no_cgroup_namespace_reason (it is recorded)")
+        unknown = set(self.isolation_waivers) - set(WAIVERS)
+        if unknown or not all(isinstance(v, str) and v.strip() for v in self.isolation_waivers.values()):
+            raise RunnerError(f"isolation_waivers: names must be among {WAIVERS} with a non-empty reason; got "
+                              f"{dict(self.isolation_waivers)}")
+        if self.cgroup_parent is not None and "no_cgroup" in self.isolation_waivers:
+            raise RunnerError("give cgroup_parent or the no_cgroup waiver, not both")
+        if self.measured_run_seconds is not None and self.timeout_factor != 3.0 and \
+                "timeout_factor" not in self.isolation_waivers:
+            raise RunnerError("R1-TRACKG-PORT-DECISIONS (4): the timeout is 3 x the measured run time; another "
+                              "factor needs the timeout_factor waiver")
         missing = self.missing_caps()
         if missing and not self.uncapped_reason:
             raise RunnerError(f"no {' and no '.join(missing)} cap: give one, or an explicit uncapped_reason")
@@ -160,7 +175,8 @@ class RunResult:
 
 
 class WorkingCopyRunner:
-    def __init__(self, spec: TrackGNodeSpec, node_root: str | Path, runs_root: str | Path) -> None:
+    def __init__(self, spec: TrackGNodeSpec, node_root: str | Path, runs_root: str | Path, *,
+                 frozen_pin: dict[str, str] | None = None, protect_paths: tuple[str | Path, ...] = ()) -> None:
         self.spec = spec
         self.node_root = Path(node_root).resolve()
         self.runs_root = Path(runs_root).resolve()
@@ -169,6 +185,10 @@ class WorkingCopyRunner:
         if self.runs_root == self.node_root or self.node_root in self.runs_root.parents:
             raise RunnerError("runs_root must be outside the node root")
         self.base_spec = spec.to_base_node_spec()
+        # The frozen files as the node kit has them now (a campaign passes the pin it took from the kit once).
+        self.frozen_pin = dict(frozen_pin) if frozen_pin is not None else \
+            isolation.frozen_file_hashes(self.node_root, spec.frozen_paths)
+        self.protect_paths = tuple(Path(p).resolve() for p in protect_paths)
 
     # ------------------------------------------------------------------ copy
     def prepare(self, run_id: str) -> tuple[Path, Path]:
@@ -195,6 +215,7 @@ class WorkingCopyRunner:
         register_evaluated: bool = True,
         keep_code_snapshot: bool = True,
         interpreter: str = "python3",
+        expected_incumbent_state: str | None = None,
     ) -> RunResult:
         """Copy, optionally apply a diff, run under limits, classify and record.
 
@@ -203,18 +224,28 @@ class WorkingCopyRunner:
         run outputs can be promoted as the next incumbent.
         """
         isolated = self.spec.isolation is not None
+        waivers = limits.isolation_waivers
         if isolated:
-            if limits.cgroup_parent is None and not limits.no_cgroup_reason:
-                raise RunnerError("an isolated run needs limits.cgroup_parent (or an explicit no_cgroup_reason)")
-            if os.geteuid() == 0 and not limits.root_isolation_reason:
+            if limits.cgroup_parent is None and "no_cgroup" not in waivers:
+                raise RunnerError("an isolated run needs limits.cgroup_parent (or the no_cgroup waiver)")
+            if os.geteuid() == 0 and "root" not in waivers:
                 raise RunnerError("an isolated run as root is not isolated (non-dumpable processes need a "
-                                  "non-root user); give root_isolation_reason to run anyway (tests)")
+                                  "non-root user); the root waiver runs it anyway (tests)")
+            scope = isolation.ptrace_scope()
+            if (scope is None or scope < 1) and "ptrace_scope" not in waivers:
+                raise RunnerError(f"Yama ptrace_scope is {scope}: an unrelated process of the same user could attach "
+                                  "to the parent during its start-up; set it to 1 or give the ptrace_scope waiver")
         if limits.cpu_list is not None:
             available = os.sched_getaffinity(0)
             outside = sorted(set(limits.cpu_list) - available)
             if outside:
                 raise RunnerError(f"cpu_list {outside} not in this process's CPU set {sorted(available)}")
         run_dir, work = self.prepare(run_id)
+        copied = isolation.frozen_file_hashes(work, self.spec.frozen_paths)
+        if copied != self.frozen_pin:
+            changed = sorted(k for k in set(copied) | set(self.frozen_pin) if copied.get(k) != self.frozen_pin.get(k))
+            raise IntegrityError(f"STOP: the frozen files of {self.node_root} differ from the pin taken from the node "
+                                 f"kit: {changed[:10]}")
         record: dict[str, Any] = {
             "schema": RUN_RECORD_SCHEMA,
             "run_id": run_id,
@@ -228,6 +259,9 @@ class WorkingCopyRunner:
         }
         normalised, raw = code_state_hashes(work, self.base_spec)
         record["incumbent_code_state_sha256"], record["incumbent_code_state_raw_sha256"] = normalised, raw
+        if expected_incumbent_state is not None and raw != expected_incumbent_state:
+            raise IntegrityError(f"STOP: the incumbent {self.node_root} has code state {raw}, the campaign expects "
+                                 f"{expected_incumbent_state}")
         application: DiffApplication | None = None
         if diff_text is not None:
             # ``interpreter``: the run's Python, for the new-file shadowing check (kit review round 3 note)
@@ -258,9 +292,14 @@ class WorkingCopyRunner:
             process, env_applied, det_record, elapsed, kill_info = self._execute(
                 run_dir, work, limits, train_seed, split_seed)
             command = self.spec.budgeted_run_command()
-        outcome = override or parse_run_log(log_path, process, self.spec,
-                                            timeout_is_proposal_failure=limits.timeout_is_proposal_failure,
-                                            result_text=result_text)
+        if isolated:
+            verified_text = record["isolation"].pop("_verified_log")
+            outcome = override or parse_run_text(verified_text, process, self.spec,
+                                                 timeout_is_proposal_failure=limits.timeout_is_proposal_failure,
+                                                 result_text=result_text)
+        else:
+            outcome = parse_run_log(log_path, process, self.spec,
+                                    timeout_is_proposal_failure=limits.timeout_is_proposal_failure)
         record.update({
             "executed": True,
             "command": command,
@@ -362,11 +401,41 @@ class WorkingCopyRunner:
         except isolation.IsolationError as error:
             raise RunnerError(str(error)) from error
 
+    def _sandbox_config(self, run_dir: Path, work: Path, interpreter: str) -> dict:
+        """What the worker sees read-only, writable and private (see :mod:`autoresearch.trackg.isolation`)."""
+        protect = [self.runs_root, self.node_root, *self.protect_paths]
+        data = work / "data"
+        if data.is_symlink():
+            protect.append(data.resolve())
+        home = os.environ.get("HOME")
+        if home:
+            protect.append(Path(home).resolve())
+        protect += _interpreter_prefixes(interpreter)
+        protect.append(Path(__file__).resolve().parents[2])   # the harness source tree
+        protect = sorted({p for p in protect if p.exists()}, key=lambda p: len(p.parts))
+        writable = [work.resolve()]
+        uid = os.getuid()
+        private = []
+        for candidate in (Path("/tmp"), Path("/var/tmp"), Path(f"/run/user/{uid}")):
+            inside = [x for x in protect + writable if x == candidate or candidate in x.parents]
+            if candidate.is_dir() and not inside:
+                private.append(candidate)
+        # caches and a home directory inside the working copy (the real home directory is read-only for the worker)
+        scratch = {"HOME": work / ".ar_home", "XDG_CACHE_HOME": work / ".ar_cache",
+                   "TRITON_CACHE_DIR": work / ".ar_cache" / "triton",
+                   "TORCHINDUCTOR_CACHE_DIR": work / ".ar_cache" / "inductor",
+                   "MPLCONFIGDIR": work / ".ar_cache" / "matplotlib"}
+        for path in scratch.values():
+            path.mkdir(parents=True, exist_ok=True)
+        return {"protect": [str(p) for p in protect], "writable": [str(p) for p in writable],
+                "private": [str(p) for p in private], "env": {k: str(v) for k, v in scratch.items()}}
+
     def _execute_isolated(self, run_dir: Path, work: Path, limits: ResourceLimits, train_seed: int | None,
                           split_seed: int | None, interpreter: str):
         """The isolated run (R1-HARNESS-ISOLATION); see :mod:`autoresearch.trackg.isolation`."""
         iso_spec = self.spec.isolation
         assert iso_spec is not None
+        waivers = dict(limits.isolation_waivers)
         env, applied = self.build_environment(run_dir, limits, train_seed, split_seed)
         for name, value in iso_spec.env:
             env[name] = value
@@ -376,16 +445,17 @@ class WorkingCopyRunner:
         argv = iso_spec.argv(interpreter, self.spec.run_budget.value)
         euid = os.geteuid()
         isolation.set_non_dumpable()
+        sandbox = None
+        if "no_worker_sandbox" not in waivers:
+            sandbox = self._sandbox_config(run_dir, work, interpreter)
+            ok, why = isolation.worker_sandbox_available(interpreter, sandbox, run_dir / "_sandbox_probe")
+            if not ok:
+                raise RunnerError(f"this host refuses the worker sandbox ({why}); give the no_worker_sandbox waiver "
+                                  "to run without it (then the run is not isolated)")
+            env[isolation.SANDBOX_ENV] = json.dumps(sandbox)
         frozen_before = isolation.frozen_file_hashes(work, self.spec.frozen_paths)
         cgroup = self._make_cgroup(limits, run_dir.name)
-        namespace = cgroup is not None and limits.cgroup_namespace
-        if namespace:
-            ok, why = isolation.cgroup_namespace_available()
-            if not ok:
-                _close_cgroup(cgroup)
-                raise RunnerError(f"this host refuses a user + cgroup namespace ({why}); give "
-                                  "cgroup_namespace=False with no_cgroup_namespace_reason")
-        preexec_limits = _limits_preexec(limits, cgroup, namespace=namespace)
+        preexec_limits = _limits_preexec(limits, cgroup)
         log_path = run_dir / "run.log"
         start = time.monotonic()
         exit_ = isolation.execute(argv, cwd=work, env=env, log_path=log_path, timeout=timeout,
@@ -394,40 +464,45 @@ class WorkingCopyRunner:
                                   sweep=_kill_leftovers)
         elapsed = time.monotonic() - start
         cg_record = _close_cgroup(cgroup, exit_.kill if cgroup else None)
-        log_intact = isolation.verify_log(log_path, exit_.log_sha256_written, exit_.log_bytes_written)
+        verified = isolation.verify_log(log_path, exit_.log_sha256_written, exit_.log_bytes_written)
+        log_intact = verified is not None
         frozen_after = isolation.frozen_file_hashes(work, self.spec.frozen_paths)
         changed = sorted(k for k in set(frozen_before) | set(frozen_after)
                          if frozen_before.get(k) != frozen_after.get(k))
-        result_sha = hashlib.sha256(exit_.result_text.encode("utf-8")).hexdigest()
-        (run_dir / "result_channel.txt").write_text(exit_.result_text, encoding="utf-8")
+        result_bytes = exit_.result_text.encode("utf-8")
+        result_sha = hashlib.sha256(result_bytes).hexdigest()
+        fd = os.open(run_dir / "result_channel.txt", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(result_bytes)
         if log_intact:
             isolation.append_runner_line(log_path, f"AR_RUNNER result_channel_sha256={result_sha} "
-                                                   f"bytes={len(exit_.result_text.encode('utf-8'))}")
+                                                   f"bytes={len(result_bytes)}")
         process = ProcessExit(exit_.returncode, timed_out=exit_.timed_out, launch_error=exit_.launch_error)
+        kill = exit_.kill or {}
         override = None
-        if exit_.launch_error is None:
-            if not log_intact:
+        if exit_.launch_error is None and not exit_.timed_out:   # the timeout rule decides first, as for any run
+            if kill.get("parent_traced_by"):
+                override = RunOutcome.infrastructure_failure("parent_traced", tracer=kill["parent_traced_by"])
+            elif not log_intact:
                 override = RunOutcome.divergent("log_tampered")
             elif changed:
                 override = RunOutcome.divergent("frozen_file_changed", files=changed[:20])
-            elif (exit_.kill or {}).get("result_channel_error"):
-                override = RunOutcome.divergent("result_channel_error", error=exit_.kill["result_channel_error"])
+            elif kill.get("result_channel_error"):
+                override = RunOutcome.divergent("result_channel_error", error=kill["result_channel_error"])
             elif exit_.result_overflow:
                 override = RunOutcome.divergent("result_channel_overflow",
                                                 limit_bytes=isolation.RESULT_CHANNEL_MAX_BYTES)
-            if override is not None and exit_.timed_out:
-                override = None          # the timeout rule decides first, as for any run
+        effective = not waivers and euid != 0 and cgroup is not None and sandbox is not None
         iso_record = {
             "argv": argv,
-            "effective": euid != 0,
+            "effective": effective,
+            "waivers": waivers,
             "euid": euid,
-            "root_isolation_reason": limits.root_isolation_reason if euid == 0 else None,
+            "ptrace_scope": isolation.ptrace_scope(),
             "runner_dumpable": isolation.is_dumpable(),
+            "worker_sandbox": sandbox,
             "cgroup": cg_record,
-            "cgroup_namespace": namespace,
             "nsdelegate": isolation.cgroup2_nsdelegate(cgroup.path.parent) if cgroup is not None else None,
-            "no_cgroup_namespace_reason": None if namespace else limits.no_cgroup_namespace_reason,
-            "no_cgroup_reason": limits.no_cgroup_reason if cgroup is None else None,
             "log_intact": log_intact,
             "log_bytes_from_run": exit_.log_bytes_written,
             "result_channel_sha256": result_sha,
@@ -435,13 +510,14 @@ class WorkingCopyRunner:
             "frozen_files_checked": len(frozen_before),
             "frozen_files_changed": changed,
             "limits": isolation.limits_text(),
+            "_verified_log": (verified or b"").decode("utf-8", errors="replace"),
         }
         det_record = determinism.read_record(run_dir / "determinism_shim.json", env)
-        kill = exit_.kill or {}
         kill_info = {"killed_with": ("cgroup.kill" if cgroup else "session_sweep") if exit_.timed_out else None,
                      "leftover_processes_killed": bool(kill.get("processes_before") or
                                                        kill.get("session_sweep_killed") or
-                                                       kill.get("orphans_killed"))}
+                                                       kill.get("orphans_killed")),
+                     "timed_out_by_elapsed": kill.get("timed_out_by_elapsed")}
         return process, applied, det_record, elapsed, kill_info, iso_record, exit_.result_text, override
 
     @staticmethod
@@ -453,13 +529,27 @@ class WorkingCopyRunner:
 
 
 class _NoCgroup:
-    """Stand-in when an isolated run has no cgroup (``no_cgroup_reason``): only the session sweep kills."""
+    """Stand-in when an isolated run has no cgroup (``no_cgroup`` waiver): only the session sweep kills."""
 
     def kill(self, grace: float = 10.0) -> dict[str, Any]:
         return {"method": "none", "processes_before": 0, "empty_after": True}
 
     def populated(self) -> bool:
         return False
+
+
+_PREFIX_CACHE: dict[str, list[Path]] = {}
+
+
+def _interpreter_prefixes(interpreter: str) -> list[Path]:
+    """The run interpreter's ``sys.prefix`` and ``sys.base_prefix`` (its installation, read-only for the worker)."""
+    if interpreter not in _PREFIX_CACHE:
+        out = subprocess.run([interpreter, "-E", "-s", "-c", "import sys; print(sys.prefix); print(sys.base_prefix)"],
+                             capture_output=True, text=True, timeout=60)
+        if out.returncode != 0:
+            raise RunnerError(f"cannot query {interpreter}: {out.stderr[-300:]}")
+        _PREFIX_CACHE[interpreter] = [Path(line).resolve() for line in out.stdout.split() if line]
+    return list(_PREFIX_CACHE[interpreter])
 
 
 def _close_cgroup(cgroup: "isolation.RunCgroup | None", kill: dict | None = None) -> dict[str, Any] | None:
@@ -471,12 +561,11 @@ def _close_cgroup(cgroup: "isolation.RunCgroup | None", kill: dict | None = None
             "removed": cgroup.remove()}
 
 
-def _limits_preexec(limits: ResourceLimits, cgroup: "isolation.RunCgroup | None" = None, *,
-                    namespace: bool = False):
+def _limits_preexec(limits: ResourceLimits, cgroup: "isolation.RunCgroup | None" = None):
     cpu_list = limits.cpu_list
     memory = limits.memory_bytes
     method = limits.memory_method
-    join = isolation.join_cgroup_preexec(cgroup, namespace) if cgroup is not None else None
+    join = isolation.join_cgroup_preexec(cgroup) if cgroup is not None else None
 
     def apply() -> None:  # runs in the child between fork and exec
         if cpu_list is not None:
@@ -485,7 +574,7 @@ def _limits_preexec(limits: ResourceLimits, cgroup: "isolation.RunCgroup | None"
             which = resource.RLIMIT_AS if method == "rlimit_as" else resource.RLIMIT_DATA
             resource.setrlimit(which, (memory, memory))
         if join is not None:
-            join()            # last: after unshare(CLONE_NEWUSER) the child has no privilege outside
+            join()
 
     return apply
 

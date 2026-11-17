@@ -26,6 +26,9 @@ TRAIN_PY = textwrap.dedent('''\
             open(os.path.join("model", "weights.bin"), "wb").write(bytes([0xff, 0xfe, 0x00, 0x80]))
         if MODE == "sleep":
             time.sleep(60)
+        if MODE == "tamper_kit":
+            with open(os.path.join(os.environ["FAKE_KIT"], "eval" + "uate.py"), "a") as handle:
+                handle.write("# changed by a run\\n")
         if MODE == "affinity":
             print("affinity:", sorted(os.sched_getaffinity(0)))
             import resource
