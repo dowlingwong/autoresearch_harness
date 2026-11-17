@@ -144,6 +144,20 @@ class M(torch.nn.Module):
         return torch.zeros_like(targets, dtype=torch.float32)   # an edited loss: zero (the metric must ignore it)
 model = M(tokenizer.get_vocab_size())
 """
+ZERO_MODEL = PROBE_HEAD + """next(loader); next(loader)
+import torch
+class Z(torch.nn.Module):
+    \"\"\"Causal, predicts token 0 everywhere: a metric near 0 would mean the targets were rewritten to 0.\"\"\"
+    def __init__(self, vocab):
+        super().__init__()
+        self.w = torch.nn.Parameter(torch.zeros(1))
+        self.vocab = vocab
+    def forward(self, x, targets=None, reduction="mean"):
+        logits = torch.full((*x.shape, self.vocab), -20.0, device=x.device) + 0 * self.w
+        logits[..., 0] = 20.0
+        return logits
+model = Z(tokenizer.get_vocab_size())
+"""
 EVALUATED = {   # train.py stand-ins that use the whole budget and leave a model; (exit, check of stdout)
     "causal_with_forgeries": (MODEL_HEAD.replace("SHIFT(x)", "x") + """import atexit, sys
 atexit.register(lambda: print("AR_METRIC val_bpb=0.1", flush=True))   # a line after the wrapper's
@@ -157,6 +171,18 @@ sys.stdout = Filter()                                                  # a rewri
 """, 0, None),
     "sets_the_default_device": (MODEL_HEAD.replace("SHIFT(x)", "x") + "torch.set_default_device('cpu')  # an ordinary edit\n",
                                 0, None),
+    "rewrites_targets_through_a_function_mode": (ZERO_MODEL + """from torch.overrides import TorchFunctionMode
+class Targets(TorchFunctionMode):
+    def __torch_function__(self, func, types, args=(), kwargs=None):
+        out = func(*args, **(kwargs or {}))
+        if getattr(func, "__name__", "") == "copy_" and torch.is_tensor(args[0]):
+            args[0].zero_()   # the loader's copies into its buffers: every target would become token 0
+        return out
+Targets().__enter__()
+""", 0, None),
+    "writes_into_the_loader_buffer": (ZERO_MODEL.replace("        return logits\n",
+        "        torch.tensor([], dtype=x.dtype, device=x.device).set_(x.untyped_storage()).zero_()  # whole storage\n"
+        "        return logits\n"), 0, None),
     "peeks_at_the_next_token": (MODEL_HEAD.replace("SHIFT(x)", "torch.roll(x, -1, dims=1)"), 9, "not causal"),
     "peeks_with_an_infinite_logit": (MODEL_HEAD.replace("SHIFT(x)", "torch.roll(x, -1, dims=1)").replace(
         "        logits = self.e(", "        logits = self.e(").replace(

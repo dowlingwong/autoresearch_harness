@@ -97,17 +97,21 @@ def causality_probe(model, x, torch) -> float:
     T = x.shape[1]
     worst = 0.0
     with torch.no_grad():
-        base = plain_logits(model(x), x, torch)
+        with torch._C.DisableTorchFunction():
+            model_input = x.clone()
+        base = plain_logits(model(model_input), x, torch)
         with torch._C.DisableTorchFunction():
             if torch.isnan(base).any():
                 return float("nan")  # a non-finite metric follows; nothing to compare
         for frac in PROBE_CUTS:
             cut = max(1, int(T * frac))
-            altered = x.clone()
-            altered[:, cut:] = torch.roll(x, shifts=1, dims=0)[:, cut:]
-            if torch.equal(altered, x):
-                altered[:, cut:] = (x[:, cut:] + 1) % base.shape[-1]
-            after = plain_logits(model(altered), x, torch)
+            with torch._C.DisableTorchFunction():  # the probe's inputs are built without editable mode code
+                altered = x.clone()
+                altered[:, cut:] = torch.roll(x, shifts=1, dims=0)[:, cut:]
+                if torch.equal(altered, x):
+                    altered[:, cut:] = (x[:, cut:] + 1) % base.shape[-1]
+                model_input = altered.clone()  # the model gets a copy, so it cannot change the probe's tensors
+            after = plain_logits(model(model_input), x, torch)
             with torch._C.DisableTorchFunction():
                 after, before = after[:, :cut], base[:, :cut]
                 change = torch.where(after == before, torch.zeros_like(before), (after - before).abs())  # inf == inf
@@ -185,17 +189,25 @@ def frozen_bpb(model, tokenizer, batch_size, make_dataloader, get_token_bytes, m
     import math
 
     device = module_tensors(model)[0][1].device
-    token_bytes = get_token_bytes(device=device)
-    val_loader = make_dataloader(tokenizer, batch_size, max_seq_len, "val")
+    # The data path (prepare's loader and token byte lengths) runs with torch-function dispatch disabled, so a mode
+    # the editable code left active cannot rewrite the targets or the byte counts; only model(x) runs outside it.
+    with torch._C.DisableTorchFunction():
+        token_bytes = get_token_bytes(device=device)
+        val_loader = make_dataloader(tokenizer, batch_size, max_seq_len, "val")
     steps = eval_tokens // (batch_size * max_seq_len)
     total_nats, total_bytes = 0.0, 0
     with torch.no_grad():
         for index in range(steps):
-            x, y, _ = next(val_loader)
+            no_active_modes(torch)
+            with torch._C.DisableTorchFunction():
+                x, y, _ = next(val_loader)
+                # Copies: x and y are views of one reused loader buffer, which the model could otherwise write into.
+                x, y = x.clone(), y.clone()
+                model_input = x.clone()
             if index == 0:
                 worst = causality_probe(model, x, torch)  # the evaluation batch shape: no recompilation
                 print(f"AR_INFO causal_probe_max_change={worst:.3g} (tolerance {CAUSAL_ATOL})", flush=True)
-            logits = plain_logits(model(x), x, torch)
+            logits = plain_logits(model(model_input), x, torch)
             with torch._C.DisableTorchFunction():  # no __torch_function__ subclass or mode of the editable code
                 nats = cross_entropy(logits.reshape(-1, logits.shape[-1]), y.reshape(-1), reduction="none")
                 nbytes = token_bytes[y.reshape(-1)]
