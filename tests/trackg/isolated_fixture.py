@@ -159,6 +159,17 @@ TRAIN_PY = textwrap.dedent('''\
         except OSError as error:
             out["setuid"] = type(error).__name__
         out["caps"] = [line.split()[1] for line in open("/proc/self/status") if line.startswith("CapEff")][0]
+        if os.environ.get("FAKE_SOCKET"):     # a same-uid daemon's socket (tmux, screen) outside the sandbox
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                client.connect(os.environ["FAKE_SOCKET"])
+                out["socket"] = "connected"
+            except OSError as error:
+                out["socket"] = type(error).__name__
+        try:
+            out["cgroupfs"] = sorted(os.listdir("/sys/fs/cgroup"))
+        except OSError as error:
+            out["cgroupfs"] = type(error).__name__
         import json
         print("sandbox report:", json.dumps(out, sort_keys=True), flush=True)
 
@@ -178,6 +189,9 @@ TRAIN_PY = textwrap.dedent('''\
                 handle.write("# changed by the editable code\\n")
         if MODE == "crash":
             raise RuntimeError("editable code failed")
+        if MODE == "kill_group":
+            import signal
+            os.killpg(0, signal.SIGKILL)   # the worker's own process group: must not reach the parent
         if MODE == "escape":
             # a daemon: double fork, setsid, try to move to another cgroup, then sleep under a unique name
             if os.fork() == 0:

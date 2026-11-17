@@ -7,17 +7,19 @@ that runs in the frozen wrapper's process can forge the metric line.
 
 How a node with an ``isolation`` block (``trackg_node/v1``) is run by :class:`WorkingCopyRunner`:
 
-* **No shell; a frozen parent.**  The runner starts ``[python, -E, -s, entry, *args]`` itself (no ``PYTHON*``
-  variables, no user site directory).  ``entry`` is a frozen file (the *parent*) that never imports editable
+* **No shell; a frozen parent.**  The runner starts ``[python, -s, entry, *args]`` itself (no user site
+  directory; the environment keeps the determinism settings).  ``entry`` is a frozen file (the *parent*) that never imports editable
   code; it starts the editable code in a *worker* process (node library ``ar_isolated.py``) and computes the
   metric from what the worker returns.
-* **Worker sandbox.**  The worker runs in new user, mount, PID, network and cgroup namespaces
-  (``ar_isolated``'s module docstring): the runs tree, the node kit, the data, the home directory and the
-  Python installation are read-only for it, only its working copy is writable, ``/tmp``-like directories are
-  private (when no protected path lies under them), it has no network, it is PID 1 of its own PID namespace with
-  a fresh ``/proc`` and no capability, and ``no_new_privs`` is set.  So it cannot see or signal the runner or
-  the parent, cannot write another run's files, the incumbent, the kit or the Python environment, and when the
-  run ends the kernel kills every process of its PID namespace.  The runner checks before the run that this
+* **Worker sandbox.**  The worker runs in its own session and in new user, mount, PID, network and cgroup
+  namespaces, inside a new root file system that holds only an allow-list (``ar_isolated``'s module docstring,
+  review round 2): system directories, the run interpreter, the data and the shim read-only; its working copy
+  writable except the frozen files; a private ``/tmp``; ``/sys`` without any cgroup file system; ``/dev``.  It is
+  PID 1 of its own PID namespace with a fresh ``/proc``, no capability and ``no_new_privs``, and has no
+  network.  So it cannot see or signal the runner or the parent, cannot read or write the runs tree (other
+  runs' result channels), the incumbent, the kit, the home directory or the Python environment, cannot connect
+  to a daemon's socket outside its root, and when the run ends the kernel kills every process of its PID
+  namespace.  The runner checks before the run that this
   host allows the sandbox (unprivileged user namespaces with mount, PID and network namespaces); without it the
   run is refused unless the limits name a waiver (``no_worker_sandbox``), which the record shows.
 * **Result channel.**  The runner listens on a Unix socket with a random abstract name (``AR_RESULT_SOCKET``,
@@ -33,8 +35,9 @@ How a node with an ``isolation`` block (``trackg_node/v1``) is run by :class:`Wo
   namespace (the parent stays in the runner's).  Two conditions: the run must not run as root (refused unless
   waived: ``root``), and Yama's ``ptrace_scope`` must be at least 1, so that an unrelated process of the same
   user cannot attach to the parent during its interpreter start-up, before the flag is set (refused unless
-  waived: ``ptrace_scope``).  At the accept the runner also requires the parent's ``TracerPid`` to be 0
-  (otherwise ``infrastructure_failure``, reason ``parent_traced``).
+  waived: ``ptrace_scope``).  At the accept the runner also requires the parent's ``TracerPid`` to be 0 and the parent to be
+  non-dumpable (its ``/proc/<pid>/status`` owned by root; not checkable as root); otherwise the record is written
+  and the runner raises :class:`IntegrityError` (STOP): a process outside the run interfered.
 * **Append-only log.**  The run's standard output and error go to a pipe the runner reads; the runner alone
   appends to ``run.log`` (``O_APPEND``) and keeps a running sha256.  A run whose log file differs from what
   the runner wrote is ``divergent`` (``log_tampered``); the classification uses the verified bytes.  The
@@ -46,19 +49,25 @@ How a node with an ``isolation`` block (``trackg_node/v1``) is run by :class:`Wo
   (``PR_SET_CHILD_SUBREAPER``) and kills every child it did not have before the run, with its descendants.
   A run without a cgroup is refused unless waived (``no_cgroup``).
 * **Timeout.**  A run whose wall time (the runner's monotonic clock) exceeds the timeout counts as timed out
-  even if it ended by itself (a stopped runner's clock keeps running), and R1-TRACKG-PORT-DECISIONS (4)
+  even if it ended by itself (a stopped runner's clock keeps running; so does a suspension of the whole host or
+  batch job, which then also counts as the proposal's timeout), and R1-TRACKG-PORT-DECISIONS (4)
   requires the factor 3 for a measured timeout (other factors need the ``timeout_factor`` waiver).
 * **Frozen files and incumbent pinned.**  The sha256 of every regular file under the frozen paths (symbolic
   links by target) of the working copy must equal the pin taken from the node kit when the runner (or the
   campaign) was set up, before the run, and must be unchanged after it (``frozen_file_changed``); a campaign
   also passes the incumbent's code-state hash, which the copy must match.  A mismatch before the run is an
-  integrity STOP (:class:`IntegrityError`), not a proposal outcome.
+  integrity STOP (:class:`IntegrityError`), not a proposal outcome.  The pin is taken from the kit as it is when
+  the runner or campaign starts; every run record carries its hash (``frozen_pin_sha256``), which the census
+  should commit, so a kit changed before a later campaign is caught by comparing it.
 
 Not closed here (stated in the record's ``isolation.limits`` and the kits' threat model): the worker can read
 every file the run's uid can read, including the data and the validation and test labels (a read-only mount
 does not hide them); it computes the training itself, so the budget accounting and the loss lines stay in the
 editable process; it can answer the parent's evaluation requests differently from a fixed model (the kits'
-probes narrow this); ``/dev/shm`` stays shared (torch's CUDA IPC reference counters live there); its output
+probes narrow this); ``/dev/shm`` stays shared and writable (torch's CUDA IPC reference counters live there);
+the parent's environment and Python installation are trusted as the run's uid left them before the campaign
+(the worker cannot write them; another process of that uid outside the run could); CUDA IPC across the PID
+namespace is exercised by the kits' GPU smoke only; its output
 can contain an infrastructure log pattern, which makes the run an ``infrastructure_failure`` (rerun, not
 registered as evaluated) -- an RL reward must not treat that class as neutral without the author's decision.
 """
@@ -339,7 +348,7 @@ def join_cgroup_preexec(cgroup: RunCgroup):
 
 
 NODE_LIB = Path(__file__).resolve().parent / "node_lib" / "ar_isolated.py"
-_SANDBOX_PROBE = 'import importlib.util, json, os, sys\nspec = importlib.util.spec_from_file_location("ar_isolated", sys.argv[1])\niso = importlib.util.module_from_spec(spec); spec.loader.exec_module(iso)\nw = iso.Worker(os.path.join(sys.argv[2], "probe_worker.py"), os.path.dirname(sys.argv[1]))\nmeta, _ = w.call("ping")\nw.close()\nprint(json.dumps(meta))\n'
+_SANDBOX_PROBE = 'import importlib.util, json, os, sys\nspec = importlib.util.spec_from_file_location("ar_isolated", sys.argv[1])\niso = importlib.util.module_from_spec(spec); spec.loader.exec_module(iso)\nw = iso.Worker(os.path.join(sys.argv[2], "probe_worker.py"), os.path.dirname(sys.argv[1]), cwd=sys.argv[2])\nmeta, _ = w.call("ping")\nw.close()\nprint(json.dumps(meta))\n'
 _SANDBOX_PROBE_WORKER = 'import sys\nsys.path.insert(0, sys.argv[1])\nimport ar_isolated as iso\nc = iso.worker_connect()\nimport os\niso.serve({"ping": lambda m, a, f: ({"pid": os.getpid(), "uid": os.getuid()}, {})}, c)\n'
 
 
@@ -347,17 +356,23 @@ def worker_sandbox_available(interpreter: str, config: dict, probe_dir: Path) ->
     """Whether the run interpreter can start a worker in the sandbox *config* on this host: a short real worker
     from *probe_dir* (a new directory the runner owns, readable inside the sandbox)."""
     probe_dir = Path(probe_dir)
-    probe_dir.mkdir()
-    (probe_dir / "probe_worker.py").write_text(_SANDBOX_PROBE_WORKER)
+    files = probe_dir / "files"
+    files.mkdir(parents=True)
+    (files / "probe_worker.py").write_text(_SANDBOX_PROBE_WORKER)
+    (probe_dir / "root").mkdir()
+    probe_config = {**config, "root": str(probe_dir / "root"), "rw": [],
+                    "ro": [*config.get("ro", []), str(files), str(NODE_LIB.parent)], "ro_in_rw": []}
     env = dict(os.environ)
-    env[SANDBOX_ENV] = json.dumps(config)
+    env[SANDBOX_ENV] = json.dumps(probe_config)
     try:
-        proc = subprocess.run([interpreter, "-E", "-s", "-c", _SANDBOX_PROBE, str(NODE_LIB), str(probe_dir)],
+        proc = subprocess.run([interpreter, "-s", "-c", _SANDBOX_PROBE, str(NODE_LIB), str(files)],
                               capture_output=True, text=True, env=env, timeout=120)
     except (OSError, subprocess.SubprocessError) as error:
         return False, repr(error)
     if proc.returncode != 0:
-        return False, (proc.stdout + proc.stderr)[-600:]
+        text = proc.stdout + proc.stderr
+        errors = [line for line in text.splitlines() if "AR_ERROR" in line]
+        return False, " | ".join(errors[:3]) or text[-600:]
     try:
         meta = json.loads(proc.stdout.strip().splitlines()[-1])
     except (ValueError, IndexError):
@@ -372,6 +387,17 @@ def ptrace_scope() -> int | None:
         return int(Path("/proc/sys/kernel/yama/ptrace_scope").read_text().strip())
     except (OSError, ValueError):
         return None
+
+
+def non_dumpable(pid: int) -> bool:
+    """Whether process *pid* is non-dumpable: its ``/proc/<pid>/status`` then belongs to root.  As root this cannot
+    be told apart (every such file is root's): ``True`` then."""
+    if os.getuid() == 0:
+        return True
+    try:
+        return os.stat(f"/proc/{pid}/status").st_uid == 0
+    except OSError:
+        return False
 
 
 def tracer_pid(pid: int) -> int | None:
@@ -432,6 +458,7 @@ def execute(argv: list[str], *, cwd: Path, env: dict[str, str], log_path: Path, 
     rejected = 0
     channel_error = None
     parent_traced = 0
+    parent_dumpable = False
     started = time.monotonic()
     log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_APPEND, 0o644)
 
@@ -503,6 +530,8 @@ def execute(argv: list[str], *, cwd: Path, env: dict[str, str], log_path: Path, 
                         traced = tracer_pid(proc.pid)   # the parent is non-dumpable now: no new tracer can attach
                         if traced:
                             parent_traced = traced
+                        if not non_dumpable(proc.pid):
+                            parent_dumpable = True
                     else:
                         rejected += 1
                         conn.close()
@@ -545,6 +574,7 @@ def execute(argv: list[str], *, cwd: Path, env: dict[str, str], log_path: Path, 
         kill_info["rejected_result_connections"] = rejected
         kill_info["result_channel_error"] = channel_error
         kill_info["parent_traced_by"] = parent_traced or None
+        kill_info["parent_dumpable_at_accept"] = parent_dumpable
         elapsed = time.monotonic() - started
         if not timed_out and elapsed > timeout:
             timed_out = True                   # e.g. the runner was stopped (SIGSTOP) while the run went on
@@ -583,6 +613,8 @@ def limits_text() -> list[str]:
         "budget accounting and loss lines stay in the worker (editable) process",
         "a worker can answer the parent's evaluation requests differently from a fixed model (kit probes only)",
         "/dev/shm is shared with the worker (torch CUDA IPC reference counters)",
+        "the Python installation and the kit are trusted as the uid left them before the campaign (frozen_pin_sha256 "
+        "should be committed by the census)",
         "an infrastructure log pattern printed by the worker makes the run an infrastructure_failure",
         "the guarantees hold only with the worker sandbox, a non-root uid, a cgroup and ptrace_scope >= 1 "
         "(the record lists any waiver)",

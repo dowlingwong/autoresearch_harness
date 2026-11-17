@@ -288,8 +288,9 @@ class IsolationSpec:
         return cls(entry=entry, args=tuple(args), env=tuple(pairs))
 
     def argv(self, interpreter: str, budget: int) -> list[str]:
-        """``[python, -E, -s, entry, *args]``: no ``PYTHON*`` variables and no user site directory in the parent."""
-        return [interpreter, "-E", "-s", self.entry, *(a.replace("{budget}", str(budget)) for a in self.args)]
+        """``[python, -s, entry, *args]``: no user site directory in the parent (its environment keeps the determinism
+        settings; the worker cannot write the Python installation or the shim)."""
+        return [interpreter, "-s", self.entry, *(a.replace("{budget}", str(budget)) for a in self.args)]
 
 
 @dataclass(frozen=True)
