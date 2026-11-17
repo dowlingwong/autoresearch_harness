@@ -53,7 +53,7 @@ def main() -> None:
         source = {"loader": "torchvision.datasets.CIFAR10", "torchvision": torchvision.__version__,
                   "url": torchvision.datasets.CIFAR10.url, "archive_md5": torchvision.datasets.CIFAR10.tgz_md5,
                   "shapes": {"train_x": [50000, 32, 32, 3], "test_x": [10000, 32, 32, 3]}}
-        digest = ar_data.write_manifest(out, NODE, FILES, source)
+        digest = ar_data.write_manifest(out, NODE, FILES, source, setup_only=("torchvision_raw",))
         print(f"wrote {out / ar_data.MANIFEST_NAME} sha256 {digest}")
         ar_data.make_read_only(out)  # runs cannot change the shared data or leave files in it
     manifest = ar_data.verify(out, NODE, FILES)

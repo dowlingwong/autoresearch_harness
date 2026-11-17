@@ -78,7 +78,7 @@ def main() -> None:
                   "max_tokens": MAX_TOKENS, "datasets": datasets.__version__,
                   "transformers": transformers.__version__, "train_items": len(ds["train"]),
                   "test_items": len(ds["test"])}
-        digest = ar_data.write_manifest(out, NODE, files, source)
+        digest = ar_data.write_manifest(out, NODE, files, source, setup_only=("pretrained/.cache",))  # hub download metadata
         print(f"wrote {out / ar_data.MANIFEST_NAME} sha256 {digest}")
         ar_data.make_read_only(out)  # runs cannot change the shared data or leave files in it
     manifest = ar_data.verify(out, NODE, ARRAYS + [f"pretrained/{name}" for name in MODEL_FILES])

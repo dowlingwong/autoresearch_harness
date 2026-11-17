@@ -53,7 +53,7 @@ def main() -> None:
         source = {"loader": "ogb.nodeproppred.NodePropPredDataset", "name": "ogbn-arxiv", "ogb": ogb.__version__,
                   "num_nodes": int(graph["num_nodes"]), "num_edges": int(graph["edge_index"].shape[1]),
                   "split_sizes": {k: int(len(v)) for k, v in split.items()}}
-        digest = ar_data.write_manifest(out, NODE, FILES, source)
+        digest = ar_data.write_manifest(out, NODE, FILES, source, setup_only=("ogb_raw",))
         print(f"wrote {out / ar_data.MANIFEST_NAME} sha256 {digest}")
         ar_data.make_read_only(out)  # runs cannot change the shared data or leave files in it
     manifest = ar_data.verify(out, NODE, FILES)

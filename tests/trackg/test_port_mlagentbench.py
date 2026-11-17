@@ -33,12 +33,14 @@ def test_frozen_path_edit_refused(node):
     ps.check_scope(node)
 
 
-# Pairs of declared edits that change different settings and must compose (S1.1 interaction runs).
-# Edits that set the same line (two learning rates) are alternatives and are expected to conflict.
+# Pairs of declared edits that change different settings, compose, and both act after each other (S1.1
+# interaction runs).  Edits that set the same line (two learning rates) are alternatives and conflict; pairs
+# where one edit makes the other dead code (cifar10 E3's Adam ignores E1's / E4's learning rate; ogbn E4's
+# GraphSAGE ignores E3's sizes) compose but do not interact, and are left out.
 INTERACTING = {
-    "mlab_cifar10": {"E1+E2", "E1+E3", "E2+E3", "E2+E4", "E3+E4"},
+    "mlab_cifar10": {"E1+E2", "E2+E3", "E2+E4"},
     "mlab_imdb": {"E1+E3", "E1+E4", "E2+E3", "E2+E4", "E3+E4"},
-    "mlab_ogbn_arxiv": {"E1+E3", "E2+E3", "E3+E4"},
+    "mlab_ogbn_arxiv": {"E1+E3", "E2+E3"},
 }
 
 

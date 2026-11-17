@@ -142,11 +142,14 @@ def check_static(node: str, port_nodes: list[str]) -> None:
             copies = {n: (node_dir(n) / name).read_bytes() for n in port_nodes if (node_dir(n) / name).exists()}
             assert len(set(copies.values())) == 1, f"{name} differs between nodes {sorted(copies)}"
             assert name in spec.frozen_paths
-    # The frozen wrapper prints the metric; editable code never does.
+    # The frozen wrapper prints the metric, through the saved output descriptor (emit), and ends with
+    # os._exit after it (finish); editable code never mentions the result lines.
     wrapper = (base / "run_fixed_budget.py").read_text()
-    assert re.search(r'print\(f"AR_METRIC ' + re.escape(spec.metric_name) + "=", wrapper)
+    assert re.search(r'emit\(f"AR_METRIC ' + re.escape(spec.metric_name) + "=", wrapper)
     if spec.selection.test_scored:
-        assert re.search(r'print\(f"AR_TEST ' + re.escape(spec.selection.test_metric_name) + "=", wrapper)
+        assert re.search(r'emit\(f"AR_TEST ' + re.escape(spec.selection.test_metric_name) + "=", wrapper)
+    assert not re.search(r'print\(f?"AR_(METRIC|TEST|STEPS|TOKENS) ', wrapper), "result lines must go through emit"
+    assert "finish()" in wrapper
     for rel in spec.editable_paths:
         text = (base / rel).read_text()
         for prefix in METRIC_PREFIXES + ("AR_STEPS", "AR_TOKENS"):
@@ -358,9 +361,13 @@ def check_smoke(records: list[dict], per_edit: list[dict], expect_divergent: set
         record = entry["record"]
         missing = [k for k in RECORD_KEYS if k not in record]
         assert not missing, f"run record lacks {missing}"
+        if torch_node and record.get("executed", True):
+            assert record["determinism"]["not_forced"] == ["dataloader_workers"], record["determinism"]
         assert record["process"]["killed_with"] is None
         assert "sealed" not in record  # the manager view never shows the test metric
     *per_edit, repeat = per_edit
+    if torch_node:
+        assert repeat["determinism"]["not_forced"] == ["dataloader_workers"], repeat["determinism"]
     assert repeat["outcome"]["kind"] == "ok" and repeat["outcome"]["value"] == baseline["record"]["outcome"]["value"], (
         "a second baseline run with the same seeds gave a different metric", repeat["outcome"], baseline["record"]["outcome"])
     for index, record in enumerate(per_edit, start=1):

@@ -33,6 +33,8 @@ import sys
 import numpy as np
 import torch
 
+import ar_data
+
 LOG_EVERY = 10
 EVAL_BATCH_SIZE = 1024
 EXIT_BAD_INVOCATION = 2
@@ -145,10 +147,15 @@ def train_fixed_steps(train_mod, model, optimizer, scheduler, sampler: FixedStep
     """Run exactly ``sampler.budget`` optimizer steps and print the loss log.
 
     The optimizer returned by build_optimizer must be a ``torch.optim.Optimizer``; a post-step hook
-    counts its ``step()`` calls, and the run fails unless the count equals the budget, so editable code
-    cannot add hidden steps of that optimizer (for example inside training_step).  Known limits, not
-    enforced: editable code runs in this process and could still change parameters by other means
-    (a second optimizer, manual updates, patching this module) or read the data files."""
+    counts its ``step()`` calls, and the run fails (exit 3) unless the count equals the budget, so
+    editable code cannot add extra ``step()`` calls of that optimizer (for example inside
+    training_step).  Known limits, not enforced: the hook counts calls, not updates, so an optimizer
+    whose single ``step()`` makes several updates (Lookahead or SAM written inside ``step()``) passes;
+    editable code runs in this process and could also add updates by other means (a second optimizer,
+    manual updates, an EMA copy), tamper with the optimizer's hook registry or patch this module, print
+    forged lines, or read the data files.  A subclass whose ``step()`` calls ``super().step()`` is
+    counted twice if an instance of the parent class was created earlier in the process (torch's hook
+    wrapping); the run then fails as divergent."""
     if not isinstance(optimizer, torch.optim.Optimizer):
         fail(EXIT_BAD_EDITABLE_API, "build_optimizer must return a torch.optim.Optimizer")
     optimizer_steps = [0]
@@ -183,7 +190,7 @@ def train_fixed_steps(train_mod, model, optimizer, scheduler, sampler: FixedStep
         fail(EXIT_BUDGET_NOT_REACHED, f"ran {step} of {sampler.budget} steps")
     if optimizer_steps[0] != sampler.budget:
         fail(EXIT_BUDGET_NOT_REACHED, f"the optimizer stepped {optimizer_steps[0]} times for a budget of {sampler.budget}")
-    print(f"AR_STEPS completed={step}", flush=True)
+    ar_data.emit(f"AR_STEPS completed={step}")
     return step
 
 

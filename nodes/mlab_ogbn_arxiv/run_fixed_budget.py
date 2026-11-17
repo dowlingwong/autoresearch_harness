@@ -65,10 +65,11 @@ def main() -> None:
                         lambda pos: {"idx": tr_idx[pos], "y": y[tr_idx[pos]]}, config, device)
 
     val_pred = predict_split(T, model, va_idx, config, device)
-    print(f"AR_METRIC val_accuracy={L.accuracy(val_pred, y[va_idx]):.6f}", flush=True)
+    ar_data.emit(f"AR_METRIC val_accuracy={L.accuracy(val_pred, y[va_idx]):.6f}")
     test_pred = predict_split(T, model, te_idx, config, device)
-    print(f"AR_TEST test_accuracy={L.accuracy(test_pred, y[te_idx]):.6f}", flush=True)
+    ar_data.emit(f"AR_TEST test_accuracy={L.accuracy(test_pred, y[te_idx]):.6f}")
 
 
 if __name__ == "__main__":
     main()
+    ar_data.finish()  # no output of the editable code after the result lines
