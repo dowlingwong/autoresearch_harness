@@ -57,12 +57,13 @@ def sha256_file(path: Path) -> str:
 
 
 def emit(line: str) -> None:
-    """Print one of the wrapper's result lines (AR_METRIC, AR_TEST, AR_STEPS, AR_TOKENS) on the saved descriptor."""
+    """Print one of the wrapper's lines (results, loss lines) on the saved descriptor, starting a new line."""
     try:
         sys.stdout.flush()
     except Exception:  # noqa: BLE001 - the editable code may have replaced or closed sys.stdout
         pass
-    os.write(_OUT_FD, (line.rstrip("\n") + "\n").encode("utf-8"))
+    # A newline first: a partial line the editable code left (e.g. "#") cannot swallow this line.
+    os.write(_OUT_FD, ("\n" + line.rstrip("\n") + "\n").encode("utf-8"))
 
 
 def seal() -> None:

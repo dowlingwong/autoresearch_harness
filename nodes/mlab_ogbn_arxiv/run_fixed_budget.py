@@ -32,6 +32,7 @@ def predict_split(T, model, idx, config, device):
         logits = T.predict_logits(model, {"idx": idx})
     if type(logits) is not torch.Tensor or tuple(logits.shape) != (len(idx), N_CLASSES):
         L.fail(L.EXIT_BAD_EDITABLE_API, f"predict_logits must return a plain torch.Tensor of shape ({len(idx)}, {N_CLASSES})")
+    L.no_active_modes()
     with torch._C.DisableTorchFunction():  # no __torch_function__ subclass or mode of the editable code
         return logits.float().argmax(dim=1)
 
