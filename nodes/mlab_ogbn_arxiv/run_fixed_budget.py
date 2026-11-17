@@ -30,9 +30,10 @@ def predict_split(T, model, idx, config, device):
     model.eval()
     with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp):
         logits = T.predict_logits(model, {"idx": idx})
-    if not torch.is_tensor(logits) or tuple(logits.shape) != (len(idx), N_CLASSES):
-        L.fail(L.EXIT_BAD_EDITABLE_API, f"predict_logits must return shape ({len(idx)}, {N_CLASSES})")
-    return logits.float().argmax(dim=1)
+    if type(logits) is not torch.Tensor or tuple(logits.shape) != (len(idx), N_CLASSES):
+        L.fail(L.EXIT_BAD_EDITABLE_API, f"predict_logits must return a plain torch.Tensor of shape ({len(idx)}, {N_CLASSES})")
+    with torch._C.DisableTorchFunction():  # no __torch_function__ subclass or mode of the editable code
+        return logits.float().argmax(dim=1)
 
 
 def main() -> None:
@@ -69,6 +70,8 @@ def main() -> None:
     # Both evaluations (editable predict_logits) and the accuracies run before the first result line, which
     # only formats Python floats: nothing editable runs after it.
     val_accuracy, test_accuracy = L.accuracy(val_pred, y[va_idx]), L.accuracy(test_pred, y[te_idx])
+    # The data are checked again: a run whose editable code changed them fails itself, not the runs after it.
+    ar_data.verify(data_dir, NODE, FILES, prefix="AR_ERROR the editable code changed the data:")
     ar_data.seal()  # stdout/stderr to /dev/null: threads of the editable code cannot print now
     ar_data.emit(f"AR_METRIC val_accuracy={val_accuracy:.6f}")
     ar_data.emit(f"AR_TEST test_accuracy={test_accuracy:.6f}")

@@ -66,6 +66,8 @@ def main() -> None:
     # Both evaluations (editable predict_logits) and the accuracies run before the first result line, which
     # only formats Python floats: nothing editable runs after it.
     val_accuracy, test_accuracy = L.accuracy(val_pred, val[2]), L.accuracy(test_pred, te[2])
+    # The data are checked again: a run whose editable code changed them fails itself, not the runs after it.
+    ar_data.verify(data_dir, NODE, FILES + ["pretrained/config.json", "pretrained/model.safetensors"], prefix="AR_ERROR the editable code changed the data:")
     ar_data.seal()  # stdout/stderr to /dev/null: threads of the editable code cannot print now
     ar_data.emit(f"AR_METRIC val_accuracy={val_accuracy:.6f}")
     ar_data.emit(f"AR_TEST test_accuracy={test_accuracy:.6f}")

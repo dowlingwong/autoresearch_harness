@@ -171,8 +171,8 @@ def train_fixed_steps(train_mod, model, optimizer, scheduler, sampler: FixedStep
         batch = make_batch(idx.to(device))
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp):
             loss = train_mod.training_step(model, batch, step)
-        if not torch.is_tensor(loss) or loss.ndim != 0:
-            fail(EXIT_BAD_EDITABLE_API, "training_step must return a scalar tensor")
+        if type(loss) is not torch.Tensor or loss.ndim != 0:  # a plain tensor: no subclass code in the frozen loop
+            fail(EXIT_BAD_EDITABLE_API, "training_step must return a scalar torch.Tensor (not a subclass)")
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         if clip:
@@ -183,7 +183,7 @@ def train_fixed_steps(train_mod, model, optimizer, scheduler, sampler: FixedStep
         running += loss.detach().double()
         count += 1
         if step % LOG_EVERY == 0 or step == sampler.budget:
-            print(f"step {step} loss {(running / count).item():.6f}", flush=True)
+            ar_data.emit(f"step {step} loss {(running / count).item():.6f}")  # not through sys.stdout
             running.zero_()
             count = 0
     if step != sampler.budget or sampler.served != sampler.budget:
@@ -205,11 +205,16 @@ def predict_classes(train_mod, model, make_eval_batch, n_items: int, n_classes: 
         idx = torch.arange(start, min(n_items, start + EVAL_BATCH_SIZE), device=device)
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp):
             logits = train_mod.predict_logits(model, make_eval_batch(idx))
-        if not torch.is_tensor(logits) or tuple(logits.shape) != (len(idx), n_classes):
-            fail(EXIT_BAD_EDITABLE_API, f"predict_logits must return shape ({len(idx)}, {n_classes})")
-        out.append(logits.float().argmax(dim=1))
-    return torch.cat(out)
+        if type(logits) is not torch.Tensor or tuple(logits.shape) != (len(idx), n_classes):
+            fail(EXIT_BAD_EDITABLE_API, f"predict_logits must return a plain torch.Tensor of shape "
+                                        f"({len(idx)}, {n_classes})")
+        with torch._C.DisableTorchFunction():  # no __torch_function__ subclass or mode of the editable code
+            out.append(logits.float().argmax(dim=1))
+    with torch._C.DisableTorchFunction():
+        return torch.cat(out)
 
 
 def accuracy(pred: torch.Tensor, labels: torch.Tensor) -> float:
-    return float((pred.to(labels.device) == labels).double().mean().item())
+    """Frozen accuracy, computed with torch-function dispatch disabled (no editable subclass or mode code)."""
+    with torch._C.DisableTorchFunction():
+        return float((pred.to(labels.device) == labels).double().mean().item())
