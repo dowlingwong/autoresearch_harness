@@ -88,7 +88,7 @@ external_benchmark:
   commit: 9d40c1b5035202018cd7091fb4e83a9c68b377c0
   task: regressionKaggleHousePrice
   license: CC-BY-NC-4.0 (non-commercial; attribution and changes in LICENCES.md)
-  data: Kaggle House Prices training table as shipped in MLGym (data/regressionKaggleHousePrice/_helpers/train.csv, sha256 pinned in prepare_data.py)
+  data: Kaggle House Prices training table (train.csv), downloaded by the user from Kaggle and passed with --from-file (R1-TRACKG-PORT-DECISIONS (2)); its sha256 and md5 are recorded at setup and printed by every run
 
 notes:
   python_env: torch (scikit-learn and pandas only; no GPU use)

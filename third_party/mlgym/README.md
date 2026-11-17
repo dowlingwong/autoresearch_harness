@@ -1,8 +1,12 @@
 # third_party/mlgym — Track G nodes ported from MLGym (CC BY-NC 4.0)
 
-R1-TRACKG-PORT-DECISIONS (1): everything under this directory is licensed under the Creative Commons
-Attribution-NonCommercial 4.0 International licence (`LICENSE` here, the text of MLGym's own `LICENSE` at commit
-9d40c1b5035202018cd7091fb4e83a9c68b377c0), not under the repository's MIT licence. It holds the four Track G nodes
+R1-TRACKG-PORT-DECISIONS (1): the material in this directory adapted from MLGym is licensed under the Creative
+Commons Attribution-NonCommercial 4.0 International licence (`LICENSE` here, the text of MLGym's own `LICENSE` at
+commit 9d40c1b5035202018cd7091fb4e83a9c68b377c0), not under the repository's MIT licence. Parts that MLGym itself
+took from gymnax and gymnax-blines (Breakout's PPO code) are Apache-2.0. Files written for this repository (the
+frozen parents and workers, the shared node library, the data setup scripts; each node's `LICENCES.md` lists them
+under "Written by the port") are the repository's own and stay under its MIT licence. CC BY-NC 4.0 grants no patent
+rights; use in the paper is non-commercial. It holds the four Track G nodes
 ported from MLGym (https://github.com/facebookresearch/MLGym, Meta Platforms) and their node specs:
 
 | node | spec | MLGym task |

@@ -16,7 +16,7 @@ Paper B, R1) are listed below. MLGym's README notes that SWE-Agent and Modded-Na
 gymnax-blines are Apache-2.0; CC BY-NC 4.0 grants no patent rights (U1 §3). Attribution: "Adapted from MLGym
 (Nathani et al., 2025), CC BY-NC 4.0; modified as listed below".
 
-**Scope within the harness repository.** The harness repository's root `LICENSE` (MIT) does not cover this node's MLGym-derived files: they stay under CC BY-NC 4.0 (parts that MLGym took from gymnax or gymnax-blines under Apache-2.0). Recording this in the root `LICENSE`/`README`, or keeping the MLGym nodes outside the MIT tree, is the author's decision (port report, open point 1).
+**Scope within the harness repository.** R1-TRACKG-PORT-DECISIONS (1): this node lives in `third_party/mlgym/`, whose `LICENSE` is MLGym's CC BY-NC 4.0, and the root `LICENSE` and `README` state the scope. The repository's MIT licence does not cover this node's MLGym-derived files: they stay under CC BY-NC 4.0 (parts that MLGym took from gymnax or gymnax-blines under Apache-2.0). The files written by the port (below) are the repository's own, under MIT.
 
 **Changes made by the port.**
 - `train.py` (editable) is adapted from MLGym's `baseline.py`: the same CNN and the Hugging Face Trainer

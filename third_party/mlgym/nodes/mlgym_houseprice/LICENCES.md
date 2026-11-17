@@ -16,7 +16,7 @@ Paper B, R1) are listed below. MLGym's README notes that SWE-Agent and Modded-Na
 gymnax-blines are Apache-2.0; CC BY-NC 4.0 grants no patent rights (U1 §3). Attribution: "Adapted from MLGym
 (Nathani et al., 2025), CC BY-NC 4.0; modified as listed below".
 
-**Scope within the harness repository.** The harness repository's root `LICENSE` (MIT) does not cover this node's MLGym-derived files: they stay under CC BY-NC 4.0 (parts that MLGym took from gymnax or gymnax-blines under Apache-2.0). Recording this in the root `LICENSE`/`README`, or keeping the MLGym nodes outside the MIT tree, is the author's decision (port report, open point 1).
+**Scope within the harness repository.** R1-TRACKG-PORT-DECISIONS (1): this node lives in `third_party/mlgym/`, whose `LICENSE` is MLGym's CC BY-NC 4.0, and the root `LICENSE` and `README` state the scope. The repository's MIT licence does not cover this node's MLGym-derived files: they stay under CC BY-NC 4.0 (parts that MLGym took from gymnax or gymnax-blines under Apache-2.0). The files written by the port (below) are the repository's own, under MIT.
 
 **Changes made by the port.**
 - `train.py` (editable) is adapted from MLGym's `baseline.py`: the same preprocessing and Ridge model,
@@ -31,7 +31,7 @@ gymnax-blines are Apache-2.0; CC BY-NC 4.0 grants no patent rights (U1 §3). Att
 
 | Item | Value |
 |---|---|
-| Source | **R1-TRACKG-PORT-DECISIONS (2):** the Kaggle competition's `train.csv`, downloaded by the user from Kaggle under Kaggle's terms and passed to `prepare_data.py` with `--from-file` (the spec's setup reads it from `$AR_HOUSEPRICE_TRAIN_CSV`); nothing is fetched, and MLGym's forwarded copy (`data/regressionKaggleHousePrice/_helpers/train.csv`, sha256 `1e18addf…`) is not used. The file's sha256 and md5 are recorded in the data manifest and printed by every run (`AR_DATA houseprice_sha256=… same_as_mlgym_copy=…`); the census records them |
+| Source | **R1-TRACKG-PORT-DECISIONS (2):** the Kaggle competition's `train.csv`, downloaded by the user from Kaggle under Kaggle's terms and passed to `prepare_data.py` with `--from-file` (the spec's setup reads it from `$AR_HOUSEPRICE_TRAIN_CSV`); nothing is fetched, and MLGym's forwarded copy (`data/regressionKaggleHousePrice/_helpers/train.csv`, sha256 `1e18addf…`) is not used. The file's sha256 and md5 are recorded in the data manifest (`source.sha256`, `source.md5`) and printed by setup; every run checks the manifest's source and prints the sha256 and md5 (`AR_DATA houseprice_sha256=… md5=… same_as_mlgym_copy=…`); the census records them |
 | Origin and terms | Kaggle competition "House Prices — Advanced Regression Techniques" (https://www.kaggle.com/competitions/house-prices-advanced-regression-techniques; Ames housing data, De Cock 2011). Kaggle's competition rules and terms apply; MLGym's CC-BY-NC does not relicense the data. **Ambiguous: no licence is claimed** (U1 §3). U1 inferred the file's identity with the Kaggle training file from its name and columns; it was not checked row by row |
 | Hash | recorded at setup from the user's file (not known before the census); MLGym's copy, for comparison only: sha256 `1e18addf81e5e4d347cc17ee6075bbe4a42b7fa26b9e5b063e8f692a5f929d41`, md5 `80ccab65fb115cbad143dbbd2bcd5577`. The shape check is 1,460 rows × 81 columns with `Id` and `SalePrice` |
 

@@ -3,7 +3,8 @@
 FROZEN.  This process never imports the editable code.  Data: the Kaggle "House Prices - Advanced Regression
 Techniques" training table (train.csv, 1,460 rows) that the user downloaded from Kaggle and passed to
 prepare_data.py with ``--from-file`` (R1-TRACKG-PORT-DECISIONS (2)); its sha256 is in the data manifest and is
-printed here (``AR_DATA houseprice_sha256=``) for the census record.  Split: MLGym's own procedure
+printed here (``AR_DATA houseprice_sha256= md5=``) for the census record, after checking that the manifest
+records the user's download.  Split: MLGym's own procedure
 (``_helpers/_generate_split.py``): 20 % test with random_state 42 (fixed, the suite's test set), then 12.5 % of
 the rest as validation with random_state = AR_SPLIT_SEED (split seed 42 reproduces MLGym's split rows).  The
 frozen worker ``ar_worker.py`` imports train.py, builds the unfitted estimator from the training features and
@@ -31,6 +32,7 @@ FILES = ["houseprice.csv"]
 # MLGym's copy of the table (data/regressionKaggleHousePrice/_helpers/train.csv at the commit the port read):
 # compared for information only; the run uses the user's Kaggle download, whatever its hash.
 MLGYM_COPY_SHA256 = "1e18addf81e5e4d347cc17ee6075bbe4a42b7fa26b9e5b063e8f692a5f929d41"
+USER_DOWNLOAD = "user download"   # prepare_data.py's source.provided_by prefix
 
 
 def main() -> None:
@@ -39,8 +41,16 @@ def main() -> None:
     data_dir = ar_data.data_dir_of(__file__)
     manifest = ar_data.verify(data_dir, NODE, FILES)
     digest = manifest["files"]["houseprice.csv"]["sha256"]
-    synthetic = manifest.get("source", {}).get("synthetic") is True
-    print(f"AR_DATA houseprice_sha256={digest} same_as_mlgym_copy={digest == MLGYM_COPY_SHA256}"
+    source = manifest.get("source", {})
+    synthetic = source.get("synthetic") is True
+    # Kit review round 1, M1 (R1-TRACKG-PORT-DECISIONS (2)): the table must be the user's Kaggle download, as
+    # recorded by prepare_data.py with its hashes; anything else (MLGym's forwarded copy set up by an older kit)
+    # is refused.  Synthetic tables exist only in the port tests and are marked as such.
+    if not synthetic and (not str(source.get("provided_by", "")).startswith(USER_DOWNLOAD)
+                          or source.get("sha256") != digest or not source.get("md5")):
+        P.fail(P.EXIT_BAD_INVOCATION, f"the House Prices data were not set up from the user's Kaggle download "
+                                      f"(data manifest source: {source}); run prepare_data.py --from-file")
+    print(f"AR_DATA houseprice_sha256={digest} md5={source.get('md5')} same_as_mlgym_copy={digest == MLGYM_COPY_SHA256}"
           f"{' synthetic (port tests only; not the task data)' if synthetic else ''}", flush=True)
     df = pd.read_csv(data_dir / "houseprice.csv")
     rows = np.arange(len(df))

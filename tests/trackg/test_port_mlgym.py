@@ -197,3 +197,43 @@ def test_houseprice_data_only_from_the_users_kaggle_file(tmp_path, monkeypatch):
     digest = hashlib.sha256(good.read_bytes()).hexdigest()
     assert manifest["source"]["sha256"] == digest and manifest["files"]["houseprice.csv"]["sha256"] == digest
     assert "kaggle" in manifest["source"] and digest in res.stdout
+    assert manifest["source"]["md5"] == hashlib.md5(good.read_bytes()).hexdigest()
+    # Kit review round 1, M1: a re-run accepts the same file only, and never a directory set up from another source
+    assert run("--from-file", str(good)).returncode == 0
+    other = tmp_path / "other.csv"
+    frame.assign(SalePrice=frame["SalePrice"] + 1).to_csv(other, index=False)
+    res = run("--from-file", str(other))
+    assert res.returncode != 0 and "differs from the table already set up" in (res.stdout + res.stderr)
+    ar_data = ps.load_node_module("mlgym_houseprice", "ar_data")
+    old = root / "old"
+    old.mkdir()
+    shutil.copy(good, old / "houseprice.csv")
+    ar_data.write_manifest(old, "mlgym_houseprice", ["houseprice.csv"],
+                           {"mlgym": "data/regressionKaggleHousePrice/_helpers/train.csv", "sha256": digest})
+    res = subprocess.run([sys.executable, str(work / "prepare_data.py"), "--out", str(old), "--from-file", str(bad)],
+                         capture_output=True, text=True, env=env, timeout=120)
+    assert res.returncode != 0 and "not set up from the user's Kaggle download" in (res.stdout + res.stderr)
+
+
+def test_houseprice_parent_requires_the_users_download_and_prints_its_hashes(tmp_path, monkeypatch):
+    """Kit review round 1, M1 (R1-TRACKG-PORT-DECISIONS (2)): the frozen parent refuses a table whose manifest does
+    not record the user's download (an MLGym copy set up by an older kit), and prints the sha256 and md5."""
+    if not ps.have("pandas", "sklearn"):
+        pytest.skip("needs pandas and scikit-learn")
+    import hashlib
+    work = ps.smoke_copy("mlgym_houseprice", tmp_path, house_data, ["houseprice.csv"])
+    data = (work / "data").resolve()
+    table = (data / "houseprice.csv").read_bytes()
+    sha, md5 = hashlib.sha256(table).hexdigest(), hashlib.md5(table).hexdigest()
+    ar_data = ps.load_node_module("mlgym_houseprice", "ar_data")
+    env = dict(os.environ, AR_TRAIN_SEED="8001", AR_SPLIT_SEED="42")
+    for source, want in (({"mlgym": "forwarded copy", "sha256": sha, "md5": md5}, 2),
+                         ({"provided_by": "user download, passed with --from-file", "sha256": sha, "md5": md5}, 0)):
+        (data / ar_data.MANIFEST_NAME).unlink()     # the smoke copy's own synthetic manifest, rewritten here
+        ar_data.write_manifest(data, "mlgym_houseprice", ["houseprice.csv"], source)
+        code, out, channel = ps.run_parent(work, ["run_fixed_budget.py", "--steps", "1"], env)
+        assert code == want, (source, code, out[-2000:])
+        if want == 0:
+            assert f"AR_DATA houseprice_sha256={sha} md5={md5} " in out and "AR_METRIC val_rmse=" in channel
+        else:
+            assert "not set up from the user's Kaggle download" in out and not channel

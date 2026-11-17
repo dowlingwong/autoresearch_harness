@@ -10,7 +10,8 @@ frozen parent (MLGym's own procedure), not here.
 
     python3 prepare_data.py --out "$AR_TRACKG_DATA_ROOT/mlgym_houseprice" --from-file ~/Downloads/train.csv
 
-Re-running with a complete --out only re-checks and re-links it.
+Re-running with a complete --out re-checks it (its manifest must record the user's download; a --from-file
+given again must be the same file) and re-links it.
 --out must lie under ``$AR_TRACKG_DATA_ROOT``.  A first run needs an empty or
 new --out (a partial earlier attempt is never reused); the manifest is written
 last and the directory is then made read-only, so accidental writes by a run fail
@@ -28,6 +29,7 @@ NODE = "mlgym_houseprice"
 FILES = ["houseprice.csv"]
 KAGGLE = "https://www.kaggle.com/competitions/house-prices-advanced-regression-techniques/data (train.csv)"
 ROWS, COLUMNS = 1460, 81
+USER_DOWNLOAD = "user download"   # the manifest's source.provided_by starts with this (checked by every run too)
 
 
 def check_table(data: bytes) -> None:
@@ -65,13 +67,25 @@ def main() -> None:
         sha256, md5 = hashlib.sha256(data).hexdigest(), hashlib.md5(data).hexdigest()
         out.mkdir(parents=True, exist_ok=True)
         (out / "houseprice.csv").write_bytes(data)
-        source = {"kaggle": KAGGLE, "provided_by": "user download, passed with --from-file",
+        source = {"kaggle": KAGGLE, "provided_by": f"{USER_DOWNLOAD}, passed with --from-file",
                   "from_file_name": args.from_file.name, "sha256": sha256, "md5": md5, "rows": ROWS}
         print(f"houseprice.csv sha256 {sha256} md5 {md5}")
         digest = ar_data.write_manifest(out, NODE, FILES, source)
         print(f"wrote {out / ar_data.MANIFEST_NAME} sha256 {digest}")
         ar_data.make_read_only(out)  # accidental writes by a run fail; the owner can restore the bits
     manifest = ar_data.verify(out, NODE, FILES)
+    # Kit review round 1, M1: a re-run must not accept a directory made by an earlier setup from another source
+    # (for example MLGym's forwarded copy): the manifest must record the user's download, with its hashes, and a
+    # --from-file given on the re-run must be the same file.
+    source = manifest.get("source", {})
+    digest = manifest["files"]["houseprice.csv"]["sha256"]
+    if not str(source.get("provided_by", "")).startswith(USER_DOWNLOAD) or source.get("sha256") != digest \
+            or not source.get("md5"):
+        raise SystemExit(f"{out} was not set up from the user's Kaggle download (data manifest source: {source}); "
+                         "move it aside and run again with --from-file into a new --out")
+    if args.from_file is not None and hashlib.sha256(args.from_file.read_bytes()).hexdigest() != digest:
+        raise SystemExit(f"--from-file differs from the table already set up in {out} (sha256 {digest}); move the "
+                         "directory aside to set up a different file")
     ar_data.link_data(node_dir, out)
     print(json.dumps({"node": NODE, "data": str(out), "files": sorted(manifest["files"])}))
 

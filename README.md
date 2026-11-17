@@ -1,6 +1,6 @@
 # autoresearch_harness
 
-> **Licence scope.** This repository is MIT-licensed (`LICENSE`), except `third_party/mlgym/`, which holds the Track G nodes ported from MLGym and is licensed under CC BY-NC 4.0 (`third_party/mlgym/LICENSE`).
+> **Licence scope.** This repository is MIT-licensed (`LICENSE`), except the material adapted from MLGym in `third_party/mlgym/` (the Track G nodes ported from MLGym), which is licensed under CC BY-NC 4.0 (`third_party/mlgym/LICENSE`; Apache-2.0 parts and the files written for this repository are listed in each node's `LICENCES.md` under `third_party/mlgym/`).
 
 **Auditable Autonomous Experimentation with Bounded Execution and Explicit Keep/Discard Control**
 

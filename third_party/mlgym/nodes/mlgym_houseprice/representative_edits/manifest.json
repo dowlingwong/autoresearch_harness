@@ -50,7 +50,7 @@
   ],
   "measured": false,
   "node": "mlgym_houseprice",
-  "node_spec_sha256": "b05cf19acb04281dbe67d4c5427a7e8286a3106bae8daf8b8ed3d15b66bd9907",
+  "node_spec_sha256": "2f150cded7c846a28fd97113519333a33d9775588a7d6c7bd0d9dcc05e85c049",
   "run_budget": {
     "kind": "steps",
     "value": 1
