@@ -106,7 +106,8 @@ _LAUNCH_CONFIG_ENV = "AR_SANDBOX_LAUNCH_CONFIG"
 # campaign's LLM manager, for instance -- is not passed on.
 _ENV_KEEP_PREFIXES = ("AR_", "CUDA_", "NVIDIA_", "CUBLAS_", "CUDNN_", "NCCL_", "OMP_", "MKL_", "OPENBLAS_",
                       "PYTORCH_", "TORCH", "XLA_", "JAX_", "TF_", "LC_", "HF_", "TRANSFORMERS_", "TOKENIZERS_")
-_ENV_KEEP = {"PATH", "LANG", "LANGUAGE", "TZ", "PYTHONPATH", "PYTHONHASHSEED", "SOURCE_DATE_EPOCH"}
+_ENV_KEEP = {"PATH", "LANG", "LANGUAGE", "TZ", "PYTHONPATH", "PYTHONHASHSEED", "SOURCE_DATE_EPOCH",
+             "TOKENIZERS_PARALLELISM"}   # names kept as they are; the credential filter below applies to prefixes
 # Names that look like credentials are dropped whatever their prefix (HF_TOKEN, TORCH_HUB_TOKEN, AR_*_API_KEY).
 _ENV_DROP_PARTS = ("TOKEN", "KEY", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "AUTH", "COOKIE", "SESSION")
 _RESULT_FD: list[int] = []    # the parent's result socket, closed in the worker's child before anything else
@@ -403,7 +404,8 @@ def worker_connect() -> "Connection":
 def _worker_environment(env: dict) -> dict:
     """The allow-listed part of *env* for a sandboxed worker (review round 3, F1)."""
     return {k: v for k, v in env.items()
-            if (k in _ENV_KEEP or k.startswith(_ENV_KEEP_PREFIXES)) and not any(p in k.upper() for p in _ENV_DROP_PARTS)}
+            if k in _ENV_KEEP
+            or (k.startswith(_ENV_KEEP_PREFIXES) and not any(p in k.upper() for p in _ENV_DROP_PARTS))}
 
 
 def serve(handlers: dict, conn: "Connection | None" = None) -> None:
