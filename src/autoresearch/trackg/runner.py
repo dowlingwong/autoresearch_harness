@@ -418,7 +418,14 @@ class WorkingCopyRunner:
         ``/dev`` as is; a private ``/tmp``.  Nothing else exists for the worker (no home directory, no runs tree, no
         ``/run``)."""
         ro: list[Path] = [Path(p) for p in ("/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc")]
-        ro += _interpreter_paths(interpreter)
+        interp = _interpreter_paths(interpreter)
+        home = Path(os.environ.get("HOME", "/nonexistent")).resolve()
+        broad = [p for p in interp if p.resolve() in (Path("/"), home, self.runs_root) or
+                 any(p.resolve() in q.parents for q in (home, self.runs_root))]
+        if broad:   # review round 3: a PYTHONPATH entry such as the home directory would expose that whole tree
+            raise RunnerError(f"the run interpreter's sys.path holds {broad}, which would expose the home directory "
+                              "or the runs tree to the worker; remove them (PYTHONPATH)")
+        ro += interp
         data = work / "data"
         if data.is_symlink():
             ro.append(data.resolve())
@@ -439,7 +446,8 @@ class WorkingCopyRunner:
         env = {k: str(v) for k, v in scratch.items()}
         env[determinism.DETERMINISM_RECORD_ENV] = str(work / ".ar_determinism_shim.json")
         return {"root": str(root), "ro": [str(p) for p in ro], "ro_flat": ["/sys"], "rw": [str(work.resolve())],
-                "ro_in_rw": ro_in_rw, "dev": "/dev", "env": env}
+                "ro_in_rw": ro_in_rw, "dev": "/dev", "env": env,
+                "shared_dev_shm": bool(self.spec.isolation and self.spec.isolation.shared_dev_shm)}
 
     def _execute_isolated(self, run_dir: Path, work: Path, limits: ResourceLimits, train_seed: int | None,
                           split_seed: int | None, interpreter: str):
