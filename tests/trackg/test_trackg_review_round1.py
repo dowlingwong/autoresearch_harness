@@ -102,7 +102,8 @@ def test_timeout_sigkills_a_sigterm_ignoring_child_under_a_compound_command(tmp_
     result = runner.run("r1", limits)
     pid = int((result.work_dir / "child.pid").read_text())
     time.sleep(0.2)
-    assert result.outcome.kind == INFRASTRUCTURE_FAILURE and result.outcome.reason == "timeout"
+    # a measured timeout is the proposal's failure (R1-TRACKG-PORT-DECISIONS (4))
+    assert result.outcome.kind == DIVERGENT and result.outcome.reason == "timeout"
     assert result.record["process"]["killed_with"] == "SIGKILL"
     assert not _alive(pid)
 
@@ -261,7 +262,7 @@ def test_cpu_outside_the_process_cpu_set_is_refused_before_anything_is_written(t
 
 
 def test_failure_inside_preexec_is_an_infrastructure_failure_with_a_record(tmp_path, monkeypatch):
-    def broken(limits):
+    def broken(limits, *args, **kwargs):
         def apply():
             raise OSError("cannot apply limits")
         return apply

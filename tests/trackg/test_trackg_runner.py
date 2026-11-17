@@ -72,14 +72,20 @@ def test_no_metric_and_short_runs_are_divergent(tmp_path):
     assert runner3.run("c", LIMITS).outcome.reason == "nonzero_exit"
 
 
-def test_timeout_is_infrastructure_failure_and_the_process_group_is_killed(tmp_path):
+def test_measured_timeout_is_a_proposal_failure_and_the_process_group_is_killed(tmp_path):
+    """R1-TRACKG-PORT-DECISIONS (4): a timeout against the measured timeout (factor x census baseline) is the
+    proposal's failure; only the provisional timeout of the measuring run is an infrastructure failure."""
     runner, _ = runner_for(tmp_path, mode="sleep")
     limits = ResourceLimits(uncapped_reason="test fixture", measured_run_seconds=0.2, timeout_factor=3.0, kill_grace_seconds=2.0)
     start = time.monotonic()
     result = runner.run("r1", limits)
     assert time.monotonic() - start < 20
-    assert (result.outcome.kind, result.outcome.reason) == (INFRASTRUCTURE_FAILURE, "timeout")
+    assert (result.outcome.kind, result.outcome.reason) == (DIVERGENT, "timeout")
     assert result.record["process"]["timed_out"] is True
+    runner2, _ = runner_for(tmp_path / "p", mode="sleep")
+    provisional = ResourceLimits(uncapped_reason="test fixture", provisional_timeout_seconds=0.6, kill_grace_seconds=2.0)
+    result2 = runner2.run("r2", provisional)
+    assert (result2.outcome.kind, result2.outcome.reason) == (INFRASTRUCTURE_FAILURE, "timeout")
 
 
 def test_cpu_and_memory_caps_are_applied(tmp_path):
@@ -200,6 +206,6 @@ def test_non_python_command_records_shim_not_loaded(tmp_path):
 def test_infrastructure_failure_is_not_registered_as_an_evaluated_state(tmp_path):
     runner, _ = runner_for(tmp_path, mode="sleep")
     evaluated = EvaluatedStates()
-    result = runner.run("r1", ResourceLimits(uncapped_reason="test fixture", measured_run_seconds=0.1, kill_grace_seconds=1.0), evaluated=evaluated)
+    result = runner.run("r1", ResourceLimits(uncapped_reason="test fixture", provisional_timeout_seconds=0.3, kill_grace_seconds=1.0), evaluated=evaluated)
     assert result.outcome.kind == INFRASTRUCTURE_FAILURE
     assert evaluated.by_state == {}

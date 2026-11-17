@@ -9,7 +9,8 @@ Every run is classified as **exactly one** of:
   ``nan``/``inf`` such as ``tensor(nan)``), or no (finite) metric at the fixed budget
   (R1-BX-PROPOSED-CONFIRM, REVISIONS (c) (E5)).  A run that exits non-zero
   without being killed is in this class (the proposal broke the run);
-- ``infrastructure_failure``: the run timed out, was killed by a signal (or
+- ``infrastructure_failure``: the run timed out against a provisional
+  timeout (the census's measuring run), was killed by a signal (or
   an exit code the node declares as a kill, default 137 and 143), could not
   be launched, or its log matches one of the node's infrastructure patterns
   (for example ``No space left on device``).
@@ -17,6 +18,19 @@ Every run is classified as **exactly one** of:
 A selection-metric match that overlaps a test-metric match (test-scored
 nodes) is ``divergent`` with reason ``metric_regex_matches_test_line``, so a
 loose ``metric_regex`` can never select on the test metric.
+
+R1-HARNESS-ISOLATION and R1-TRACKG-PORT-DECISIONS (4), 17 Nov 2026:
+
+- a run with **more than one** metric line is ``divergent``
+  (``multiple_metric_lines``) instead of taking the last one;
+- a run that times out against a **measured** timeout (census baseline × 3)
+  is a proposal failure: ``divergent`` with reason ``timeout``, never rerun
+  as infrastructure (``timeout_is_proposal_failure``); only a provisional
+  timeout (the measuring run) stays ``infrastructure_failure``;
+- an isolated run (``result_text`` given) takes the metric and the test
+  metric only from the result channel; a metric line in the run's output is
+  ``divergent`` (``metric_line_in_run_output``), and the channel must hold
+  exactly one metric line (``result_channel_metric_lines``).
 
 Infrastructure is checked first, so a run that was killed is never reported
 as divergent even if its partial log shows a NaN.  The three constructors
@@ -117,12 +131,16 @@ def classify_run(
     test_metric_regex: str | None = None,
     kill_exit_codes: Iterable[int] = DEFAULT_KILL_EXIT_CODES,
     infrastructure_log_patterns: Iterable[str] = DEFAULT_INFRASTRUCTURE_LOG_PATTERNS,
+    timeout_is_proposal_failure: bool = False,
+    result_text: str | None = None,
 ) -> RunOutcome:
     """Classify one run.  See the module docstring for the rules and their order."""
     # 1. infrastructure: never mixed with the other classes.
     if process.launch_error is not None:
         return RunOutcome.infrastructure_failure("launch_error", error=process.launch_error)
     if process.timed_out:
+        if timeout_is_proposal_failure:
+            return RunOutcome.divergent("timeout", returncode=process.returncode)
         return RunOutcome.infrastructure_failure("timeout", returncode=process.returncode)
     if process.killed_signal is not None:
         return RunOutcome.infrastructure_failure("killed", signal=process.killed_signal)
@@ -147,15 +165,26 @@ def classify_run(
 
     # 3. divergence: no finite metric at the budget.  A selection-metric match that
     #    overlaps a test-metric line is refused loudly (validation-only selection).
+    metric_source = log_text
+    if result_text is not None:
+        # isolated run: the metric lines come only from the result channel
+        stray = list(re.finditer(metric_regex, log_text, re.MULTILINE))
+        if stray:
+            return RunOutcome.divergent("metric_line_in_run_output", count=len(stray),
+                                        line=stray[0].group(0).strip()[:200])
+        metric_source = result_text
     test_spans = []
     if test_metric_regex:
-        test_spans = [m.span() for m in re.finditer(test_metric_regex, log_text, re.MULTILINE)]
-    metric_matches = list(re.finditer(metric_regex, log_text, re.MULTILINE))
+        test_spans = [m.span() for m in re.finditer(test_metric_regex, metric_source, re.MULTILINE)]
+    metric_matches = list(re.finditer(metric_regex, metric_source, re.MULTILINE))
     for match in metric_matches:
         start, end = match.span()
         if any(start < t_end and t_start < end for t_start, t_end in test_spans):
             return RunOutcome.divergent("metric_regex_matches_test_line", line=match.group(0).strip())
     metrics = [m.group(1) for m in metric_matches]
+    if len(metrics) > 1:
+        reason = "result_channel_metric_lines" if result_text is not None else "multiple_metric_lines"
+        return RunOutcome.divergent(reason, count=len(metrics))
     if process.returncode != 0:
         return RunOutcome.divergent("nonzero_exit", returncode=process.returncode,
                                     metric_reported=bool(metrics))
@@ -175,8 +204,10 @@ def classify_run(
     return RunOutcome.ok(value)
 
 
-def parse_run_log(log_path: str | Path, process: ProcessExit, spec: Any) -> RunOutcome:
-    """Classify a run from its log file with the rules of a ``TrackGNodeSpec``."""
+def parse_run_log(log_path: str | Path, process: ProcessExit, spec: Any, *,
+                  timeout_is_proposal_failure: bool = False, result_text: str | None = None) -> RunOutcome:
+    """Classify a run from its log file with the rules of a ``TrackGNodeSpec`` (*result_text*: the result
+    channel of an isolated run)."""
     text = Path(log_path).read_text(encoding="utf-8", errors="replace") if Path(log_path).exists() else ""
     patterns = tuple(DEFAULT_INFRASTRUCTURE_LOG_PATTERNS) + tuple(spec.metric.infrastructure_log_patterns)
     budget_steps = spec.run_budget.value if spec.run_budget.kind == "steps" else None
@@ -189,4 +220,6 @@ def parse_run_log(log_path: str | Path, process: ProcessExit, spec: Any) -> RunO
         budget_steps=budget_steps,
         test_metric_regex=spec.metric.test_metric_regex if spec.selection.test_scored else None,
         infrastructure_log_patterns=patterns,
+        timeout_is_proposal_failure=timeout_is_proposal_failure,
+        result_text=result_text,
     )

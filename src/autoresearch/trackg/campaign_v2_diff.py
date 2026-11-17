@@ -14,11 +14,14 @@ Per step (``budget`` manager calls, each charged):
 3. outcome handling:
    * ``ok``: kept if strictly better than the incumbent on the validation metric (the next incumbent is
      the run's pre-run code snapshot), else discarded;
-   * ``divergent``: discarded;
-   * ``infrastructure_failure`` with reason ``timeout``: the same code state is rerun. **Repeated-timeout
-     cap** (author's answer to M10 §5 question 8, option (a)): after ``timeout_cap`` (2) timeouts of the
-     same code state, the proposal is ``divergent`` with reason ``timeout_repeated``, the code state is
-     registered as evaluated, and it is never rerun;
+   * ``divergent``: discarded.  Since R1-TRACKG-PORT-DECISIONS (4) (17 Nov 2026) this includes a run that
+     exceeded the **measured** timeout (census baseline × 3): reason ``timeout``, registered as evaluated by
+     the runner, never rerun (a timeout is the proposal's failure, not an infrastructure retry);
+   * ``infrastructure_failure`` with reason ``timeout`` -- only under a **provisional** timeout (the census's
+     measuring run): the same code state is rerun. **Repeated-timeout cap** (author's answer to M10 §5
+     question 8, option (a)): after ``timeout_cap`` (2) timeouts of the same code state, the proposal is
+     ``divergent`` with reason ``timeout_repeated``, the code state is registered as evaluated, and it is
+     never rerun;
    * any other ``infrastructure_failure`` (launch error, kill, an infrastructure log pattern such as Slurm's
      ``DUE TO TIME LIMIT``): rerun up to ``max_infra_reruns`` times, then recorded as
      ``infrastructure_failure_final`` (not registered as evaluated, so it can be proposed and run again later,
