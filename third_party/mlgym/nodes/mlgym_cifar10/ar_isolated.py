@@ -36,8 +36,8 @@ no runs tree (other runs' results), no ``/run``, no socket of a daemon outside. 
 the new PID namespace, which mounts a fresh ``/proc`` over the host one, drops every capability (bounding set,
 ambient set, permitted / effective / inheritable sets, locked secure bits), sets ``no_new_privs`` and execs the
 worker; the launcher only waits and passes on the exit code.  The worker's environment is an allow-list
-(``AR_*``, CUDA, threading and framework variables, ``PATH``, ``PYTHONPATH``, ``PYTHONHASHSEED``, locale) plus the
-config's ``env`` (a home directory, cache directories and the determinism record inside the working copy): the
+(``AR_*``, CUDA, threading and framework variables, ``PATH``, ``PYTHONPATH``, ``PYTHONHASHSEED``, locale; any name containing TOKEN, KEY, SECRET,
+PASSWORD, CREDENTIAL, AUTH, COOKIE or SESSION is dropped whatever its prefix) plus the config's ``env`` (a home directory, cache directories and the determinism record inside the working copy): the
 campaign's credentials are not passed on.  So the editable code cannot see or signal any process outside its PID
 namespace and process group (the runner, the parent), cannot reach the network (abstract Unix sockets included)
 or any pathname socket outside its root, cannot read or write anything outside the allow-list, cannot change its
@@ -107,6 +107,8 @@ _LAUNCH_CONFIG_ENV = "AR_SANDBOX_LAUNCH_CONFIG"
 _ENV_KEEP_PREFIXES = ("AR_", "CUDA_", "NVIDIA_", "CUBLAS_", "CUDNN_", "NCCL_", "OMP_", "MKL_", "OPENBLAS_",
                       "PYTORCH_", "TORCH", "XLA_", "JAX_", "TF_", "LC_", "HF_", "TRANSFORMERS_", "TOKENIZERS_")
 _ENV_KEEP = {"PATH", "LANG", "LANGUAGE", "TZ", "PYTHONPATH", "PYTHONHASHSEED", "SOURCE_DATE_EPOCH"}
+# Names that look like credentials are dropped whatever their prefix (HF_TOKEN, TORCH_HUB_TOKEN, AR_*_API_KEY).
+_ENV_DROP_PARTS = ("TOKEN", "KEY", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "AUTH", "COOKIE", "SESSION")
 _RESULT_FD: list[int] = []    # the parent's result socket, closed in the worker's child before anything else
 DTYPES = ("float16", "float32", "float64", "int8", "int16", "int32", "int64", "uint8", "bool")
 
@@ -400,7 +402,8 @@ def worker_connect() -> "Connection":
 
 def _worker_environment(env: dict) -> dict:
     """The allow-listed part of *env* for a sandboxed worker (review round 3, F1)."""
-    return {k: v for k, v in env.items() if k in _ENV_KEEP or k.startswith(_ENV_KEEP_PREFIXES)}
+    return {k: v for k, v in env.items()
+            if (k in _ENV_KEEP or k.startswith(_ENV_KEEP_PREFIXES)) and not any(p in k.upper() for p in _ENV_DROP_PARTS)}
 
 
 def serve(handlers: dict, conn: "Connection | None" = None) -> None:
