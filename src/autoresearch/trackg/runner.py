@@ -24,8 +24,20 @@ For each run the runner:
 4. classifies the run with the base parser (:mod:`autoresearch.trackg.outcome`)
    and writes ``run_record.json`` beside the copy.
 
-The timeout is an infrastructure guard, not the budget: the budget is the
-fixed step or token count of the node spec (R1-BX-D5).
+The timeout is a guard, not the budget: the budget is the fixed step or token
+count of the node spec (R1-BX-D5).  R1-TRACKG-PORT-DECISIONS (4): a run that
+exceeds a **measured** timeout (census baseline × factor 3) is a proposal
+failure (``divergent``, reason ``timeout``) and is not rerun; only the
+provisional timeout of the measuring run gives ``infrastructure_failure``.
+
+With ``limits.cgroup_parent`` the run's processes join a fresh cgroup v2
+directory, and a timeout or the end of the run kills the whole cgroup
+(R1-HARNESS-ISOLATION).  A node with an ``isolation`` block runs isolated:
+see :mod:`autoresearch.trackg.isolation` (frozen parent started without a
+shell, result channel, append-only log, frozen-file check); an isolated run
+needs a cgroup parent (or an explicit ``no_cgroup_reason``) and refuses to run
+as root unless ``root_isolation_reason`` is given (it is then recorded as not
+effective).
 """
 from __future__ import annotations
 
@@ -42,7 +54,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from autoresearch.trackg import determinism
+from autoresearch.trackg import determinism, isolation
 from autoresearch.trackg.diff_support import DiffApplication, EvaluatedStates, apply_diff, code_state_hashes
 from autoresearch.trackg.node_template import TrackGNodeSpec
 from autoresearch.trackg.outcome import INFRASTRUCTURE_FAILURE, ProcessExit, RunOutcome, parse_run_log
@@ -75,6 +87,11 @@ class ResourceLimits:
     kill_grace_seconds: float = 10.0
     external_limit: str | None = None
     uncapped_reason: str | None = None
+    cgroup_parent: str | None = None
+    no_cgroup_reason: str | None = None
+    root_isolation_reason: str | None = None
+    cgroup_namespace: bool = True
+    no_cgroup_namespace_reason: str | None = None
 
     def __post_init__(self) -> None:
         for uuid in self.gpu_uuids:
@@ -97,6 +114,10 @@ class ResourceLimits:
             raise RunnerError("memory_method 'external' needs external_limit (what enforces it)")
         if self.memory_method != "external" and self.external_limit:
             raise RunnerError("external_limit is only for memory_method 'external'")
+        if self.cgroup_parent is not None and self.no_cgroup_reason:
+            raise RunnerError("give cgroup_parent or no_cgroup_reason, not both")
+        if not self.cgroup_namespace and not self.no_cgroup_namespace_reason:
+            raise RunnerError("cgroup_namespace=False needs no_cgroup_namespace_reason (it is recorded)")
         missing = self.missing_caps()
         if missing and not self.uncapped_reason:
             raise RunnerError(f"no {' and no '.join(missing)} cap: give one, or an explicit uncapped_reason")
@@ -108,6 +129,11 @@ class ResourceLimits:
         if self.memory_bytes is None and self.memory_method != "external":
             missing.append("memory")
         return missing
+
+    @property
+    def timeout_is_proposal_failure(self) -> bool:
+        """R1-TRACKG-PORT-DECISIONS (4): only a measured timeout makes a timeout the proposal's failure."""
+        return self.measured_run_seconds is not None
 
     def timeout(self) -> tuple[float, str]:
         if self.measured_run_seconds is not None:
@@ -176,6 +202,13 @@ class WorkingCopyRunner:
         after the diff is applied and before the run, so the code without any
         run outputs can be promoted as the next incumbent.
         """
+        isolated = self.spec.isolation is not None
+        if isolated:
+            if limits.cgroup_parent is None and not limits.no_cgroup_reason:
+                raise RunnerError("an isolated run needs limits.cgroup_parent (or an explicit no_cgroup_reason)")
+            if os.geteuid() == 0 and not limits.root_isolation_reason:
+                raise RunnerError("an isolated run as root is not isolated (non-dumpable processes need a "
+                                  "non-root user); give root_isolation_reason to run anyway (tests)")
         if limits.cpu_list is not None:
             available = os.sched_getaffinity(0)
             outside = sorted(set(limits.cpu_list) - available)
@@ -213,13 +246,24 @@ class WorkingCopyRunner:
             shutil.copytree(work, code_dir, symlinks=True, ignore=_COPY_IGNORE)
             record["code_snapshot"] = "code"
 
-        process, env_applied, det_record, elapsed, kill_info = self._execute(
-            run_dir, work, limits, train_seed, split_seed)
         log_path = run_dir / "run.log"
-        outcome = parse_run_log(log_path, process, self.spec)
+        result_text = None
+        override = None
+        if isolated:
+            process, env_applied, det_record, elapsed, kill_info, iso_record, result_text, override = \
+                self._execute_isolated(run_dir, work, limits, train_seed, split_seed, interpreter)
+            record["isolation"] = iso_record
+            command: Any = iso_record["argv"]
+        else:
+            process, env_applied, det_record, elapsed, kill_info = self._execute(
+                run_dir, work, limits, train_seed, split_seed)
+            command = self.spec.budgeted_run_command()
+        outcome = override or parse_run_log(log_path, process, self.spec,
+                                            timeout_is_proposal_failure=limits.timeout_is_proposal_failure,
+                                            result_text=result_text)
         record.update({
             "executed": True,
-            "command": self.spec.budgeted_run_command(),
+            "command": command,
             "environment_applied": env_applied,
             "determinism": det_record,
             "process": {"returncode": process.returncode, "timed_out": process.timed_out,
@@ -229,7 +273,8 @@ class WorkingCopyRunner:
             "outcome": outcome.to_dict(),
         })
         sealed = parse_sealed_test_metric(
-            log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else "", self.spec)
+            result_text if isolated else
+            (log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""), self.spec)
         record.update(sealed)
         # An infrastructure failure is not an evaluated state: it is rerun, not deduplicated.
         if evaluated is not None and register_evaluated and outcome.kind != INFRASTRUCTURE_FAILURE:
@@ -271,32 +316,133 @@ class WorkingCopyRunner:
         timeout, basis = limits.timeout()
         applied["timeout_seconds"] = f"{timeout:g} ({basis})"
         log_path = run_dir / "run.log"
+        cgroup = self._make_cgroup(limits, run_dir.name)
+        preexec = _limits_preexec(limits, cgroup)
         start = time.monotonic()
         with log_path.open("wb") as log:
             try:
                 proc = subprocess.Popen(
                     self.spec.budgeted_run_command(), shell=True, cwd=work, env=env,
                     stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                    start_new_session=True, preexec_fn=_limits_preexec(limits),
+                    start_new_session=True, preexec_fn=preexec,
                 )
             except (OSError, subprocess.SubprocessError) as error:
                 # includes a failure inside preexec_fn (for example a CPU id the host lacks)
+                cg = _close_cgroup(cgroup)
                 return (ProcessExit(None, launch_error=repr(error)), applied,
                         determinism.read_record(run_dir / "determinism_shim.json", env), 0.0,
-                        {"killed_with": None, "leftover_processes_killed": False})
+                        {"killed_with": None, "leftover_processes_killed": False, "cgroup": cg})
             timed_out = False
             try:
                 returncode = proc.wait(timeout=timeout)
+                cg_kill = cgroup.kill() if cgroup else None
                 kill_info = {"killed_with": None,
                              "leftover_processes_killed": _kill_leftovers(proc.pid)}
             except subprocess.TimeoutExpired:
                 timed_out = True
-                killed_with = _kill_group(proc, limits.kill_grace_seconds)
+                cg_kill = cgroup.kill(limits.kill_grace_seconds) if cgroup else None
+                killed_with = "cgroup.kill" if cgroup else _kill_group(proc, limits.kill_grace_seconds)
+                if cgroup:
+                    _kill_group(proc, limits.kill_grace_seconds)  # anything outside the cgroup in the session
+                proc.wait()
                 returncode = proc.returncode
-                kill_info = {"killed_with": killed_with, "leftover_processes_killed": killed_with == "SIGKILL"}
+                kill_info = {"killed_with": killed_with,
+                             "leftover_processes_killed": killed_with in ("SIGKILL", "cgroup.kill")}
+            kill_info["cgroup"] = _close_cgroup(cgroup, cg_kill)
         elapsed = time.monotonic() - start
         det_record = determinism.read_record(run_dir / "determinism_shim.json", env)
         return ProcessExit(returncode, timed_out=timed_out), applied, det_record, elapsed, kill_info
+
+    @staticmethod
+    def _make_cgroup(limits: ResourceLimits, run_id: str) -> "isolation.RunCgroup | None":
+        if limits.cgroup_parent is None:
+            return None
+        try:
+            return isolation.RunCgroup.create(limits.cgroup_parent, run_id)
+        except isolation.IsolationError as error:
+            raise RunnerError(str(error)) from error
+
+    def _execute_isolated(self, run_dir: Path, work: Path, limits: ResourceLimits, train_seed: int | None,
+                          split_seed: int | None, interpreter: str):
+        """The isolated run (R1-HARNESS-ISOLATION); see :mod:`autoresearch.trackg.isolation`."""
+        iso_spec = self.spec.isolation
+        assert iso_spec is not None
+        env, applied = self.build_environment(run_dir, limits, train_seed, split_seed)
+        for name, value in iso_spec.env:
+            env[name] = value
+            applied[name] = value
+        timeout, basis = limits.timeout()
+        applied["timeout_seconds"] = f"{timeout:g} ({basis})"
+        argv = iso_spec.argv(interpreter, self.spec.run_budget.value)
+        euid = os.geteuid()
+        isolation.set_non_dumpable()
+        frozen_before = isolation.frozen_file_hashes(work, self.spec.frozen_paths)
+        cgroup = self._make_cgroup(limits, run_dir.name)
+        namespace = cgroup is not None and limits.cgroup_namespace
+        if namespace:
+            ok, why = isolation.cgroup_namespace_available()
+            if not ok:
+                _close_cgroup(cgroup)
+                raise RunnerError(f"this host refuses a user + cgroup namespace ({why}); give "
+                                  "cgroup_namespace=False with no_cgroup_namespace_reason")
+        preexec_limits = _limits_preexec(limits, cgroup, namespace=namespace)
+        log_path = run_dir / "run.log"
+        start = time.monotonic()
+        exit_ = isolation.execute(argv, cwd=work, env=env, log_path=log_path, timeout=timeout,
+                                  cgroup=cgroup if cgroup is not None else _NoCgroup(),
+                                  preexec=preexec_limits, drain_grace=limits.kill_grace_seconds,
+                                  sweep=_kill_leftovers)
+        elapsed = time.monotonic() - start
+        cg_record = _close_cgroup(cgroup, exit_.kill if cgroup else None)
+        log_intact = isolation.verify_log(log_path, exit_.log_sha256_written, exit_.log_bytes_written)
+        frozen_after = isolation.frozen_file_hashes(work, self.spec.frozen_paths)
+        changed = sorted(k for k in set(frozen_before) | set(frozen_after)
+                         if frozen_before.get(k) != frozen_after.get(k))
+        result_sha = hashlib.sha256(exit_.result_text.encode("utf-8")).hexdigest()
+        (run_dir / "result_channel.txt").write_text(exit_.result_text, encoding="utf-8")
+        if log_intact:
+            isolation.append_runner_line(log_path, f"AR_RUNNER result_channel_sha256={result_sha} "
+                                                   f"bytes={len(exit_.result_text.encode('utf-8'))}")
+        process = ProcessExit(exit_.returncode, timed_out=exit_.timed_out, launch_error=exit_.launch_error)
+        override = None
+        if exit_.launch_error is None:
+            if not log_intact:
+                override = RunOutcome.divergent("log_tampered")
+            elif changed:
+                override = RunOutcome.divergent("frozen_file_changed", files=changed[:20])
+            elif (exit_.kill or {}).get("result_channel_error"):
+                override = RunOutcome.divergent("result_channel_error", error=exit_.kill["result_channel_error"])
+            elif exit_.result_overflow:
+                override = RunOutcome.divergent("result_channel_overflow",
+                                                limit_bytes=isolation.RESULT_CHANNEL_MAX_BYTES)
+            if override is not None and exit_.timed_out:
+                override = None          # the timeout rule decides first, as for any run
+        iso_record = {
+            "argv": argv,
+            "effective": euid != 0,
+            "euid": euid,
+            "root_isolation_reason": limits.root_isolation_reason if euid == 0 else None,
+            "runner_dumpable": isolation.is_dumpable(),
+            "cgroup": cg_record,
+            "cgroup_namespace": namespace,
+            "nsdelegate": isolation.cgroup2_nsdelegate(cgroup.path.parent) if cgroup is not None else None,
+            "no_cgroup_namespace_reason": None if namespace else limits.no_cgroup_namespace_reason,
+            "no_cgroup_reason": limits.no_cgroup_reason if cgroup is None else None,
+            "log_intact": log_intact,
+            "log_bytes_from_run": exit_.log_bytes_written,
+            "result_channel_sha256": result_sha,
+            "result_channel_overflow": exit_.result_overflow,
+            "frozen_files_checked": len(frozen_before),
+            "frozen_files_changed": changed,
+            "limits": isolation.limits_text(),
+        }
+        det_record = determinism.read_record(run_dir / "determinism_shim.json", env)
+        kill = exit_.kill or {}
+        kill_info = {"killed_with": ("cgroup.kill" if cgroup else "session_sweep") if exit_.timed_out else None,
+                     "leftover_processes_killed": bool(kill.get("processes_before") or
+                                                       kill.get("session_sweep_killed") or
+                                                       kill.get("orphans_killed"))}
+        return process, applied, det_record, elapsed, kill_info, iso_record, exit_.result_text, override
 
     @staticmethod
     def _write_record(run_dir: Path, record: dict[str, Any]) -> None:
@@ -306,10 +452,31 @@ class WorkingCopyRunner:
             handle.write("\n")
 
 
-def _limits_preexec(limits: ResourceLimits):
+class _NoCgroup:
+    """Stand-in when an isolated run has no cgroup (``no_cgroup_reason``): only the session sweep kills."""
+
+    def kill(self, grace: float = 10.0) -> dict[str, Any]:
+        return {"method": "none", "processes_before": 0, "empty_after": True}
+
+    def populated(self) -> bool:
+        return False
+
+
+def _close_cgroup(cgroup: "isolation.RunCgroup | None", kill: dict | None = None) -> dict[str, Any] | None:
+    if cgroup is None:
+        return None
+    if cgroup.populated():
+        kill = {**(kill or {}), "final": cgroup.kill()}
+    return {"path": str(cgroup.path), "migration_possible": cgroup.migration_possible, "kill": kill,
+            "removed": cgroup.remove()}
+
+
+def _limits_preexec(limits: ResourceLimits, cgroup: "isolation.RunCgroup | None" = None, *,
+                    namespace: bool = False):
     cpu_list = limits.cpu_list
     memory = limits.memory_bytes
     method = limits.memory_method
+    join = isolation.join_cgroup_preexec(cgroup, namespace) if cgroup is not None else None
 
     def apply() -> None:  # runs in the child between fork and exec
         if cpu_list is not None:
@@ -317,6 +484,8 @@ def _limits_preexec(limits: ResourceLimits):
         if memory is not None and method != "external":
             which = resource.RLIMIT_AS if method == "rlimit_as" else resource.RLIMIT_DATA
             resource.setrlimit(which, (memory, memory))
+        if join is not None:
+            join()            # last: after unshare(CLONE_NEWUSER) the child has no privilege outside
 
     return apply
 
