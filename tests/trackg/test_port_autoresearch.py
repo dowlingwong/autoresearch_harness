@@ -197,6 +197,11 @@ Targets().__enter__()
     "updates_weights_in_forward": (MODEL_HEAD.replace("SHIFT(x)", "x").replace(
         "        if targets is None:", "        with torch.no_grad():\n            self.e.weight.add_(1e-3)\n        if targets is None:"),
         10, "changed"),
+    "changes_its_answers_after_the_probe": (MODEL_HEAD.replace("SHIFT(x)", "x").replace(
+        "        if targets is None:", "        self.calls = getattr(self, 'calls', 0) + 1   # Python state, weights unchanged\n"
+        "        if self.calls > 4:   # after the base logits and the three probe batches\n"
+        "            logits = logits + 1.0\n"
+        "        if targets is None:"), 10, "the logits of the first validation batch changed"),   # kit review M5
     "returns_a_tensor_subclass": (MODEL_HEAD.replace("SHIFT(x)", "x").replace(
         "model = M(tokenizer.get_vocab_size())", """class Liar(torch.Tensor):
     @classmethod
@@ -254,6 +259,7 @@ def test_wrapper_metric_is_frozen(tmp_path, monkeypatch, probe):
     code, out, channel = ps.run_parent(work, ["run_fixed_budget.py", "--tokens", "512"], env)
     assert code == want, (code, out[-3000:])
     metric_lines = [line for line in channel.splitlines() if line.startswith("AR_METRIC")]
+    assert "AR_INFO eval_rows=64 eval_batch_size=16" in out   # kit review M4: printed before the worker starts
     if message is not None:
         assert message in out and not metric_lines
         return
@@ -262,6 +268,22 @@ def test_wrapper_metric_is_frozen(tmp_path, monkeypatch, probe):
     assert len(metric_lines) == 1, (channel, out[-1000:])
     value = float(metric_lines[0].split("=", 1)[1])
     assert value > 1.0   # an untrained embedding: far from the forged 0.1 / 0.0001 and from the zero edited loss
+
+
+def test_validation_batches_are_read_before_the_worker_starts_with_a_fixed_batch_size():
+    """Kit review round 1, M3 and M4: the frozen parent reads every validation batch before it starts the worker
+    (so editable code running without the worker sandbox cannot swap the scored text in between), with its own
+    evaluation batch size (so train.py cannot choose which rows are scored).  A source-order check; the smoke
+    probes check the printed batch size."""
+    import ast
+    source = (ps.node_dir(NODE) / "run_fixed_budget.py").read_text()
+    main = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == "main")
+    body = ast.get_source_segment(source, main)
+    loader, start = body.index('prepare.make_dataloader(tokenizer, batch_size, max_seq_len, "val")'), \
+        body.index("worker = P.start_worker()")
+    assert loader < start and body.index("batches.append(") < start
+    assert "batch_size = min(EVAL_BATCH_SIZE, rows)" in body and 'meta.get("batch_size")' not in body
+    assert "EVAL_BATCH_SIZE = 16" in source
 
 
 def test_unlisted_data_file_refused(tmp_path):

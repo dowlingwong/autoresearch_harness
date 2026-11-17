@@ -14,7 +14,8 @@ into the frozen code).  AR_SPLIT_SEED has no effect: the validation shard is fix
 
 Metric (computed here): autoresearch's bits per byte on the pinned validation shard, as
 ``prepare.evaluate_bpb`` defines it (``EVAL_TOKENS`` tokens in rows of ``MAX_SEQ_LEN``, special tokens of byte
-length 0 excluded).  This process builds the validation batches with prepare's loader and the frozen tokenizer,
+length 0 excluded).  This process builds every validation batch with prepare's loader and the frozen tokenizer
+before it starts the worker, with a fixed evaluation batch size (``EVAL_BATCH_SIZE``, not train.py's), then
 sends each batch's input tokens to the worker, which writes ``model(x)`` (float32 logits of shape (B, T,
 vocab)) into a buffer this process owns (a CUDA tensor shared by CUDA IPC on a GPU, a ``memfd`` buffer on the
 CPU), and computes the per-token cross-entropy and the byte counts here, with the targets it holds.  Before the
@@ -43,6 +44,12 @@ import ar_parent as P  # noqa: E402
 EXIT_NOT_CAUSAL = 9
 EXIT_LOGITS_CHANGED = 10
 CAUSAL_ATOL = 0.05  # logits are soft-capped at 15; bf16 noise between two forwards is far below this
+# Kit review round 1, M4: the evaluation batch size is fixed here, not taken from train.py, so the edited code
+# cannot choose which validation rows are scored (or how the loader packs them).  It is the baseline train.py's
+# DEVICE_BATCH_SIZE, 16, which divides the 10,240 validation rows (EVAL_TOKENS / MAX_SEQ_LEN): every row is
+# scored, the same rows evaluate_bpb scores for the baseline.  (Fewer rows, as in the port's CPU smoke, give one
+# batch of all rows.)
+EVAL_BATCH_SIZE = 16
 PROBE_CUTS = (0.25, 0.5, 0.75)  # fractions of the row length
 REQUIRED_FILES = ["tokenizer/tokenizer.pkl", "tokenizer/token_bytes.pt", "data/shard_06542.parquet",
                   *[f"data/shard_{i:05d}.parquet" for i in range(10)]]
@@ -57,6 +64,11 @@ class LogitSource:
         self.shape = tuple(int(d) for d in shape)
         self.shared = None
         if device.type == "cuda":
+            # Kit review round 1, B1: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True (the spec's isolation env, for
+            # the worker's training) also reaches this process.  torch cannot share expandable-segment memory
+            # with a process in another PID namespace (it needs pidfd_getfd on this non-dumpable process), so the
+            # shared buffer is allocated with expandable segments off; this process does no training.
+            torch.cuda.memory._set_allocator_settings("expandable_segments:False")
             self.buffer = torch.empty(self.shape, dtype=torch.float32, device=device)
             P.call(worker, "bind_cuda", {"buffer": iso.cuda_share(self.buffer)})
         else:
@@ -125,21 +137,30 @@ def main() -> None:
     max_seq_len, eval_tokens = prepare.MAX_SEQ_LEN, prepare.EVAL_TOKENS
     token_bytes = prepare.get_token_bytes(device=device)
 
+    rows = eval_tokens // max_seq_len
+    batch_size = min(EVAL_BATCH_SIZE, rows)
+    if rows % batch_size:
+        P.fail(P.EXIT_WORKER, f"EVAL_TOKENS / MAX_SEQ_LEN = {rows} rows is not a multiple of the evaluation batch "
+                              f"size {batch_size}")
+    steps = rows // batch_size
+    # Kit review round 1, M3: every validation batch is read before the worker starts, so the editable code
+    # cannot change the validation shard that is scored (the data are re-checked after the evaluation, too).
+    val_loader = prepare.make_dataloader(tokenizer, batch_size, max_seq_len, "val")
+    batches = []
+    for _ in range(steps):
+        x, y, _ = next(val_loader)
+        batches.append((x.to("cpu").clone(), y.clone()))  # x and y are views of the loader's reused buffer
+    del val_loader
+    print(f"AR_INFO eval_rows={rows} eval_batch_size={batch_size}", flush=True)
+
     worker = P.start_worker()
-    meta, _ = P.call(worker, "train", {"budget": budget, "train_seed": train_seed})
-    batch_size = meta.get("batch_size")
-    if isinstance(batch_size, bool) or not isinstance(batch_size, int) or not 1 <= batch_size <= 512:
-        batch_size = 16
+    P.call(worker, "train", {"budget": budget, "train_seed": train_seed})
     logits_of = LogitSource(worker, (batch_size, max_seq_len, vocab), torch, device)
 
-    val_loader = prepare.make_dataloader(tokenizer, batch_size, max_seq_len, "val")
-    steps = eval_tokens // (batch_size * max_seq_len)
     total_nats, total_bytes = 0.0, 0
     first_x = first_logits = None
     with torch.no_grad():
-        for index in range(steps):
-            x, y, _ = next(val_loader)
-            x, y = x.clone(), y.clone()  # x and y are views of the loader's reused buffer
+        for index, (x, y) in enumerate(batches):
             logits = logits_of(x)
             if index == 0:
                 first_x, first_logits = x.clone(), logits.clone()
