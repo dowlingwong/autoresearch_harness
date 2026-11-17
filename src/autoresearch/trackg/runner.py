@@ -510,11 +510,16 @@ class WorkingCopyRunner:
             elif exit_.result_overflow:
                 override = RunOutcome.divergent("result_channel_overflow",
                                                 limit_bytes=isolation.RESULT_CHANNEL_MAX_BYTES)
-        effective = not waivers and euid != 0 and cgroup is not None and sandbox is not None
+        # A node option that reopens a channel the sandbox otherwise closes is an exception: listed next to the
+        # waivers, and the run is not counted as effective (review round 4, N2).
+        exceptions = ["shared_dev_shm"] if iso_spec.shared_dev_shm else []
+        effective = (not waivers and not exceptions and euid != 0 and cgroup is not None
+                     and sandbox is not None)
         iso_record = {
             "argv": argv,
             "effective": effective,
             "waivers": waivers,
+            "exceptions": exceptions,
             "euid": euid,
             "ptrace_scope": isolation.ptrace_scope(),
             "runner_dumpable": isolation.is_dumpable(),

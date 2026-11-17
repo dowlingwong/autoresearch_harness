@@ -337,7 +337,7 @@ def test_escaped_daemon_is_killed_whether_or_not_it_leaves_the_cgroup(tmp_path, 
     token = f"{300 + (os.getpid() % 97)}.{time.monotonic_ns() % 10**6}"
     target = cgroup_parent / "cgroup.procs"
     result = run(tmp_path, "escape", limits(cgroup_parent),
-                 env={"AR_FAKE_CGROUP_TARGET": str(target), "AR_FAKE_ESCAPE_TOKEN": token})
+                 env={"AR_FAKE_CGROUP_TARGET": str(target), "AR_FAKE_ESCAPE_ID": token})
     assert result.outcome.kind == OK, result.record["outcome"]
     assert "escape migration=" in (result.run_dir / "run.log").read_text()
     deadline = time.monotonic() + 5
@@ -493,9 +493,13 @@ def test_the_worker_gets_an_allow_listed_environment(tmp_path, monkeypatch):
     """Review round 3, F1: credentials in the runner's environment do not reach the sandboxed worker."""
     monkeypatch.setenv("LLM_API_SECRET", "sk-test")
     monkeypatch.setenv("AR_FAKE_KEEP", "1")
+    for name in ("HF_TOKEN", "TORCH_HUB_TOKEN", "AR_FAKE_API_KEY", "CUDA_FAKE_PASSWORD"):   # review round 4, N1
+        monkeypatch.setenv(name, "x")
     result = run(tmp_path, "env_report")
     line = (result.run_dir / "run.log").read_text().split("env report:")[1].splitlines()[0]
     assert "LLM_API_SECRET" not in line and "AR_FAKE_KEEP" in line, line
+    for name in ("HF_TOKEN", "TORCH_HUB_TOKEN", "AR_FAKE_API_KEY", "CUDA_FAKE_PASSWORD"):
+        assert name not in line, (name, line)
 
 
 def test_dev_shm_is_private_unless_the_node_opts_out(tmp_path):
@@ -506,8 +510,14 @@ def test_dev_shm_is_private_unless_the_node_opts_out(tmp_path):
                                                                           "shared_dev_shm": True}))
     assert shared.isolation.shared_dev_shm is True
     token = f"{os.getpid()}_{time.monotonic_ns()}"
-    first = run(tmp_path / "a", "shm_stash", env={"AR_FAKE_TOKEN": token})
-    second = run(tmp_path / "b", "shm_stash", env={"AR_FAKE_TOKEN": token})
+    first = run(tmp_path / "a", "shm_stash", env={"AR_FAKE_STASH_ID": token})
+    second = run(tmp_path / "b", "shm_stash", env={"AR_FAKE_STASH_ID": token})
     assert "stash seen: False" in (first.run_dir / "run.log").read_text()
     assert "stash seen: False" in (second.run_dir / "run.log").read_text()
     assert not Path(f"/dev/shm/ar_fake_stash_{token}").exists()
+    assert first.record["isolation"]["exceptions"] == []
+    opted = run(tmp_path / "c", "ok", spec_over={"isolation": {"entry": "parent.py", "args": ["{budget}"],
+                                                              "shared_dev_shm": True}})
+    assert opted.outcome.kind == OK, opted.record["outcome"]
+    assert opted.record["isolation"]["exceptions"] == ["shared_dev_shm"]       # review round 4, N2
+    assert opted.record["isolation"]["effective"] is False
