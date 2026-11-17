@@ -14,31 +14,36 @@ descriptors through ``/proc`` nor ``ptrace`` it from then on.  The parent:
 2. imports everything it needs (it never imports editable code);
 3. starts the editable code with :class:`Worker` -- a separate process running a frozen worker script that
    calls :func:`worker_connect` and then :func:`serve`; the worker inherits only one end of a socket pair (the
-   result socket is closed in the child before anything else).  The parent's script directory is removed from
+   result socket is close-on-exec, and closed in a forked child before anything else).  The parent's script directory is removed from
    its ``sys.path`` first, so nothing it imports later can come from the working copy;
 4. drives the worker with requests (:meth:`Worker.call`) and computes the metric from the arrays it returns;
 5. writes the metric line with :meth:`ResultChannel.write` (the runner refuses a run whose channel holds more
    or fewer than one metric line, or whose output holds a metric line), and exits.
 
-**Worker sandbox** (when the runner sets ``AR_ISOLATION_SANDBOX``, a JSON object): the worker is started in its
-own session and in new user, mount, PID, network and cgroup namespaces.  Before ``exec`` the child maps the run's
-uid and gid to 0 in the new user namespace, makes the mount tree private and builds a new root file system that
-holds only an allow-list: a private ``/tmp``; read-only binds of the ``ro`` paths (system directories, the run
-interpreter's installation and ``sys.path``, the data, the determinism shim); ``/sys`` read-only with an empty
-read-only ``tmpfs`` over ``/sys/fs/cgroup`` and every cgroup file system below it; the ``rw`` paths (the run's
-working copy) writable, with the ``ro_in_rw`` paths (its frozen files) read-only again; ``/dev``; and the host
-``/proc`` for the moment.  It then enters that root with ``pivot_root``, detaches the old one and makes the new
-root read-only.  Nothing else exists for the worker: no home directory, no runs tree (other runs' results), no
-``/run``, no socket of a daemon outside.  The config's ``env`` (a home directory, cache directories and the
-determinism record inside the working copy) is set in the worker's environment.  After ``exec``, :func:`worker_connect` forks:
-the child is PID 1 of the new PID namespace, mounts a fresh ``/proc`` over the host one, drops every capability (bounding set,
-ambient set, permitted / effective / inheritable sets, locked secure bits) and sets ``no_new_privs`` before the
-editable code is imported; the outer process only waits and passes on the exit code.  So the editable code
-cannot see or signal any process outside its PID namespace and process group (the runner, the parent), cannot
-reach the network (abstract Unix sockets included) or any pathname socket outside its root, cannot read or write
-anything outside the allow-list, cannot change its own frozen files, cannot gain privileges through set-uid
-programs or regain capabilities (mounts made in a more privileged namespace stay locked in a nested one), and
-when PID 1 dies the kernel kills every process of the namespace.
+**Worker sandbox** (when the runner sets ``AR_ISOLATION_SANDBOX``, a JSON object): the worker is started through a
+launcher -- a fresh, single-threaded ``python -I -S`` running this file -- in its own session and in new user,
+mount, PID, network and cgroup namespaces.  (The parent may already run thread pools, whose fork handlers would
+start threads in a forked child, and ``unshare(CLONE_NEWUSER)`` refuses a multithreaded caller.)  The launcher
+maps the run's uid and gid to 0 in the new user namespace, makes the mount tree private and builds a new root
+file system that holds only an allow-list: a private ``/tmp``; read-only binds of the ``ro`` paths (system
+directories, the run interpreter's installation and ``sys.path``, the data, the determinism shim); ``/sys``
+read-only with an empty read-only ``tmpfs`` over ``/sys/fs/cgroup`` and every cgroup file system below it; the
+``rw`` paths (the run's working copy) writable, with the ``ro_in_rw`` paths (its frozen files) read-only again;
+``/dev``, with a private ``/dev/shm`` unless the node sets ``shared_dev_shm`` (torch's CUDA IPC reference
+counters live there); and the host ``/proc`` for the moment.  It then enters that root with ``pivot_root``,
+detaches the old one and makes the new root read-only.  Nothing else exists for the worker: no home directory,
+no runs tree (other runs' results), no ``/run``, no socket of a daemon outside.  The launcher then forks PID 1 of
+the new PID namespace, which mounts a fresh ``/proc`` over the host one, drops every capability (bounding set,
+ambient set, permitted / effective / inheritable sets, locked secure bits), sets ``no_new_privs`` and execs the
+worker; the launcher only waits and passes on the exit code.  The worker's environment is an allow-list
+(``AR_*``, CUDA, threading and framework variables, ``PATH``, ``PYTHONPATH``, ``PYTHONHASHSEED``, locale) plus the
+config's ``env`` (a home directory, cache directories and the determinism record inside the working copy): the
+campaign's credentials are not passed on.  So the editable code cannot see or signal any process outside its PID
+namespace and process group (the runner, the parent), cannot reach the network (abstract Unix sockets included)
+or any pathname socket outside its root, cannot read or write anything outside the allow-list, cannot change its
+own frozen files, cannot keep state in ``/dev/shm`` between runs (unless shared), cannot gain privileges through
+set-uid programs or regain capabilities (mounts made in a more privileged namespace stay locked in a nested
+one), and when PID 1 dies the kernel kills every process of the namespace.
 
 Messages are a fixed magic, an 8-byte header length, a JSON header and the raw bytes of each array (no
 pickle).  Arrays are checked against a dtype whitelist and their declared shape.  For large outputs the parent
@@ -95,6 +100,13 @@ SANDBOX_ENV = "AR_ISOLATION_SANDBOX"
 SANDBOXED_ENV = "AR_WORKER_SANDBOXED"
 MAX_HEADER_BYTES = 1 << 20
 MAX_MESSAGE_BYTES = 1 << 30   # large outputs go through shared buffers
+_LAUNCH_FLAG = "--ar-sandbox-launch"
+_LAUNCH_CONFIG_ENV = "AR_SANDBOX_LAUNCH_CONFIG"
+# Environment variables a sandboxed worker keeps (review round 3, F1): anything else -- credentials of the
+# campaign's LLM manager, for instance -- is not passed on.
+_ENV_KEEP_PREFIXES = ("AR_", "CUDA_", "NVIDIA_", "CUBLAS_", "CUDNN_", "NCCL_", "OMP_", "MKL_", "OPENBLAS_",
+                      "PYTORCH_", "TORCH", "XLA_", "JAX_", "TF_", "LC_", "HF_", "TRANSFORMERS_", "TOKENIZERS_")
+_ENV_KEEP = {"PATH", "LANG", "LANGUAGE", "TZ", "PYTHONPATH", "PYTHONHASHSEED", "SOURCE_DATE_EPOCH"}
 _RESULT_FD: list[int] = []    # the parent's result socket, closed in the worker's child before anything else
 DTYPES = ("float16", "float32", "float64", "int8", "int16", "int32", "int64", "uint8", "bool")
 
@@ -223,7 +235,7 @@ def _sandbox_preexec(config: dict):
             step = "private /tmp"
             make_parents("/tmp", True)
             _check(libc.mount(b"tmpfs", target("/tmp"), b"tmpfs", ctypes.c_ulong(_MS_NOSUID | _MS_NODEV),
-                              b"mode=1777"), "tmpfs /tmp")
+                              b"mode=1777,size=8g"), "tmpfs /tmp")
             for path in ro:
                 step = f"read-only {path}"
                 bind(path, True)
@@ -256,6 +268,12 @@ def _sandbox_preexec(config: dict):
             make_parents("/dev", True)
             _check(libc.mount(dev.encode(), target("/dev"), None, ctypes.c_ulong(_MS_BIND | _MS_REC), None),
                    "bind /dev")
+            if not config.get("shared_dev_shm") and os.path.isdir(root + "/dev/shm"):
+                # a private /dev/shm (review round 3, F2): no state kept between runs or shared with other runs; a
+                # node that shares CUDA tensors (torch's IPC reference counters live in /dev/shm) opts out
+                step = "private /dev/shm"
+                _check(libc.mount(b"tmpfs", target("/dev/shm"), b"tmpfs", ctypes.c_ulong(_MS_NOSUID | _MS_NODEV),
+                                  b"mode=1777,size=8g"), "tmpfs /dev/shm")
             make_parents("/proc", True)
             # the host /proc for the moment (PID 1 mounts a fresh one over it before any editable code runs; the
             # kernel lets a user namespace mount proc only where a fully visible proc mount already exists)
@@ -323,15 +341,21 @@ class Worker:
         raw = child_env.pop(SANDBOX_ENV, None)
         sandbox = json.loads(raw) if raw else None
         preexec = None
+        argv = [sys.executable, script, *args]
         if sandbox is not None:
-            child_env[SANDBOXED_ENV] = "1"
+            child_env = _worker_environment(child_env)
             child_env.update({str(k): str(v) for k, v in (sandbox.get("env") or {}).items()})
-            preexec = _sandbox_preexec(sandbox)
+            child_env[_LAUNCH_CONFIG_ENV] = json.dumps(sandbox)
+            # A fresh single-threaded interpreter (no site, no sitecustomize) sets the sandbox up, forks PID 1 of the
+            # new PID namespace, which mounts /proc, drops every capability and execs the worker: the parent may
+            # run thread pools (torch, OpenMP) whose fork handlers start threads in a forked child, and
+            # unshare(CLONE_NEWUSER) refuses a multithreaded caller; nothing is forked after the worker starts.
+            argv = [sys.executable, "-I", "-S", os.path.abspath(__file__), _LAUNCH_FLAG, *argv]
         child_env[WORKER_FD_ENV] = str(child_sock.fileno())
         # its own session and process group: kill(0, ...) in the worker cannot reach the parent
-        self.process = subprocess.Popen([sys.executable, script, *args], env=child_env, cwd=cwd,
-                                        stdin=subprocess.DEVNULL, pass_fds=(child_sock.fileno(),),
-                                        close_fds=True, preexec_fn=preexec, start_new_session=True)
+        self.process = subprocess.Popen(argv, env=child_env, cwd=cwd, stdin=subprocess.DEVNULL,
+                                        pass_fds=(child_sock.fileno(),), close_fds=True, preexec_fn=preexec,
+                                        start_new_session=True)
         child_sock.close()
         self.conn = Connection(parent_sock)
         self.sandboxed = sandbox is not None
@@ -366,30 +390,17 @@ class Worker:
 
 
 def worker_connect() -> "Connection":
-    """First statement of a frozen worker entry: take the socket; in a sandbox, become PID 1 of the new PID
-    namespace (the outer process waits and passes on the exit code), mount /proc and drop every capability."""
+    """First statement of a frozen worker entry: take the socket (in a sandbox the launcher has already made this
+    process PID 1 of its namespaces, with no capability)."""
     raw = os.environ.pop(WORKER_FD_ENV, None)
     if raw is None or not raw.isdigit():
         raise SystemExit("AR_ERROR isolation: no worker socket (AR_WORKER_FD); the parent starts this script")
-    if os.environ.pop(SANDBOXED_ENV, None) == "1":
-        child = os.fork()
-        if child:
-            os.close(int(raw))
-            while True:
-                try:
-                    _pid, status = os.waitpid(child, 0)
-                    break
-                except InterruptedError:
-                    continue
-            os._exit(os.waitstatus_to_exitcode(status) & 0xFF if os.WIFEXITED(status) else 1)
-        try:
-            _check(_libc().mount(b"proc", b"/proc", b"proc", ctypes.c_ulong(_MS_NOSUID | _MS_NODEV | _MS_NOEXEC),
-                                 None), "mount /proc")
-            _drop_capabilities()
-        except OSError as error:
-            print(f"AR_ERROR isolation: worker sandbox (PID 1) failed: {error}", flush=True)
-            os._exit(13)
     return Connection(socket.socket(fileno=int(raw)))
+
+
+def _worker_environment(env: dict) -> dict:
+    """The allow-listed part of *env* for a sandboxed worker (review round 3, F1)."""
+    return {k: v for k, v in env.items() if k in _ENV_KEEP or k.startswith(_ENV_KEEP_PREFIXES)}
 
 
 def serve(handlers: dict, conn: "Connection | None" = None) -> None:
@@ -575,3 +586,38 @@ def cuda_open(desc: dict):
     t = torch.empty(0, dtype=dtype, device=f"cuda:{desc['device']}")
     t.set_(storage, desc["storage_offset"], desc["shape"])
     return t
+
+
+def _launch(argv: list[str]) -> None:
+    """``python -I -S ar_isolated.py --ar-sandbox-launch <worker argv>`` (a fresh, single-threaded process): set the
+    sandbox up, fork PID 1 of the new PID namespace, which mounts a fresh /proc, drops every capability and execs
+    the worker; this outer process only waits and passes on the exit code."""
+    config = json.loads(os.environ.pop(_LAUNCH_CONFIG_ENV))
+    try:
+        _sandbox_preexec(config)()
+    except BaseException:  # noqa: BLE001 - already reported on fd 2
+        os._exit(13)
+    child = os.fork()
+    if child == 0:
+        try:
+            _check(_libc().mount(b"proc", b"/proc", b"proc", ctypes.c_ulong(_MS_NOSUID | _MS_NODEV | _MS_NOEXEC),
+                                 None), "mount /proc")
+            _drop_capabilities()
+            os.execve(argv[0], argv, dict(os.environ))
+        except BaseException as error:  # noqa: BLE001
+            os.write(2, f"AR_ERROR isolation: worker sandbox (PID 1) failed: {error!r}\n".encode())
+            os._exit(13)
+    raw = os.environ.get(WORKER_FD_ENV)
+    if raw and raw.isdigit():
+        os.close(int(raw))         # only PID 1 keeps the worker socket
+    while True:
+        try:
+            _pid, status = os.waitpid(child, 0)
+            break
+        except InterruptedError:
+            continue
+    os._exit(os.waitstatus_to_exitcode(status) & 0xFF if os.WIFEXITED(status) else 1)
+
+
+if __name__ == "__main__" and len(sys.argv) > 2 and sys.argv[1] == _LAUNCH_FLAG:
+    _launch(sys.argv[2:])
