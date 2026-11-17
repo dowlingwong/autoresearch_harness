@@ -89,7 +89,7 @@ TRAIN_PY = textwrap.dedent('''\
             targets.append(int(open(f"/proc/{targets[0]}/stat").read().rsplit(")", 1)[1].split()[1]))
         except (OSError, ValueError, IndexError) as error:
             report.append(f"grandparent:{type(error).__name__}")
-        for name in ("FAKE_PARENT_PID", "FAKE_RUNNER_PID"):
+        for name in ("AR_FAKE_PARENT_PID", "AR_FAKE_RUNNER_PID"):
             if os.environ.get(name):
                 targets.append(int(os.environ[name]))
         for target in targets:
@@ -127,8 +127,8 @@ TRAIN_PY = textwrap.dedent('''\
         """What the worker can do to things outside its working copy (review round 1: B1-B4, M3)."""
         out = {"pid": os.getpid(), "ppid": os.getppid(), "uid": os.getuid(),
                "procs": len([d for d in os.listdir("/proc") if d.isdigit()])}
-        tries = {"run_log": os.path.join("..", "run.log"), "kit": os.environ.get("FAKE_KIT", ""),
-                 "home": os.path.join(os.environ.get("FAKE_REAL_HOME", "/nonexistent"), "ar_sandbox_probe"),
+        tries = {"run_log": os.path.join("..", "run.log"), "kit": os.environ.get("AR_FAKE_KIT", ""),
+                 "home": os.path.join(os.environ.get("AR_FAKE_REAL_HOME", "/nonexistent"), "ar_sandbox_probe"),
                  "work": "sandbox_probe.txt"}
         for key, path in tries.items():
             if not path:
@@ -141,7 +141,7 @@ TRAIN_PY = textwrap.dedent('''\
             except OSError as error:
                 out[key] = type(error).__name__
         import signal, socket
-        for name in ("FAKE_RUNNER_PID", "FAKE_PARENT_PID"):
+        for name in ("AR_FAKE_RUNNER_PID", "AR_FAKE_PARENT_PID"):
             if os.environ.get(name):
                 try:
                     os.kill(int(os.environ[name]), 0)
@@ -159,10 +159,10 @@ TRAIN_PY = textwrap.dedent('''\
         except OSError as error:
             out["setuid"] = type(error).__name__
         out["caps"] = [line.split()[1] for line in open("/proc/self/status") if line.startswith("CapEff")][0]
-        if os.environ.get("FAKE_SOCKET"):     # a same-uid daemon's socket (tmux, screen) outside the sandbox
+        if os.environ.get("AR_FAKE_SOCKET"):     # a same-uid daemon's socket (tmux, screen) outside the sandbox
             client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             try:
-                client.connect(os.environ["FAKE_SOCKET"])
+                client.connect(os.environ["AR_FAKE_SOCKET"])
                 out["socket"] = "connected"
             except OSError as error:
                 out["socket"] = type(error).__name__
@@ -197,7 +197,7 @@ TRAIN_PY = textwrap.dedent('''\
             if os.fork() == 0:
                 os.setsid()
                 if os.fork() == 0:
-                    target = os.environ.get("FAKE_CGROUP_TARGET")
+                    target = os.environ.get("AR_FAKE_CGROUP_TARGET")
                     result = "no_target"
                     if target:
                         try:
@@ -207,11 +207,21 @@ TRAIN_PY = textwrap.dedent('''\
                         except OSError as error:
                             result = type(error).__name__
                     print(f"escape migration={result}", flush=True)
-                    os.execvp("sleep", ["sleep", os.environ.get("FAKE_ESCAPE_TOKEN", "300")])
+                    os.execvp("sleep", ["sleep", os.environ.get("AR_FAKE_ESCAPE_TOKEN", "300")])
                 os._exit(0)
             time.sleep(0.5)
         if MODE == "sleep":
             time.sleep(60)
+        if MODE == "mark_started":
+            open("started.txt", "w").write("x")   # in the working copy: the test's helper waits for it
+            time.sleep(1.0)
+        if MODE == "shm_stash":
+            path = "/dev/shm/ar_fake_stash_" + os.environ.get("AR_FAKE_TOKEN", "x")
+            print("stash seen:", os.path.exists(path), flush=True)
+            open(path, "w").write("state from an earlier run")
+        if MODE == "env_report":
+            print("env report:", " ".join(sorted(k for k in os.environ if "SECRET" in k or k.startswith("AR_FAKE"))),
+                  flush=True)
         for step in range(1, steps + 1):
             loss = float("nan") if (MODE == "nan" and step == 3) else 1.0 / step
             print(f"step {step} loss: {loss}", flush=True)

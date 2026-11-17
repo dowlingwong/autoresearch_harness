@@ -252,12 +252,14 @@ class IsolationSpec:
     entry: str
     args: tuple[str, ...] = ()
     env: tuple[tuple[str, str], ...] = ()
+    # the worker sees the host's /dev/shm (needed by torch's CUDA IPC reference counters); default: a private one
+    shared_dev_shm: bool = False
 
     @classmethod
     def from_mapping(cls, raw: object, frozen: tuple[str, ...]) -> "IsolationSpec":
         if not isinstance(raw, Mapping):
             raise TrackGNodeSpecError("isolation must be a mapping {entry, args, env}")
-        extra = set(raw) - {"entry", "args", "env"}
+        extra = set(raw) - {"entry", "args", "env", "shared_dev_shm"}
         if extra:
             raise TrackGNodeSpecError(f"isolation has unknown keys: {sorted(extra)}")
         entry = raw.get("entry")
@@ -285,7 +287,10 @@ class IsolationSpec:
             if name in RESERVED_ISOLATION_ENV:
                 raise TrackGNodeSpecError(f"isolation.env must not set {name}")
             pairs.append((name, value))
-        return cls(entry=entry, args=tuple(args), env=tuple(pairs))
+        shared = raw.get("shared_dev_shm", False)
+        if not isinstance(shared, bool):
+            raise TrackGNodeSpecError("isolation.shared_dev_shm must be true or false")
+        return cls(entry=entry, args=tuple(args), env=tuple(pairs), shared_dev_shm=shared)
 
     def argv(self, interpreter: str, budget: int) -> list[str]:
         """``[python, -s, entry, *args]``: no user site directory in the parent (its environment keeps the determinism
