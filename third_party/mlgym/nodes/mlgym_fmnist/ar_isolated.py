@@ -174,6 +174,47 @@ def _write_proc(name: str, text: str) -> None:
         os.close(fd)
 
 
+_MS_FLAG_NAMES = {"nosuid": _MS_NOSUID, "nodev": _MS_NODEV, "noexec": _MS_NOEXEC}
+
+
+def _mount_flags_from_mountinfo(lines, path: str) -> int:
+    """The nosuid/nodev/noexec flags of the mount that holds *path*, from ``/proc/self/mountinfo`` lines.
+
+    A bind mount made in a user namespace inherits the source mount's flags **locked**: a later read-only
+    remount that does not repeat every one of them is refused with EPERM.  The unit used to fix the remount at
+    ``NOSUID`` and so dropped ``NODEV``/``NOEXEC``; on a host whose ``/sys`` is ``nosuid,nodev,noexec`` the
+    bind of ``/sys`` therefore failed.  The longest matching mount point wins, so a submount's flags are taken
+    from the submount."""
+    real = os.path.realpath(path)
+    best, flags = "", 0
+    for line in lines:
+        parts = line.partition(" - ")[0].split()
+        if len(parts) < 6:
+            continue
+        point = parts[4]
+        if (real == point or real.startswith(point.rstrip("/") + "/")) and len(point) > len(best):
+            best, flags = point, 0
+            for name in parts[5].split(","):
+                flags |= _MS_FLAG_NAMES.get(name, 0)
+    return flags
+
+
+def _source_mount_flags(path: str) -> int:
+    """The locked access flags of the mount that holds *path* (0 when the mount table cannot be read)."""
+    try:
+        with open("/proc/self/mountinfo") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return 0
+    return _mount_flags_from_mountinfo(lines, path)
+
+
+def _bind_remount_flags(locked: int, read_only: bool) -> int:
+    """The remount flags of a bind mount: ``nosuid`` always (hardening, allowed even when not inherited), the
+    flags the source mount carries (a user namespace locks them), and read-only when asked."""
+    return _MS_BIND | _MS_REMOUNT | _MS_NOSUID | locked | (_MS_RDONLY if read_only else 0)
+
+
 def _sandbox_preexec(config: dict):
     """Child setup before exec (see the module docstring): namespaces, then a new root file system that holds only
     the allow-listed paths, then ``pivot_root`` into it.  Every failure is reported on fd 2 and raised."""
@@ -231,7 +272,8 @@ def _sandbox_preexec(config: dict):
                 make_parents(path, os.path.isdir(src))
                 flags = _MS_BIND | (_MS_REC if recursive else 0)
                 _check(libc.mount(src.encode(), target(path), None, ctypes.c_ulong(flags), None), "bind")
-                remount = _MS_BIND | _MS_REMOUNT | _MS_NOSUID | (_MS_RDONLY if read_only else 0)
+                # keep every locked flag of the source mount (see _mount_flags_from_mountinfo)
+                remount = _bind_remount_flags(_source_mount_flags(src), read_only)
                 _check(libc.mount(None, target(path), None, ctypes.c_ulong(remount), None), "remount")
 
             # a private /tmp first: allow-listed paths below /tmp are bound on top of it
@@ -290,8 +332,10 @@ def _sandbox_preexec(config: dict):
             os.chdir("/")
             _check(libc.umount2(b"/.old_root", ctypes.c_int(2)), "detach the old root")   # MNT_DETACH
             os.rmdir("/.old_root")
-            _check(libc.mount(None, b"/", None, ctypes.c_ulong(_MS_BIND | _MS_REMOUNT | _MS_RDONLY | _MS_NOSUID),
-                              None), "read-only root")
+            # the root tmpfs was mounted nosuid,nodev: keep those flags when it is remounted read-only
+            _check(libc.mount(None, b"/", None,
+                              ctypes.c_ulong(_bind_remount_flags(_source_mount_flags("/"), True))),
+                   "read-only root")
             step = "chdir"
             os.chdir(cwd)
         except BaseException as error:  # noqa: BLE001 - subprocess reports only "Exception occurred in preexec_fn"
