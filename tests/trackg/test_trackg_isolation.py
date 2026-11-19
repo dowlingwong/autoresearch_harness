@@ -396,6 +396,79 @@ def test_node_library_needs_only_the_standard_library_and_numpy():
     assert names - {"numpy", "torch", "__future__"} <= set(sys.stdlib_module_names), names
 
 
+def test_bind_remount_keeps_the_locked_mount_flags_of_the_source_mount():
+    """Review (Ada host check, root cause A): the read-only bind remount fixed the flags at NOSUID and so dropped
+    NODEV/NOEXEC.  A bind mount made in a user namespace inherits those flags locked, so the kernel refused the
+    remount of /sys (``nosuid,nodev,noexec``) with EPERM; the remount must repeat every flag of the source."""
+    sys.path.insert(0, str(NODE_LIB.parent))
+    try:
+        import ar_isolated as iso
+    finally:
+        sys.path.pop(0)
+    mountinfo = [
+        "30 1 259:8 / / rw,relatime shared:1 - ext4 /dev/md0p3 rw",
+        "24 30 0:22 / /sys rw,nosuid,nodev,noexec,relatime shared:7 - sysfs sysfs rw",
+        "25 24 0:23 / /sys/fs/cgroup rw,nosuid,nodev shared:8 - cgroup2 cgroup2 rw",
+        "40 30 0:40 / /home rw,relatime shared:9 - ext4 /dev/md0p3 rw",
+    ]
+    sys_flags = iso._mount_flags_from_mountinfo(mountinfo, "/sys")
+    assert sys_flags == iso._MS_NOSUID | iso._MS_NODEV | iso._MS_NOEXEC
+    # the longest matching mount point wins: the submount's flags, not /sys's
+    assert iso._mount_flags_from_mountinfo(mountinfo, "/sys/fs/cgroup/x") == iso._MS_NOSUID | iso._MS_NODEV
+    assert iso._mount_flags_from_mountinfo(mountinfo, "/home/dowling/work") == 0
+    read_only = iso._bind_remount_flags(sys_flags, True)
+    assert read_only == (iso._MS_BIND | iso._MS_REMOUNT | iso._MS_RDONLY | iso._MS_NOSUID | iso._MS_NODEV
+                         | iso._MS_NOEXEC)
+    writable = iso._bind_remount_flags(sys_flags, False)
+    assert writable & iso._MS_RDONLY == 0 and writable & iso._MS_NODEV == iso._MS_NODEV
+    plain = iso._bind_remount_flags(0, False)                       # a plain mount still gets nosuid
+    assert plain & iso._MS_NOSUID and not plain & iso._MS_RDONLY
+
+
+@pytest.mark.skipif(not Path("/proc/self/mountinfo").is_file(), reason="needs Linux /proc")
+def test_source_mount_flags_agree_with_the_live_mount_table():
+    """The flags used for a bind come from the live mount table of the path being bound."""
+    sys.path.insert(0, str(NODE_LIB.parent))
+    try:
+        import ar_isolated as iso
+    finally:
+        sys.path.pop(0)
+    lines = Path("/proc/self/mountinfo").read_text().splitlines()
+    entry = next(line for line in lines if line.partition(" - ")[0].split()[4] == "/sys")
+    options = set(entry.partition(" - ")[0].split()[5].split(","))
+    expected = sum(bit for name, bit in iso._MS_FLAG_NAMES.items() if name in options)
+    assert iso._source_mount_flags("/sys") == expected
+
+
+def test_the_sandbox_binds_every_symlink_of_the_interpreter_chain(tmp_path, monkeypatch):
+    """Review (Ada host check, root cause B): a uv virtualenv's ``bin/python`` is a symlink to uv's unversioned
+    alias directory, itself a symlink to the versioned installation.  The sandbox recreates a symlink it is
+    handed but does not follow it, so the worker's PID 1 could not exec ``sys.executable`` (ENOENT) when only
+    the realpath was bound; every link of the chain must be in the allow-list."""
+    from autoresearch.trackg import runner as runner_module
+    real = tmp_path / "uv" / "python" / "cpython-3.12.16-linux-x86_64-gnu" / "bin" / "python3.12"
+    real.parent.mkdir(parents=True)
+    real.write_text("")
+    alias = tmp_path / "uv" / "python" / "cpython-3.12-linux-x86_64-gnu"
+    alias.symlink_to("cpython-3.12.16-linux-x86_64-gnu")
+    venv = tmp_path / "envs" / "torch312"
+    (venv / "bin").mkdir(parents=True)
+    executable = venv / "bin" / "python"
+    executable.symlink_to(alias / "bin" / "python3.12")
+    assert runner_module._symlink_chain(executable) == [executable, alias]
+
+    node = make_isolated_node(tmp_path, "ok")
+    spec = TrackGNodeSpec.from_mapping(isolated_spec_mapping())
+    monkeypatch.setattr(runner_module, "_interpreter_paths", lambda _: [real, executable, venv])
+    runner = WorkingCopyRunner(spec, node, tmp_path / "runs")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    work = run_dir / "work"
+    work.mkdir()
+    config = runner._sandbox_config(run_dir, work, str(executable))
+    assert {str(executable), str(alias)} <= set(config["ro"])
+
+
 def test_shared_buffer_is_sealed_against_resizing():
     """Review round 1, M1: the worker gets the memfd; it must not shrink it under the parent's mapping (SIGBUS)."""
     sys.path.insert(0, str(NODE_LIB.parent))

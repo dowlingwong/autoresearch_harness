@@ -419,6 +419,13 @@ class WorkingCopyRunner:
         ``/run``)."""
         ro: list[Path] = [Path(p) for p in ("/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc")]
         interp = _interpreter_paths(interpreter)
+        # The sandbox recreates a symlink it is handed but does not follow it, so the interpreter's whole symlink
+        # chain must be in the allow-list, not only its realpath: a uv venv's ``bin/python`` is a symlink to uv's
+        # **unversioned** alias directory, whose target (the versioned directory) is what the realpath binds.
+        # Without the alias the worker's PID 1 cannot exec ``sys.executable`` inside the sandbox (ENOENT).
+        for candidate in (interp[1] if len(interp) > 1 else None, Path(interpreter)):
+            if candidate is not None and os.path.isabs(str(candidate)):
+                interp += [link for link in _symlink_chain(candidate) if link not in interp]
         home = Path(os.environ.get("HOME", "/nonexistent")).resolve()
         broad = [p for p in interp if p.resolve() in (Path("/"), home, self.runs_root) or
                  any(p.resolve() in q.parents for q in (home, self.runs_root))]
@@ -566,6 +573,33 @@ class _NoCgroup:
 
 
 _PREFIX_CACHE: dict[str, list[Path]] = {}
+
+
+def _symlink_chain(path: str | Path) -> list[Path]:
+    """Every symlink on the way from *path* to its target, outermost first.
+
+    The worker sandbox rebuilds its allow-list with ``ar_isolated.bind()``, which recreates a symlink it is
+    given (``os.readlink``) and does not follow it; every link on the way to the real file therefore has to be
+    bound too.  A uv virtualenv's ``bin/python`` is a symlink to uv's unversioned alias directory
+    (``…/cpython-3.12-linux-x86_64-gnu``), itself a symlink to the versioned directory whose ``bin/python3.12``
+    is the real executable: only the realpath used to be bound, so the worker's PID 1 could not exec
+    ``sys.executable`` (ENOENT)."""
+    chain: list[Path] = []
+    if not os.path.isabs(str(path)):
+        return chain
+    current = Path(str(path))
+    for _ in range(40):     # a symlink loop is refused by the kernel anyway; do not spin here
+        parts = current.parts
+        link = next((Path(*parts[:index]) for index in range(1, len(parts) + 1)
+                     if os.path.islink(Path(*parts[:index]))), None)
+        if link is None:
+            return chain
+        chain.append(link)
+        target = os.readlink(link)
+        if not os.path.isabs(target):
+            target = os.path.join(os.path.dirname(str(link)), target)
+        current = Path(os.path.normpath(os.path.join(target, *parts[len(link.parts):])))
+    return chain
 
 
 def _interpreter_paths(interpreter: str) -> list[Path]:
