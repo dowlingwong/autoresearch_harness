@@ -1,0 +1,5 @@
+# host: Darwin Dowlings-MacBook-Pro-2.local 25.6.0 Darwin Kernel Version 25.6.0: Fri Jul 31 19:18:49 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_T6000 arm64
+# python: Python 3.11.11
+# CUDA_VISIBLE_DEVICES='' (torch is not installed)
+pytest 9.2.0 numpy 2.4.6 torch False
+# git: 6f235c432b99e6e4f103c071a34b1441f55798fb

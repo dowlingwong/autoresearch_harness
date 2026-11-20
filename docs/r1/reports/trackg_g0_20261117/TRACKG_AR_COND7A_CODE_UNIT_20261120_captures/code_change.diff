@@ -1,0 +1,526 @@
+diff --git a/configs/trackg/nodes/autoresearch_fixedtokens.yaml b/configs/trackg/nodes/autoresearch_fixedtokens.yaml
+index dd591a6..8ee1298 100644
+--- a/configs/trackg/nodes/autoresearch_fixedtokens.yaml
++++ b/configs/trackg/nodes/autoresearch_fixedtokens.yaml
+@@ -45,10 +45,10 @@ isolation:
+   args: ["--tokens", "{budget}"]
+   env:
+     PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+-  # The worker hands logits to the parent through CUDA IPC; torch keeps the IPC reference counters in /dev/shm,
+-  # so this node gives the worker the host /dev/shm (a channel that can carry state between runs; disclosed in
+-  # the port report and in isolation.limits_text).
+-  shared_dev_shm: true
++  # R1-TRACKG-AR-COND7 option A: the worker hands logits to the parent through the CPU memfd buffer
++  # (bind_cpu + SCM_RIGHTS), not CUDA IPC, so the node needs no host /dev/shm: the worker keeps the private one
++  # (`shared_dev_shm` stays absent/false, the run record has `exceptions: []` and `effective: true`).
++  shared_dev_shm: false
+ 
+ metric_name: val_bpb
+ metric_direction: minimize
+diff --git a/docs/r1/reports/trackg_g0_20261117/TRACKG_AR_COND7A_CODE_UNIT_20261120.md b/docs/r1/reports/trackg_g0_20261117/TRACKG_AR_COND7A_CODE_UNIT_20261120.md
+new file mode 100644
+index 0000000..79aeecf
+--- /dev/null
++++ b/docs/r1/reports/trackg_g0_20261117/TRACKG_AR_COND7A_CODE_UNIT_20261120.md
+@@ -0,0 +1,221 @@
++# R1-TRACKG-AR-COND7 option A — code-unit report (kit branch, 20 November 2026)
++
++**Status.** The harness/kit change implementing option A for `autoresearch_fixedtokens` is **coded, committed
++locally and unit-checked on the Mac** (CPU, no GPU, no torch). The worker now hands logits to the frozen parent
++through the existing CPU `memfd` buffer (`iso.SharedBuffer` + `bind_cpu` + `SCM_RIGHTS`) on every host, GPU
++included; the CUDA-IPC branch is gone from the node's result path, and `ar_isolated.cuda_open` initializes CUDA
++before opening a shared storage. The node spec no longer sets `shared_dev_shm`, so an isolated run is expected
++to record `effective: true`, `waivers {}`, `exceptions: []`. **Not pushed, not run on a GPU**: the isolated GPU
++smoke on Ada, the slowdown measurement and the fresh independent review are still to be done by the
++coordinator/reviewer. ENGINEERING_ONLY; AI-assisted.
++
++## 1. Authority and inputs
++
++- Authority row **R1-TRACKG-AR-COND7** (option A) in `docs/r1/PLAN.md` of published paper main `de3de54f`
++  (`git -C .claude-worktrees/ops-tasl-20261116 show origin/main:docs/r1/PLAN.md`, row at line 1317): remove CUDA
++  IPC from the result path (`torch.cuda.init()` added to `cuda_open` in the same change), keep isolation
++  `effective:true` with no waivers (no `shared_dev_shm`), update kit pins and `frozen_pin_sha256`, run one
++  isolated smoke, then U2; measure and disclose the logits-transfer slowdown.
++- Condition C3 of `docs/r1/reviews/HARNESS_ISOLATION_FIX_REVIEW_20261119.md` (ACCEPTED; Ada host-check
++  `6a700509…`): no autoresearch GPU run until the logits transfer design decision is recorded (socket/CPU
++  buffer) **and** `cuda_open`'s missing `torch.cuda.init()` is fixed in that same reviewed change.
++- Kit branch `mac-trackg-iso-ar-20261117` at `448f6820f885d70ee6872b692284fe861afd3a33` (ar kit after the
++  accepted isolation core fix `5403392`, merge `2e65922`); kit-update report
++  `docs/r1/reports/trackg_g0_20261117/TRACKG_ISO_KIT_UPDATE_20261119.md` (autoresearch GPU smoke BLOCKED by
++  condition 7; old pin `b8482875…` → `b5f0ec2f…` from the isolation fix).
++- This worktree: `/Users/wongdowling/Documents/agent_paper_B/.claude-worktrees/harness_ar_cond7_20261120`,
++  branch `mac-trackg-iso-ar-cond7a-20261120`, base `448f682`, commit recorded in §7 below. Local only — no push,
++  no force push, no deletion, no GPU/TASL/HTCondor, no main-paper-checkout edit.
++
++## 2. Exact changes
++
++Diff is 7 files, +85/−63 (`git diff --numstat`); the frozen result-path files and the isolation master are:
++
++| file | old sha256 | new sha256 |
++|---|---|---|
++| `nodes/autoresearch_fixedtokens/run_fixed_budget.py` | `93778238d9e468e617e4c8bd8e126bc32a3a8740aa1132c2e28f921fa0479e9a` | `58d80b5224ac5e3981f60ac7b7e251a8c97eaf31d0a88a4e8811e920699a33ed` |
++| `nodes/autoresearch_fixedtokens/ar_worker.py` | `fd838dac623d23e5d82cdf7927b2e7470de1fa5f3a675ae5f424905b7f689573` | `65a4927c54a566baa5efd7c26104e66eeb96ccfd6eddf92b59766b70d75613eb` |
++| `nodes/autoresearch_fixedtokens/ar_isolated.py` | `37d99ab092c73d885b95daa443d0b145148f0b02a6ff464e055704c39e48b610` | `3ba34c67673585e5858c5d5c2b4f0bc1b6b6be11c9898a62f71d12a5b60ddc36` |
++| `src/autoresearch/trackg/node_lib/ar_isolated.py` (master) | `37d99ab0…` | `3ba34c67…` (byte-identical to the node copy) |
++| `configs/trackg/nodes/autoresearch_fixedtokens.yaml` | `953a081d…` (file) | `5bdce00a…` (file) |
++| `nodes/autoresearch_fixedtokens/representative_edits/manifest.json` | `02e05d06…` | `55f2666a…` |
++| `tests/trackg/test_port_autoresearch.py` | `0c2e6114…` | `2b9f3692…` |
++
++1. **`run_fixed_budget.py` — the parent uses only the CPU buffer.** `LogitSource.__init__` now always allocates
++   `iso.SharedBuffer((B, T, vocab), "float32")` and hands the sealed `memfd` descriptor to the worker with a
++   `bind_cpu` request; `__call__` returns `torch.from_numpy(self.shared.snapshot()).to(self.device)`. The
++   `device.type == "cuda"` branch is deleted: no `torch.cuda.memory._set_allocator_settings(...)`, no
++   `iso.cuda_share`, no `bind_cuda`, no `torch.cuda.synchronize`. `device` may still be `cuda`: the parent
++   snapshots CPU memory (a private copy of the shared mapping) and moves it to its own device for the
++   cross-entropy, which it alone computes.
++2. **`ar_worker.py` — the worker only knows the CPU buffer.** The `bind_cuda` handler is removed from `serve`;
++   `bind_cpu` maps the parent's `memfd` and `logits` copies `model(x)` (bf16 autocast, unchanged) to that CPU
++   buffer as float32 (`out.copy_(result.float())`, a synchronous device→host copy); the CUDA-only
++   `torch.cuda.synchronize` is gone. Shape/dtype checks, the model-out-of-train extraction, the eval-mode
++   transition, the weight fingerprint and the exit codes are unchanged.
++3. **`ar_isolated.py` — latent init bug fixed, helper retained.** `cuda_open` now calls `torch.cuda.init()`
++   before `torch.UntypedStorage._new_shared_cuda` (a fresh consumer process otherwise segfaults). `cuda_share` /
++   `cuda_open` stay in the frozen library for compatibility, but **no node uses them** (verified: the mlab and
++   mlgym kits' parent/worker scripts never call them either). The master docstring now states that the CPU
++   `memfd` buffer is the path for every isolated node, GPU included, and why CUDA IPC is not used. The node copy
++   is byte-identical to the master (the port tests assert this).
++4. **Node spec** `configs/trackg/nodes/autoresearch_fixedtokens.yaml`: `isolation.shared_dev_shm: true` and its
++   CUDA-IPC comment are replaced by `shared_dev_shm: false` with a comment naming option A. That is the only
++   semantic change; `effective` is computed as `not waivers and not exceptions and euid != 0 and cgroup is not
++   None and sandbox is not None` (`runner.py`), so with this spec an isolated run records `exceptions: []`.
++   Nothing in the core sandbox/probe was weakened — the private `/dev/shm` mount remains the default and only
++   this node's opt-out is gone.
++5. **Representative-edits manifest**: only `node_spec_sha256` changes (`5f48b86f…` → `5c1bdf3d…`), because
++   `port_support.check_manifest` requires the manifest to name the current spec. The E1–E4 diffs, their
++   `sha256`/`normalised_diff_sha256`/`files_touched`, the baseline raw hash and `measured: false` are unchanged
++   (recomputed with the kit's own `declare_edits`: everything except the interpreter-dependent normalised
++   code-state hashes and the spec hash is identical; the spec hash is interpreter-independent).
++6. **Test** `tests/trackg/test_port_autoresearch.py::test_shared_dev_shm_for_cuda_ipc` is replaced by
++   `test_result_path_uses_the_cpu_buffer_not_cuda_ipc` (static, no torch): spec `shared_dev_shm` is false; neither
++   the frozen parent nor the frozen worker contains `cuda_share`, `bind_cuda` or `cuda_open`; the parent has
++   `iso.SharedBuffer(`/`"bind_cpu"`/`snapshot()`, the worker has `iso.SharedBuffer(`/`def bind_cpu(`/
++   `out.copy_(result.float())`; `torch.cuda.init()` is inside `cuda_open`. No other test needed changing — the
++   other `shared_dev_shm` tests use the fixture spec, not this node.
++
++## 3. Why no CUDA IPC — and why this satisfies condition 7
++
++Condition 7 (host-check report §3 item 7 / §5.5, review C3): the worker runs in a new user, mount, PID, network
++and cgroup namespace. CUDA IPC needs a shared `/dev/shm` (torch's IPC reference-counter files) and a CUDA IPC
++handle to cross a PID-namespace boundary; on Ada (RTX 6000 Ada, driver 545.23.08) opening the parent tensor in
++the worker fails with `CUDA error: invalid resource handle`, and with a private `/dev/shm` it cannot work at all.
++Option B (a `shared_dev_shm` waiver) was rejected because it reopens a state channel that the sandbox closes
++and would weaken the isolation label/RL path (PLAN row). Option A removes the need: the parent allocates a
++sealed CPU `memfd`, passes the descriptor over the existing socket with `SCM_RIGHTS` (no namespace crossing, no
++shared `/dev/shm`), the worker maps it as ordinary CPU memory and writes float32 logits, and the parent takes a
++private snapshot and computes the metric on its own device. The result path no longer contains any CUDA IPC
++call; `cuda_open` is retained only as an unused compatibility helper (with the init fix C3 requires).
++
++## 4. Metric semantics — unchanged
++
++The parent still builds every validation batch (loader + frozen tokenizer) **before** the worker starts, with its
++own fixed `EVAL_BATCH_SIZE = 16`, holds the targets, and computes `cross_entropy(logits.reshape(-1, vocab),
++y.reshape(-1))` and the token-byte counts itself; the worker still returns only `model(x)` logits under
++`torch.no_grad()` + bf16 autocast, and still must return a plain `torch.Tensor` of shape `(B, T, vocab)`. The
++causality probe (3 cuts, `CAUSAL_ATOL`, exit 9), the repeat check (exit 10), the weights fingerprint, the budget
++closure (`ar_budget.py`), the data verify, the exit codes and the `AR_INFO`/`AR_METRIC` lines are untouched.
++Only the transport of the logits changed. The values are the same float32 logits: an exact host copy of the
++worker output, then an exact host→device copy. On a CPU host the code path is the previously-tested one; on a
++GPU host the values are identical to what the (broken) IPC path would have carried, so a CPU smoke before/after
++this change must produce the same metric for the same seeds.
++
++## 5. Frozen pin (kit's own definition/loader)
++
++Computed with `autoresearch.trackg.isolation.frozen_file_hashes(node_dir, spec.frozen_paths)` and
++`sha256(json.dumps(pin, sort_keys=True))` (the runner's own `frozen_pin_sha256` definition, 20 entries):
++
++| value | old | new |
++|---|---|---|
++| `frozen_pin_sha256` | `b5f0ec2f351d59369fb14996848fce540309393646cc20c36b6651387b1e4453` | `147f0d35d40df54b5902260f07bf25043f515dbc0066991ab05e3b8c64eda0fc` |
++| spec `raw_sha256` (canonical payload) | `5f48b86f03e0224cc12104ef1d335460310c271e723704055dbf9948bc135ff9` | `5c1bdf3d84c0721818adc239186ac30ffa2c2bb3b6b373e56b236e47cbd61192` |
++
++The old pin agrees with the accepted isolation-fix review's table (`b8482875…` → `b5f0ec2f…`) and the old spec
++hash agrees with the committed manifest. Recompute:
++
++```bash
++cd <worktree> && PYTHONPATH=src python3 - <<'EOF'
++import hashlib, json
++from pathlib import Path
++from autoresearch.trackg.node_template import load_trackg_node_spec
++from autoresearch.trackg.isolation import frozen_file_hashes
++spec = load_trackg_node_spec("configs/trackg/nodes/autoresearch_fixedtokens.yaml")
++pin = frozen_file_hashes(Path("nodes/autoresearch_fixedtokens"), spec.frozen_paths)
++print(spec.raw_sha256, hashlib.sha256(json.dumps(pin, sort_keys=True).encode()).hexdigest())
++EOF
++# -> 5c1bdf3d… 147f0d35…
++```
++
++The census/run records will carry the new pin; a fresh campaign must take its pin from this kit tip.
++
++## 6. Tests (Mac CPU, no GPU, no torch)
++
++Environment: macOS 26.6.2 arm64 (Darwin 25.6.0), Python 3.11.11 (`_harness_venv`; pytest 9.2.0, numpy, pyyaml,
++tiktoken; **no torch/pyarrow/rustbpe**), `CUDA_VISIBLE_DEVICES=`. Tests that need a real runner sandbox,
++`prctl`, `/proc` or `memfd` are Linux-only and cannot pass (or complete) on Darwin; the same selection was run
++before and after the change.
++
++| suite | before | after |
++|---|---|---|
++| `tests/trackg` with 19 Linux-only isolation tests deselected (see note) | **9 failed, 186 passed, 19 skipped, 19 deselected** | **9 failed, 186 passed, 19 skipped, 19 deselected** |
++| failure set | identical (diff of `FAILED` lines is empty): `review_round1` 3 (`shadowing_module` ×2, `os.sched_getaffinity`), `review_round2` 5 (`/proc` shadow check ×4, session-kill), `runner` 1 (`os.sched_getaffinity`) | same 9, all Darwin platform failures |
++| `test_trackg_isolation.py` non-e2e selection | **8 passed, 1 skipped, 19 deselected** | **8 passed, 1 skipped, 19 deselected** |
++| `test_port_autoresearch.py` | **11 passed, 18 skipped** | **11 passed, 18 skipped** (incl. the new option-A test, `test_static`, `test_manifest_complete`) |
++
++Note: the 19 deselected isolation tests are the real-subprocess end-to-end tests (they abort on `prctl`/`unshare`
++on Darwin; `test_elapsed_time…` hangs at its helper `wait()` because the sandbox never starts) plus the
++`memfd`-only `test_shared_buffer_is_sealed_against_resizing`. They are not evidence for or against this change;
++they must run on Ada. The 18 skipped port tests are the torch/pyarrow/rustbpe synthetic smoke and wrapper-metric
++probes — these are the tests that would exercise `bind_cpu` + `logits` dynamically and therefore **the Ada CPU
++smoke is the first dynamic run of the new transport**.
++
++`py_compile` passes for all changed Python files. `check_static`, the isolation entry/writer checks, the
++frozen-path refusal, the manifest re-declaration check and the frozen pin recomputation all pass (the latter
++checked in both the port test and the §5 command).
++
++## 7. Commit
++
++Branch `mac-trackg-iso-ar-cond7a-20261120`, base `448f6820f885d70ee6872b692284fe861afd3a33`; the local commit
++sha is recorded in §9 after committing. No push.
++
++## 8. Expected behavior and expected slowdown (to be measured on Ada, not now)
++
++- **Behavior**: isolated run → frozen parent allocates the CPU buffer after `train` and a `bind_cpu`; worker
++  returns float32 logits; parent snapshots and (if a GPU is visible) moves them to its device; metric and probes
++  as before; run record `isolation.effective: true`, `waivers {}`, `exceptions: []` (spec now has no
++  `shared_dev_shm`); the worker's `/dev/shm` is the private tmpfs.
++- **Slowdown mechanism**: the buffer is `B × T × vocab × 4 B` = 16 × 2048 × 8192 × 4 = **1 GiB** float32. Per
++  evaluation request the worker writes 1 GiB into the CPU buffer (from a CUDA source: a device→host copy, plus a
++  transient `.float()` cast of the bf16 output, i.e. ~0.5 GiB in + 1 GiB temp on the device), and the parent
++  copies 1 GiB host-side (`snapshot`) and moves 1 GiB host→device. There are 8 logits requests per run (4
++  validation batches + 3 causality-probe batches + 1 repeat). At a conservative sequential copy bandwidth of
++  ~10 GB/s host and ~25 GB/s PCIe gen4 x16 that is roughly **0.15–0.25 s per request, ≈1.2–2 s per run`, plus a
++  transient **≈2 GiB host RSS** (shared memfd page cache + parent snapshot) and **≈1 GiB extra VRAM** (logits
++  temp) — small next to the 500-step training budget (estimated ~1 min on an L40S plus compilation), but real
++  and to be measured/disclosed from the Ada smoke; the CPU-buffer page cache also counts against the run's
++  memory cap (the isolated GPU smoke uses an 8 GiB cap, so this needs checking, not assuming).
++
++## 9. Residual risks and review conditions
++
++Residual risks (disclosed, none a reason to reject the unit on its own):
++
++1. **The torch transport is not dynamically exercised on this Mac** (no torch). The Ada numbered smoke / U2 must
++   be the first real run: it must confirm `bind_cpu` + `logits` + parent snapshot run isolated with
++   `effective:true`, `waivers {}`, `exceptions: []`, and that the metric is finite and repeatable. Until then
++   the GPU behavior is reasoned, not measured.
++2. **Slowdown and memory**: the estimate above must be replaced by the Ada measurement (the PLAN row requires
++   the slowdown to be disclosed; the row also says the U2 unit runs after one isolated smoke).
++3. **`cuda_open` init fix is untested here**: no torch on the Mac; it is a two-line compatibility fix (not on the
++   node's result path) and should be exercised by a reviewer's torch probe or the next GPU smoke of a node that
++   ever uses IPC (none does now).
++4. **Kit copies**: the core master change (`torch.cuda.init()`, docstrings) is on this ar kit branch only; the
++   mlab/mlgym kits' `ar_isolated.py` copies stay at `37d99ab0…` until those kits are next updated. They do not
++   use the helper, so this is a consistency item, not a behavior difference. The port tests compare each node
++   copy to the master of its own branch, so no test is broken by this.
++5. **Manifest spec hash**: `node_spec_sha256` was updated without re-declaring the edits under Python 3.12 (the
++   Mac has 3.11/3.13). The spec hash is interpreter-independent and all other manifest fields were verified
++   identical, so this equals what a 3.12 re-declaration would write; a reviewer can re-run
++   `declare_edits` on Ada/3.12 to confirm.
++6. **Paper-side documentation**: the paper repo's isolation report §3 item 7 / §5.5 and the port report still
++   describe the autoresearch node's CUDA IPC result path; they must be corrected when this change is integrated
++   (review C4 is an owned follow-up, out of this kit's scope). The generic `isolation.limits_text()` still
++   mentions CUDA IPC as the reason a node may set `shared_dev_shm`; it is text-only (no node sets it now) and
++   was deliberately not edited to keep this change out of the accepted isolation core.
++
++Review conditions for the independent reviewer:
++
++- R1: verify the diff (7 files, no frozen path edited outside the intent; node `ar_isolated.py` byte-equal to
++  the master; `ar_parent.py`/`ar_data.py`/`prepare.py`/`ar_budget.py` untouched; no CUDA IPC call in
++  `run_fixed_budget.py`/`ar_worker.py`; `torch.cuda.init()` present in `cuda_open`; spec has no
++  `shared_dev_shm`).
++- R2: recompute the frozen pin and spec hash independently (§5); confirm old `b5f0ec2f…` and new `147f0d35…`.
++- R3: run the CPU tests on Ada as well (the torch synthetic smoke must pass: `test_port_autoresearch.py`
++  wrapper-metric/wrapper-budget/smoke) and confirm the metric and the probe/exit behavior are unchanged.
++- R4: run the one isolated GPU smoke on Ada (after review) and confirm `effective:true`, `waivers {}`,
++  `exceptions: []`, no `shared_dev_shm` mount, no CUDA IPC error, and record the measured slowdown and memory
++  against §8.
++- R5: decide the unification of the other kits' `ar_isolated.py` copies (risk 4) and the paper-side text
++  correction (risk 6) as part of integration.
+diff --git a/nodes/autoresearch_fixedtokens/ar_isolated.py b/nodes/autoresearch_fixedtokens/ar_isolated.py
+index e10f7d8..b95a9cb 100644
+--- a/nodes/autoresearch_fixedtokens/ar_isolated.py
++++ b/nodes/autoresearch_fixedtokens/ar_isolated.py
+@@ -29,8 +29,9 @@ file system that holds only an allow-list: a private ``/tmp``; read-only binds o
+ directories, the run interpreter's installation and ``sys.path``, the data, the determinism shim); ``/sys``
+ read-only with an empty read-only ``tmpfs`` over ``/sys/fs/cgroup`` and every cgroup file system below it; the
+ ``rw`` paths (the run's working copy) writable, with the ``ro_in_rw`` paths (its frozen files) read-only again;
+-``/dev``, with a private ``/dev/shm`` unless the node sets ``shared_dev_shm`` (torch's CUDA IPC reference
+-counters live there); and the host ``/proc`` for the moment.  It then enters that root with ``pivot_root``,
++``/dev``, with a private ``/dev/shm`` unless the node sets ``shared_dev_shm`` (only a node that shares CUDA
++tensors needs torch's CUDA IPC reference counters there; the ported nodes' result paths do not); and the
++host ``/proc`` for the moment.  It then enters that root with ``pivot_root``,
+ detaches the old one and makes the new root read-only.  Nothing else exists for the worker: no home directory,
+ no runs tree (other runs' results), no ``/run``, no socket of a daemon outside.  The launcher then forks PID 1 of
+ the new PID namespace, which mounts a fresh ``/proc`` over the host one, drops every capability (bounding set,
+@@ -48,10 +49,11 @@ one), and when PID 1 dies the kernel kills every process of the namespace.
+ Messages are a fixed magic, an 8-byte header length, a JSON header and the raw bytes of each array (no
+ pickle).  Arrays are checked against a dtype whitelist and their declared shape.  For large outputs the parent
+ can hand the worker a shared buffer: a CPU buffer (``memfd``, sealed against shrinking and growing, passed over
+-the socket with ``SCM_RIGHTS``) or, on a GPU, a CUDA tensor shared by CUDA IPC (:func:`cuda_share` /
+-:func:`cuda_open`); the parent reads a private copy of either after each answer.  The CUDA path needs a GPU and
+-is exercised by the kits' GPU smoke only; it relies on torch's IPC reference counter files in ``/dev/shm``,
+-which is therefore not made private.
++the socket with ``SCM_RIGHTS``); the parent reads a private copy of it after each answer.  This is the path every
++isolated node uses, on a GPU too: the parent allocates the CPU buffer and moves the copy to its device.  The
++:func:`cuda_share` / :func:`cuda_open` helpers below are kept for compatibility only (a CUDA tensor shared by
++CUDA IPC), and no node uses them: CUDA IPC cannot cross the worker's user namespace on the Ada host/driver
++(R1-HARNESS-ISOLATION condition 7), and it relies on torch's IPC reference counter files in ``/dev/shm``.
+ """
+ from __future__ import annotations
+ 
+@@ -624,9 +626,15 @@ def cuda_share(tensor) -> dict:
+ 
+ 
+ def cuda_open(desc: dict):
+-    """Open a tensor described by :func:`cuda_share` (worker side)."""
++    """Open a tensor described by :func:`cuda_share` (worker side).
++
++    Compatibility helper only: no isolated node uses it (see the module docstring).  The CUDA context is
++    initialized first: opening a shared CUDA storage from a process that has not initialized CUDA segfaults
++    (latent bug found under R1-HARNESS-ISOLATION; the fix is kept for any future non-PID-namespace GPU user).
++    """
+     import torch
+ 
++    torch.cuda.init()
+     dec = lambda s: base64.b64decode(s) if isinstance(s, str) else s  # noqa: E731
+     storage = torch.UntypedStorage._new_shared_cuda(
+         desc["device"], dec(desc["handle"]), desc["size"], desc["offset"], dec(desc["ref_handle"]),
+diff --git a/nodes/autoresearch_fixedtokens/ar_worker.py b/nodes/autoresearch_fixedtokens/ar_worker.py
+index 9db5154..6cc8a17 100644
+--- a/nodes/autoresearch_fixedtokens/ar_worker.py
++++ b/nodes/autoresearch_fixedtokens/ar_worker.py
+@@ -8,9 +8,10 @@ factory (ar_budget.py) and run train.py (``runpy``, as ``__main__``); exit 7 for
+ exception or ``SystemExit`` out of train.py, 3 unless train.py used the whole budget; print ``AR_TOKENS
+ consumed=``; check the data again; restore prepare's module attributes (undoing patches such as a changed
+ ``VAL_FILENAME``); take the ``model`` train.py left, put it in eval mode without calling its methods, and
+-record its weights' fingerprint.  ``bind_cuda`` / ``bind_cpu``: open the parent's output buffer.  ``logits``:
+-``model(x)`` for the parent's input tokens (bf16 autocast), which must be a plain tensor of shape (B, T,
+-vocab), written as float32 into the buffer.  ``finish``: the weights must be unchanged by the evaluation
++record its weights' fingerprint.  ``bind_cpu``: map the parent's CPU output buffer (a ``memfd`` handed over the
++socket).  ``logits``: ``model(x)`` for the parent's input tokens (bf16 autocast), which must be a plain tensor
++of shape (B, T, vocab), written as float32 into that CPU buffer -- on a GPU host too, so the result path carries
++no CUDA IPC (R1-TRACKG-AR-COND7 option A).  ``finish``: the weights must be unchanged by the evaluation
+ (exit 10).  The metric is computed by the parent.
+ """
+ import ar_isolated as iso
+@@ -138,11 +139,6 @@ def train(meta, arrays, fds):
+             "tokens": served()}, {}
+ 
+ 
+-def bind_cuda(meta, arrays, fds):
+-    STATE["out"] = iso.cuda_open(meta["buffer"])
+-    return {}, {}
+-
+-
+ def bind_cpu(meta, arrays, fds):
+     desc = meta["buffer"]
+     STATE["shared"] = iso.SharedBuffer(tuple(desc["shape"]), desc["dtype"], fd=fds[0])
+@@ -152,7 +148,7 @@ def bind_cpu(meta, arrays, fds):
+ 
+ def logits(meta, arrays, fds):
+     torch, model, device = STATE["torch"], STATE["model"], STATE["device"]
+-    out = STATE["out"]
++    out = STATE["out"]   # float32 CPU buffer: the parent's, mapped through the memfd (no CUDA IPC)
+     x = torch.from_numpy(arrays["x"].astype("int64")).to(device)
+     if tuple(x.shape) != tuple(out.shape[:2]):
+         fail(EXIT_BAD_EDITABLE_API, f"input batch {tuple(x.shape)} does not fit the output buffer {tuple(out.shape)}")
+@@ -162,9 +158,7 @@ def logits(meta, arrays, fds):
+     if type(result) is not torch.Tensor or tuple(result.shape) != tuple(out.shape):
+         fail(EXIT_BAD_EDITABLE_API, f"model(x) must return a plain torch.Tensor of logits of shape {tuple(out.shape)}")
+     with torch.no_grad(), torch._C.DisableTorchFunction():
+-        out.copy_(result.float())
+-        if out.device.type == "cuda":
+-            torch.cuda.synchronize(out.device)
++        out.copy_(result.float())   # device -> host copy; synchronous, the parent's next request sees it
+     return {}, {}
+ 
+ 
+@@ -174,4 +168,4 @@ def finish(meta, arrays, fds):
+     return {}, {}
+ 
+ 
+-iso.serve({"train": train, "bind_cuda": bind_cuda, "bind_cpu": bind_cpu, "logits": logits, "finish": finish}, CONN)
++iso.serve({"train": train, "bind_cpu": bind_cpu, "logits": logits, "finish": finish}, CONN)
+diff --git a/nodes/autoresearch_fixedtokens/representative_edits/manifest.json b/nodes/autoresearch_fixedtokens/representative_edits/manifest.json
+index cea1599..d714290 100644
+--- a/nodes/autoresearch_fixedtokens/representative_edits/manifest.json
++++ b/nodes/autoresearch_fixedtokens/representative_edits/manifest.json
+@@ -50,7 +50,7 @@
+   ],
+   "measured": false,
+   "node": "autoresearch_fixedtokens",
+-  "node_spec_sha256": "5f48b86f03e0224cc12104ef1d335460310c271e723704055dbf9948bc135ff9",
++  "node_spec_sha256": "5c1bdf3d84c0721818adc239186ac30ffa2c2bb3b6b373e56b236e47cbd61192",
+   "run_budget": {
+     "kind": "tokens",
+     "value": 32768000
+diff --git a/nodes/autoresearch_fixedtokens/run_fixed_budget.py b/nodes/autoresearch_fixedtokens/run_fixed_budget.py
+index 60e3260..5697f1e 100644
+--- a/nodes/autoresearch_fixedtokens/run_fixed_budget.py
++++ b/nodes/autoresearch_fixedtokens/run_fixed_budget.py
+@@ -17,8 +17,12 @@ Metric (computed here): autoresearch's bits per byte on the pinned validation sh
+ length 0 excluded).  This process builds every validation batch with prepare's loader and the frozen tokenizer
+ before it starts the worker, with a fixed evaluation batch size (``EVAL_BATCH_SIZE``, not train.py's), then
+ sends each batch's input tokens to the worker, which writes ``model(x)`` (float32 logits of shape (B, T,
+-vocab)) into a buffer this process owns (a CUDA tensor shared by CUDA IPC on a GPU, a ``memfd`` buffer on the
+-CPU), and computes the per-token cross-entropy and the byte counts here, with the targets it holds.  Before the
++vocab)) into a CPU buffer this process owns (a sealed ``memfd`` the worker maps, passed over the socket with
++``SCM_RIGHTS``), and computes the per-token cross-entropy and the byte counts here, with the targets it holds.
++Only this process computes the metric; the worker returns logits.  There is **no CUDA IPC** in the result path
++(condition 7 of R1-HARNESS-ISOLATION: CUDA IPC cannot cross the worker's user namespace on the Ada host/driver,
++and it would need a shared ``/dev/shm``): the parent allocates the CPU buffer, snapshots it after each answer and
++moves the copy to its own device when it has one.  Before the
+ sum, a causality probe compares the logits of the first validation batch with the logits of the same rows whose
+ suffix after a cut position was replaced: the logits before the cut must not change (exit 9 otherwise;
+ tolerance ``CAUSAL_ATOL``; equal infinities count as equal); the largest change is printed as ``AR_INFO
+@@ -57,41 +61,35 @@ NODE = "autoresearch_fixedtokens"
+ 
+ 
+ class LogitSource:
+-    """The worker's logits for an input batch, through a buffer this process owns."""
++    """The worker's logits for an input batch, through a CPU buffer this process owns.
++
++    R1-TRACKG-AR-COND7 option A: the parent allocates the ``memfd`` CPU buffer (``iso.SharedBuffer``) and passes
++    its descriptor to the worker with ``bind_cpu``; the worker maps it as CPU memory and copies the
++    (bf16-autocast) ``model(x)`` output into it as float32.  This is the path on a GPU host too: after each
++    answer the parent takes a private snapshot and moves it to its own device.  No CUDA IPC is used (it cannot
++    cross the worker's user namespace on the Ada host/driver and would need a shared ``/dev/shm``).
++    """
+ 
+     def __init__(self, worker, shape, torch, device):
+         self.worker, self.torch, self.device = worker, torch, device
+         self.shape = tuple(int(d) for d in shape)
+-        self.shared = None
+-        if device.type == "cuda":
+-            # Kit review round 1, B1: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True (the spec's isolation env, for
+-            # the worker's training) also reaches this process.  torch cannot share expandable-segment memory
+-            # with a process in another PID namespace (it needs pidfd_getfd on this non-dumpable process), so the
+-            # shared buffer is allocated with expandable segments off; this process does no training.
+-            torch.cuda.memory._set_allocator_settings("expandable_segments:False")
+-            self.buffer = torch.empty(self.shape, dtype=torch.float32, device=device)
+-            P.call(worker, "bind_cuda", {"buffer": iso.cuda_share(self.buffer)})
+-        else:
+-            self.shared = iso.SharedBuffer(self.shape, "float32")
+-            try:
+-                worker.conn.send("bind_cpu", {"buffer": self.shared.describe()}, {}, [self.shared.fd])
+-                op, meta, _arrays, fds = worker.conn.recv()
+-            except (iso.IsolationProtocolError, OSError) as error:
+-                P.fail(P.EXIT_WORKER, f"worker bind_cpu: {error}")
+-            for fd in fds:
+-                os.close(fd)
+-            if op != "ok":
+-                P.fail(P.EXIT_WORKER, f"worker bind_cpu: {meta.get('error', op)}")
++        self.shared = iso.SharedBuffer(self.shape, "float32")
++        try:
++            worker.conn.send("bind_cpu", {"buffer": self.shared.describe()}, {}, [self.shared.fd])
++            op, meta, _arrays, fds = worker.conn.recv()
++        except (iso.IsolationProtocolError, OSError) as error:
++            P.fail(P.EXIT_WORKER, f"worker bind_cpu: {error}")
++        for fd in fds:
++            os.close(fd)
++        if op != "ok":
++            P.fail(P.EXIT_WORKER, f"worker bind_cpu: {meta.get('error', op)}")
+ 
+     def __call__(self, x):
+         """A private float32 copy of the worker's logits for x (B, T), on this process's device."""
+         torch = self.torch
+         tokens = x.detach().to("cpu", torch.int64).numpy()
+         P.call(self.worker, "logits", {}, {"x": tokens})
+-        if self.shared is not None:
+-            return torch.from_numpy(self.shared.snapshot()).to(self.device)
+-        torch.cuda.synchronize(self.device)
+-        return self.buffer.clone()  # the worker keeps its mapping: work on a private copy
++        return torch.from_numpy(self.shared.snapshot()).to(self.device)
+ 
+ 
+ def causality_probe(logits_of, x, base, vocab: int, torch) -> float:
+diff --git a/src/autoresearch/trackg/node_lib/ar_isolated.py b/src/autoresearch/trackg/node_lib/ar_isolated.py
+index e10f7d8..b95a9cb 100644
+--- a/src/autoresearch/trackg/node_lib/ar_isolated.py
++++ b/src/autoresearch/trackg/node_lib/ar_isolated.py
+@@ -29,8 +29,9 @@ file system that holds only an allow-list: a private ``/tmp``; read-only binds o
+ directories, the run interpreter's installation and ``sys.path``, the data, the determinism shim); ``/sys``
+ read-only with an empty read-only ``tmpfs`` over ``/sys/fs/cgroup`` and every cgroup file system below it; the
+ ``rw`` paths (the run's working copy) writable, with the ``ro_in_rw`` paths (its frozen files) read-only again;
+-``/dev``, with a private ``/dev/shm`` unless the node sets ``shared_dev_shm`` (torch's CUDA IPC reference
+-counters live there); and the host ``/proc`` for the moment.  It then enters that root with ``pivot_root``,
++``/dev``, with a private ``/dev/shm`` unless the node sets ``shared_dev_shm`` (only a node that shares CUDA
++tensors needs torch's CUDA IPC reference counters there; the ported nodes' result paths do not); and the
++host ``/proc`` for the moment.  It then enters that root with ``pivot_root``,
+ detaches the old one and makes the new root read-only.  Nothing else exists for the worker: no home directory,
+ no runs tree (other runs' results), no ``/run``, no socket of a daemon outside.  The launcher then forks PID 1 of
+ the new PID namespace, which mounts a fresh ``/proc`` over the host one, drops every capability (bounding set,
+@@ -48,10 +49,11 @@ one), and when PID 1 dies the kernel kills every process of the namespace.
+ Messages are a fixed magic, an 8-byte header length, a JSON header and the raw bytes of each array (no
+ pickle).  Arrays are checked against a dtype whitelist and their declared shape.  For large outputs the parent
+ can hand the worker a shared buffer: a CPU buffer (``memfd``, sealed against shrinking and growing, passed over
+-the socket with ``SCM_RIGHTS``) or, on a GPU, a CUDA tensor shared by CUDA IPC (:func:`cuda_share` /
+-:func:`cuda_open`); the parent reads a private copy of either after each answer.  The CUDA path needs a GPU and
+-is exercised by the kits' GPU smoke only; it relies on torch's IPC reference counter files in ``/dev/shm``,
+-which is therefore not made private.
++the socket with ``SCM_RIGHTS``); the parent reads a private copy of it after each answer.  This is the path every
++isolated node uses, on a GPU too: the parent allocates the CPU buffer and moves the copy to its device.  The
++:func:`cuda_share` / :func:`cuda_open` helpers below are kept for compatibility only (a CUDA tensor shared by
++CUDA IPC), and no node uses them: CUDA IPC cannot cross the worker's user namespace on the Ada host/driver
++(R1-HARNESS-ISOLATION condition 7), and it relies on torch's IPC reference counter files in ``/dev/shm``.
+ """
+ from __future__ import annotations
+ 
+@@ -624,9 +626,15 @@ def cuda_share(tensor) -> dict:
+ 
+ 
+ def cuda_open(desc: dict):
+-    """Open a tensor described by :func:`cuda_share` (worker side)."""
++    """Open a tensor described by :func:`cuda_share` (worker side).
++
++    Compatibility helper only: no isolated node uses it (see the module docstring).  The CUDA context is
++    initialized first: opening a shared CUDA storage from a process that has not initialized CUDA segfaults
++    (latent bug found under R1-HARNESS-ISOLATION; the fix is kept for any future non-PID-namespace GPU user).
++    """
+     import torch
+ 
++    torch.cuda.init()
+     dec = lambda s: base64.b64decode(s) if isinstance(s, str) else s  # noqa: E731
+     storage = torch.UntypedStorage._new_shared_cuda(
+         desc["device"], dec(desc["handle"]), desc["size"], desc["offset"], dec(desc["ref_handle"]),
+diff --git a/tests/trackg/test_port_autoresearch.py b/tests/trackg/test_port_autoresearch.py
+index 13e9400..050c440 100644
+--- a/tests/trackg/test_port_autoresearch.py
++++ b/tests/trackg/test_port_autoresearch.py
+@@ -35,10 +35,24 @@ def test_static():
+     ps.check_static(NODE, NODES)
+ 
+ 
+-def test_shared_dev_shm_for_cuda_ipc():
+-    """The worker hands logits to the parent through CUDA IPC, whose reference counters live in /dev/shm, so
+-    this node (alone among the ports) opts out of the private /dev/shm; its runs record the exception."""
+-    assert ps.load(NODE).isolation.shared_dev_shm is True
++def test_result_path_uses_the_cpu_buffer_not_cuda_ipc():
++    """R1-TRACKG-AR-COND7 option A: the worker hands logits to the parent through the CPU ``memfd`` buffer
++    (``iso.SharedBuffer`` + ``bind_cpu`` + SCM_RIGHTS), never CUDA IPC, on a GPU host too; the node therefore
++    keeps the private ``/dev/shm`` (no ``shared_dev_shm`` exception, ``exceptions: []`` in the run record).
++    ``cuda_open`` stays in the frozen library for compatibility and is initialized before use."""
++    assert ps.load(NODE).isolation.shared_dev_shm is False
++    node = ps.node_dir(NODE)
++    parent = (node / "run_fixed_budget.py").read_text()
++    worker = (node / "ar_worker.py").read_text()
++    for text, what in ((parent, "the frozen parent"), (worker, "the frozen worker")):
++        assert "cuda_share" not in text and "bind_cuda" not in text, what
++        assert "cuda_open" not in text, what
++    assert "iso.SharedBuffer(" in parent and '"bind_cpu"' in parent and "snapshot()" in parent
++    assert "iso.SharedBuffer(" in worker and "def bind_cpu(" in worker and "out.copy_(result.float())" in worker
++    library = ps.NODE_LIB_MASTER.read_text()
++    open_body = library[library.index("def cuda_open("):]
++    open_body = open_body[:open_body.index("\ndef ")]
++    assert "torch.cuda.init()" in open_body
+ 
+ 
+ def test_manifest_complete():

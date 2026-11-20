@@ -1,0 +1,14 @@
+.......sssssssssssssssss..s............................................. [ 33%]
+.........s.............................................................. [ 67%]
+..................F...F...F...........FFFF..F..........F..............   [100%]
+=========================== short test summary info ============================
+FAILED tests/trackg/test_trackg_review_round1.py::test_new_files_that_could_shadow_imports_are_refused[model/numpy.py]
+FAILED tests/trackg/test_trackg_review_round1.py::test_new_files_that_could_shadow_imports_are_refused[model/yaml.py]
+FAILED tests/trackg/test_trackg_review_round1.py::test_cpu_outside_the_process_cpu_set_is_refused_before_anything_is_written
+FAILED tests/trackg/test_trackg_review_round2.py::test_shadow_check_does_not_depend_on_the_working_directory[node]
+FAILED tests/trackg/test_trackg_review_round2.py::test_shadow_check_does_not_depend_on_the_working_directory[harness_root]
+FAILED tests/trackg/test_trackg_review_round2.py::test_shadow_check_does_not_depend_on_the_working_directory[tmp]
+FAILED tests/trackg/test_trackg_review_round2.py::test_shadow_check_does_not_depend_on_the_working_directory[model]
+FAILED tests/trackg/test_trackg_review_round2.py::test_child_that_leaves_the_group_but_not_the_session_is_killed
+FAILED tests/trackg/test_trackg_runner.py::test_cpu_and_memory_caps_are_applied
+9 failed, 186 passed, 19 skipped, 19 deselected in 15.38s

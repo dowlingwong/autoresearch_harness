@@ -220,3 +220,19 @@ Review conditions for the independent reviewer:
   against §8.
 - R5: decide the unification of the other kits' `ar_isolated.py` copies (risk 4) and the paper-side text
   correction (risk 6) as part of integration.
+
+## 10. Evidence index (in this kit branch)
+
+`docs/r1/reports/trackg_g0_20261117/TRACKG_AR_COND7A_CODE_UNIT_20261120_captures/` (`SHA256SUMS` sha256
+`e47141b2e3342f689ccdc435630e93d94237411e444475675711c60ad86aeef0`, 15 files):
+
+- `before/` — the pre-change tree (detached worktree at `448f682`): `pytest_trackg_selection.txt`
+  (9 failed / 186 passed / 19 skipped / 19 deselected), `pytest_isolation_unit_selection.txt`
+  (8 passed / 1 skipped / 19 deselected), `pytest_port_autoresearch.txt` (11 passed / 18 skipped),
+  `failures.txt`, `pins_and_spec.txt` (old pin `b5f0ec2f…`, spec `5f48b86f…`, `shared_dev_shm: True`),
+  `sha256_files.txt`, `environment.txt`.
+- `after/` — the committed change (`6f235c4`): same five logs (9/186/19/19, 8/1/19, 11/18, new pin
+  `147f0d35…`, spec `5c1bdf3d…`, `shared_dev_shm: False`); `failures.txt` is byte-identical to `before/`'s.
+- `code_change.diff` — `git diff 448f682..0e0b820` (the 7-file code/test/spec/manifest change).
+
+Raw captures are macOS-only evidence for the static/unit checks; they are not GPU evidence.

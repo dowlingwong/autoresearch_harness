@@ -1,0 +1,38 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.11.11, pytest-9.2.0, pluggy-1.7.0 -- /Users/wongdowling/Documents/agent_paper_B/.claude-worktrees/_harness_venv/bin/python
+rootdir: /private/tmp/cond7_before_wt
+configfile: pyproject.toml
+plugins: langsmith-0.14.16, anyio-4.15.1
+collecting ... collected 29 items
+
+tests/trackg/test_port_autoresearch.py::test_static PASSED               [  3%]
+tests/trackg/test_port_autoresearch.py::test_shared_dev_shm_for_cuda_ipc PASSED [  6%]
+tests/trackg/test_port_autoresearch.py::test_manifest_complete PASSED    [ 10%]
+tests/trackg/test_port_autoresearch.py::test_frozen_path_edit_refused PASSED [ 13%]
+tests/trackg/test_port_autoresearch.py::test_prepare_is_the_harness_copy PASSED [ 17%]
+tests/trackg/test_port_autoresearch.py::test_token_budget_is_whole_steps PASSED [ 20%]
+tests/trackg/test_port_autoresearch.py::test_budget_closure_counts_refuses_and_guards_validation PASSED [ 24%]
+tests/trackg/test_port_autoresearch.py::test_wrapper_budget_exits[caught_validation] SKIPPED [ 27%]
+tests/trackg/test_port_autoresearch.py::test_wrapper_budget_exits[forged_exit] SKIPPED [ 31%]
+tests/trackg/test_port_autoresearch.py::test_wrapper_budget_exits[over_request] SKIPPED [ 34%]
+tests/trackg/test_port_autoresearch.py::test_wrapper_budget_exits[under_budget] SKIPPED [ 37%]
+tests/trackg/test_port_autoresearch.py::test_wrapper_budget_exits[validation] SKIPPED [ 41%]
+tests/trackg/test_port_autoresearch.py::test_wrapper_metric_is_frozen[causal_with_forgeries] SKIPPED [ 44%]
+tests/trackg/test_port_autoresearch.py::test_wrapper_metric_is_frozen[changes_its_answers_after_the_probe] SKIPPED [ 48%]
+tests/trackg/test_port_autoresearch.py::test_wrapper_metric_is_frozen[hides_tensors_from_the_fingerprint] SKIPPED [ 51%]
+tests/trackg/test_port_autoresearch.py::test_wrapper_metric_is_frozen[leaves_a_dispatch_mode_active] SKIPPED [ 55%]
+tests/trackg/test_port_autoresearch.py::test_wrapper_metric_is_frozen[peeks_at_the_next_token] SKIPPED [ 58%]
+tests/trackg/test_port_autoresearch.py::test_wrapper_metric_is_frozen[peeks_with_an_infinite_logit] SKIPPED [ 62%]
+tests/trackg/test_port_autoresearch.py::test_wrapper_metric_is_frozen[plants_a_data_file] SKIPPED [ 65%]
+tests/trackg/test_port_autoresearch.py::test_wrapper_metric_is_frozen[returns_a_tensor_subclass] SKIPPED [ 68%]
+tests/trackg/test_port_autoresearch.py::test_wrapper_metric_is_frozen[rewrites_targets_through_a_function_mode] SKIPPED [ 72%]
+tests/trackg/test_port_autoresearch.py::test_wrapper_metric_is_frozen[sets_the_default_device] SKIPPED [ 75%]
+tests/trackg/test_port_autoresearch.py::test_wrapper_metric_is_frozen[updates_weights_in_forward] SKIPPED [ 79%]
+tests/trackg/test_port_autoresearch.py::test_wrapper_metric_is_frozen[writes_into_the_loader_buffer] SKIPPED [ 82%]
+tests/trackg/test_port_autoresearch.py::test_validation_batches_are_read_before_the_worker_starts_with_a_fixed_batch_size PASSED [ 86%]
+tests/trackg/test_port_autoresearch.py::test_unlisted_data_file_refused PASSED [ 89%]
+tests/trackg/test_port_autoresearch.py::test_synthetic_smoke SKIPPED     [ 93%]
+tests/trackg/test_port_autoresearch.py::test_prepare_data_requires_the_exact_shard_set_and_a_data_root PASSED [ 96%]
+tests/trackg/test_port_autoresearch.py::test_parent_metric_helpers PASSED [100%]
+
+======================== 11 passed, 18 skipped in 0.65s ========================
