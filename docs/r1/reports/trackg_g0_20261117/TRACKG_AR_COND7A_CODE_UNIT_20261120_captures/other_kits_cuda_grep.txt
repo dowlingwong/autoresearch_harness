@@ -1,0 +1,32 @@
+# m4 provenance: do the other isolated kits' node scripts call the CUDA IPC helper?
+
+== origin/mac-trackg-iso-mlab-20261117  (fb6e7d7)
+-- files containing cuda_share/bind_cuda/cuda_open (all paths):
+   origin/mac-trackg-iso-mlab-20261117:nodes/mlab_cifar10/ar_isolated.py
+   origin/mac-trackg-iso-mlab-20261117:nodes/mlab_imdb/ar_isolated.py
+   origin/mac-trackg-iso-mlab-20261117:nodes/mlab_ogbn_arxiv/ar_isolated.py
+   origin/mac-trackg-iso-mlab-20261117:src/autoresearch/trackg/node_lib/ar_isolated.py
+-- non-ar_isolated.py files (i.e. parent/worker call sites) containing them:
+
+== origin/mac-trackg-iso-mlgym-20261117  (f07875d)
+-- files containing cuda_share/bind_cuda/cuda_open (all paths):
+   origin/mac-trackg-iso-mlgym-20261117:src/autoresearch/trackg/node_lib/ar_isolated.py
+   origin/mac-trackg-iso-mlgym-20261117:third_party/mlgym/nodes/mlgym_breakout_minatar/ar_isolated.py
+   origin/mac-trackg-iso-mlgym-20261117:third_party/mlgym/nodes/mlgym_cifar10/ar_isolated.py
+   origin/mac-trackg-iso-mlgym-20261117:third_party/mlgym/nodes/mlgym_fmnist/ar_isolated.py
+   origin/mac-trackg-iso-mlgym-20261117:third_party/mlgym/nodes/mlgym_houseprice/ar_isolated.py
+-- non-ar_isolated.py files (i.e. parent/worker call sites) containing them:
+
+== origin/mac-trackg-iso-ar-20261117  (448f682)
+-- files containing cuda_share/bind_cuda/cuda_open (all paths):
+   origin/mac-trackg-iso-ar-20261117:nodes/autoresearch_fixedtokens/ar_isolated.py
+   origin/mac-trackg-iso-ar-20261117:nodes/autoresearch_fixedtokens/ar_worker.py
+   origin/mac-trackg-iso-ar-20261117:nodes/autoresearch_fixedtokens/run_fixed_budget.py
+   origin/mac-trackg-iso-ar-20261117:src/autoresearch/trackg/node_lib/ar_isolated.py
+-- non-ar_isolated.py files (i.e. parent/worker call sites) containing them:
+   origin/mac-trackg-iso-ar-20261117:nodes/autoresearch_fixedtokens/ar_worker.py
+   origin/mac-trackg-iso-ar-20261117:nodes/autoresearch_fixedtokens/run_fixed_budget.py
+
+# Interpretation: in the mlab/mlgym branches the three identifiers occur only in the frozen
+# ar_isolated.py helper definitions, which their parent/worker scripts do not call (they use bind_cpu).
+# The ar branch at 448f682 had the call sites; they are removed by this change.

@@ -1,0 +1,12 @@
+# m3: committed-file pin vs deployed ('data' link) pin -- kit's own loader/definition
+
+committed node tree (no data link): entries=20
+  sha256(json.dumps(pin, sort_keys=True)) = 147f0d35d40df54b5902260f07bf25043f515dbc0066991ab05e3b8c64eda0fc
+
+deployed demo copy (data -> /tmp/cond7_deployed_data): entries=21
+  sha256(json.dumps(pin, sort_keys=True)) = bbe1ca49b16294c8be1c4744cf9660f5200eff699e558adc76d0152c367cbb4b
+  data entry: link:/tmp/cond7_deployed_data
+
+# The deployed demo sha256 above is target-dependent (it hashes the absolute data link target), so it is
+# NOT a committed value; a real run record's deployed pin also depends on $AR_TRACKG_DATA_ROOT.
+# Rule: the committed kit pin is the 20-entry 147f0d35...; a run record carries the deployed 21-entry pin.
