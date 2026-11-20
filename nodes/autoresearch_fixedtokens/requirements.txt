@@ -1,0 +1,11 @@
+# Node autoresearch_fixedtokens (frozen). Runs: torch, numpy, pyarrow, tiktoken (and rustbpe, which
+# prepare.py imports). Setup also: requests. Versions of the port's local CPU check (17 Nov 2026); the
+# harness's autoresearch-macos pyproject pins torch==2.6.0. The Ada/L40S deployment pins its own CUDA
+# build and records the versions in the census and run records.
+torch==2.6.0
+numpy==2.5.4
+pyarrow==26.0.1
+tiktoken==0.14.0
+rustbpe==0.1.0
+requests
+huggingface_hub  # setup_command only (dataset revision check)

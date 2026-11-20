@@ -1,0 +1,59 @@
+{
+  "allow_new_files": false,
+  "baseline_code_state_raw_sha256": "383d3eda38203fbf18f8cd5eb16f988b6a925f705b730cfacb90780d84b6b637",
+  "baseline_code_state_sha256": "294d347362601e8cbf184cda44761532d251d1f945f020b6a7282295e9faadf1",
+  "edits": [
+    {
+      "code_state_sha256": "91aa277d5fd7c7a58c451071b26d414e910f1c9e81db7cd18f943862f7d69adc",
+      "file": "E1.diff",
+      "files_touched": [
+        "train.py"
+      ],
+      "id": "E1",
+      "incumbent_code_state_sha256": "294d347362601e8cbf184cda44761532d251d1f945f020b6a7282295e9faadf1",
+      "normalised_diff_sha256": "c66ce8e9db3e946b451ff8735dcb410ebd84d330ea8ff70ab53dffe19d8640f2",
+      "sha256": "84ca3bafb117fbd3f17363a6d322fc0fbe4e883efff545c66ff3c99a4b587830"
+    },
+    {
+      "code_state_sha256": "5401d153bbdb27e15e470c53b7d004dffe9b5e20fa4b58cc1226550d95d81d6e",
+      "file": "E2.diff",
+      "files_touched": [
+        "train.py"
+      ],
+      "id": "E2",
+      "incumbent_code_state_sha256": "294d347362601e8cbf184cda44761532d251d1f945f020b6a7282295e9faadf1",
+      "normalised_diff_sha256": "23def09ff21cc002ac7e6180917a09a5ce026924316624effee9fae5c3d60dbb",
+      "sha256": "3e8d9889f625f48797f613708dfc9280ad85bb3fe045741801bbdbc492a19cc5"
+    },
+    {
+      "code_state_sha256": "70a047c502326ba9b17342b46bc56f42d450411497418440720650e071cd6222",
+      "file": "E3.diff",
+      "files_touched": [
+        "train.py"
+      ],
+      "id": "E3",
+      "incumbent_code_state_sha256": "294d347362601e8cbf184cda44761532d251d1f945f020b6a7282295e9faadf1",
+      "normalised_diff_sha256": "fad087eb9ede20ad2d5192cac48c4b6421866830a1e0a3354dabaa777fcc7945",
+      "sha256": "905434091bbf5ed355d9482b8f7ab340c3c66d9c816444bd5355b163be917266"
+    },
+    {
+      "code_state_sha256": "116ef71d7b0573e0f86ebf6d79d2840e52f6b99c783ddc8f7265a8eb5b4428b7",
+      "file": "E4.diff",
+      "files_touched": [
+        "train.py"
+      ],
+      "id": "E4",
+      "incumbent_code_state_sha256": "294d347362601e8cbf184cda44761532d251d1f945f020b6a7282295e9faadf1",
+      "normalised_diff_sha256": "78ba3256c294361b4ece2ff0bfdef3f36051d5fab06c5f269a8ba261c864197f",
+      "sha256": "5d6f9c121d3bf6c2c97994687d17562c0679b1ad9706aa401da7c5abe712ab2e"
+    }
+  ],
+  "measured": false,
+  "node": "autoresearch_fixedtokens",
+  "node_spec_sha256": "e02fb04bcf1990a9bf8dc1d91838a6a5687afd001251baf8bb22c1435d1a7576",
+  "run_budget": {
+    "kind": "tokens",
+    "value": 32768000
+  },
+  "schema": "trackg_representative_edits/v1"
+}
