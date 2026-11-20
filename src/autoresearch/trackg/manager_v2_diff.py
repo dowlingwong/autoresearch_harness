@@ -9,8 +9,11 @@ One call per proposal:
 * the prompt shows the node's editable files of the current incumbent (text files only, each capped),
   the metric name and direction, the run budget, and a short history of earlier steps (summary, status
   and outcome class; never the sealed test metric);
-* the request asks for the structure-only ``response_format`` of v2-diff, ``temperature`` 0 and a seed
-  derived from the campaign seed and the step, so a run is repeatable on a deterministic server;
+* the request asks for the structure-only ``response_format`` of v2-diff, ``temperature`` (default 0; the G.4/G.5
+  T1 campaigns pass 0.2, D15) and a seed derived from the campaign seed and the step (the D26 rule: instance seed,
+  trial index, repetition 0), so a run is repeatable on a deterministic server;
+* ``include_history`` (default True) shows the short history of earlier steps; False is the ``none`` memory mode
+  (no history lines; the prompt says "No earlier steps shown.");
 * the reply is parsed strictly (:func:`parse_v2_diff_reply`). A reply that does not parse is an
   **invalid proposal**: it is returned with the error, recorded and charged; it is never repaired.
 
@@ -78,7 +81,8 @@ def _editable_files(spec: TrackGNodeSpec, incumbent_dir: Path) -> list[tuple[str
     return files
 
 
-def build_prompt(spec: TrackGNodeSpec, incumbent_dir: Path, history: Sequence[dict[str, Any]]) -> str:
+def build_prompt(spec: TrackGNodeSpec, incumbent_dir: Path, history: Sequence[dict[str, Any]],
+                 include_history: bool = True) -> str:
     lines = [
         f"You improve the training code of the task '{spec.name}'.",
         f"Goal: {spec.metric_direction} {spec.metric_name} on the validation split, within a fixed budget of "
@@ -93,7 +97,9 @@ def build_prompt(spec: TrackGNodeSpec, incumbent_dir: Path, history: Sequence[di
     for rel, text in _editable_files(spec, incumbent_dir):
         lines += [f"=== {rel} ===", text.rstrip("\n"), f"=== end {rel} ==="]
     lines.append("")
-    if history:
+    if not include_history:
+        lines.append("No earlier steps shown.")
+    elif history:
         lines.append("Earlier steps (most recent last):")
         for h in list(history)[-MAX_HISTORY:]:
             lines.append(f"- step {h['step']}: {h.get('summary') or '(no summary)'} -> {h['decision']}"
@@ -111,6 +117,8 @@ class V2DiffManager:
     model: str
     seed: int = 0
     max_tokens: int = 4096
+    temperature: float = 0.0
+    include_history: bool = True
     extra_payload: dict[str, Any] = field(default_factory=dict)
     schema_version: str = MANAGER_PROPOSAL_V2_DIFF
 
@@ -118,13 +126,18 @@ class V2DiffManager:
         clash = sorted(set(self.extra_payload) & set(PINNED_FIELDS))
         if clash:
             raise ValueError(f"extra_payload must not override the pinned request fields {clash}")
+        if not isinstance(self.temperature, (int, float)) or isinstance(self.temperature, bool) \
+                or not 0.0 <= float(self.temperature) <= 2.0:
+            raise ValueError("temperature must be a number in [0, 2]")
+        if not isinstance(self.include_history, bool):
+            raise ValueError("include_history must be a bool")
 
     def propose(self, spec: TrackGNodeSpec, incumbent_dir: Path, history: Sequence[dict[str, Any]],
                 step: int) -> tuple[DiffProposal | None, dict[str, Any]]:
-        prompt = build_prompt(spec, incumbent_dir, history)
+        prompt = build_prompt(spec, incumbent_dir, history, self.include_history)
         seed = int(hashlib.sha256(f"{self.seed}:{step}".encode()).hexdigest()[:8], 16)
         payload = {"model": self.model, "messages": [{"role": "user", "content": prompt}],
-                   "temperature": 0.0, "seed": seed, "max_tokens": self.max_tokens,
+                   "temperature": float(self.temperature), "seed": seed, "max_tokens": self.max_tokens,
                    "response_format": manager_response_format_v2_diff(), **self.extra_payload}
         call = {"schema_version": self.schema_version, "prompt_version": PROMPT_VERSION,
                 "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(), "seed": seed, "base_seed": self.seed,
