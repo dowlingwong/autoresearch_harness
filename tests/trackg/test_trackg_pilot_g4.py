@@ -61,7 +61,8 @@ def _call(p, completion=300, cache=False):
 
 
 def _ledger_entries():
-    run = {"executed": True, "elapsed_seconds_info_only": 12.0}
+    run = {"executed": True, "elapsed_seconds_info_only": 12.0, "incumbent_code_state_sha256": "i0",
+           "code_state_sha256": "c1"}
     return [
         {"step": 0, "decision": "baseline", "runs": [run]},
         {"step": 1, "decision": "kept", "manager_call": _call(5000), "runs": [run], "final_outcome": {"kind": "ok"}},
@@ -106,6 +107,9 @@ def test_run_pilot_with_a_fake_campaign_and_summary(tmp_path):
                  "timeouts_of_ran": round(2 / 6, 4), "timeouts_of_proposals": round(2 / n, 4),
                  "ran_of_proposals": round(6 / n, 4)}
     assert s["refusal_reasons"] == {"context_mismatch": 2, "scope_violation": 2}
+    # both instances ran the same (incumbent, candidate) states: one cross-instance group with all 6 ran proposals
+    assert s["cross_instance_duplicates"] == {"groups": 1, "ran_proposals_in_groups": 6, "share_of_ran": 1.0,
+                                              "keyed_ran": 2}
     assert s["diff_liveness"] == {"valid_of_proposals": round(16 / n, 4), "ran_of_valid": round(6 / 16, 4),
                                   "ok_of_proposals": round(4 / n, 4), "ok_of_valid": round(4 / 16, 4)}
     assert s["fit"] == {"context": 32768, "max_tokens": 4096, "all_fit_ctx": True, "calls_at_completion_cap": 2,

@@ -180,7 +180,8 @@ def summarise(out_dir: Path, *, max_tokens: int = MAX_TOKENS, context: int = CON
     out_dir = Path(out_dir)
     entries = []
     for ledger in sorted(out_dir.glob("instance_*/campaign_ledger.jsonl")):
-        entries += [json.loads(x) for x in ledger.read_text().splitlines() if x.strip()]
+        entries += [dict(json.loads(x), _instance=ledger.parent.name) for x in ledger.read_text().splitlines()
+                    if x.strip()]
     steps = [e for e in entries if e.get("step", 0) >= 1 and e.get("decision") in DECISIONS]
     stops = [e["decision"] for e in entries if str(e.get("decision", "")).startswith("stop_")
              or e.get("decision") == "baseline_failed"]
@@ -202,6 +203,19 @@ def summarise(out_dir: Path, *, max_tokens: int = MAX_TOKENS, context: int = CON
             runs = e.get("runs") or [{}]
             key = str((runs[-1].get("diff") or {}).get("refusal") or "unrecorded")
             reasons[key] = reasons.get(key, 0) + 1
+    # cross-instance duplicates (G.5 draft G5-AUDIT): the same (incumbent code state, candidate code state) ran in
+    # more than one instance; its audit label would be shared
+    keyed: dict[tuple, set] = {}
+    for e in steps:
+        if e["decision"] in ("kept", "discarded", "discarded_divergent") and e.get("runs"):
+            run0 = e["runs"][0]
+            key = (run0.get("incumbent_code_state_sha256"), run0.get("code_state_sha256"))
+            if all(key):
+                keyed.setdefault(key, set()).add(e["_instance"])
+    cross = [k for k, insts in keyed.items() if len(insts) > 1]
+    cross_ran = sum(1 for e in steps if e["decision"] in ("kept", "discarded", "discarded_divergent") and e.get("runs")
+                    and (e["runs"][0].get("incumbent_code_state_sha256"), e["runs"][0].get("code_state_sha256"))
+                    in set(cross))
     truncated = sum(1 for c in calls if float((c.get("usage") or {}).get("completion_tokens") or 0) >= max_tokens)
     cache_ok = all(((c.get("request") or {}).get("cache_prompt") is False) for c in calls)
     rate = (lambda k, d: round(k / d, 4) if d else None)
@@ -218,6 +232,8 @@ def summarise(out_dir: Path, *, max_tokens: int = MAX_TOKENS, context: int = CON
                   "timeouts_of_ran": rate(timeouts, ran), "timeouts_of_proposals": rate(timeouts, n),
                   "ran_of_proposals": rate(ran, n)},
         "refusal_reasons": dict(sorted(reasons.items())),
+        "cross_instance_duplicates": {"groups": len(cross), "ran_proposals_in_groups": cross_ran,
+                                      "share_of_ran": rate(cross_ran, ran), "keyed_ran": sum(len(v) for v in keyed.values())},
         "diff_liveness": {"valid_of_proposals": rate(valid, n), "ran_of_valid": rate(ran, valid),
                           "ok_of_proposals": rate(counts["kept"] + counts["discarded"], n),
                           "ok_of_valid": rate(counts["kept"] + counts["discarded"], valid)},
