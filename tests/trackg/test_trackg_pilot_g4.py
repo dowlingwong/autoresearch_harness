@@ -19,7 +19,8 @@ def pilot(**over):
     pin = nf.frozen_pin_sha256(isolation.frozen_file_hashes(HARNESS / "nodes/mlab_cifar10", spec.frozen_paths))
     data = {"schema": pg.PILOT_SCHEMA, "label": "ENGINEERING_ONLY", "node": "mlab_cifar10",
             "spec_path": "configs/trackg/nodes/mlab_cifar10.yaml", "node_dir": "nodes/mlab_cifar10",
-            "node_spec_sha256": spec.raw_sha256, "frozen_pin_sha256": pin, "proposal_schema": "manager_proposal/v2-diff",
+            "node_spec_sha256": spec.raw_sha256, "committed_pin_sha256": pin, "data_manifest_sha256": None,
+            "proposal_schema": "manager_proposal/v2-diff",
             "extra_payload": {"cache_prompt": False}, "budget": 3,
             "instances": [{"instance": 1, "train_seed": 4001, "split_seed": 4001, "manager_seed": 4001},
                           {"instance": 2, "train_seed": 4002, "split_seed": 4002, "manager_seed": 4002}],
@@ -78,9 +79,9 @@ def test_run_pilot_with_a_fake_campaign_and_summary(tmp_path):
 
 
 def test_run_pilot_stops_on_a_pin_mismatch(tmp_path):
-    rec = pg.run_pilot(pilot(frozen_pin_sha256="f" * 64), HARNESS, tmp_path / "out", gpu_uuids=("GPU-12345678-aaaa",),
+    rec = pg.run_pilot(pilot(committed_pin_sha256="f" * 64), HARNESS, tmp_path / "out", gpu_uuids=("GPU-12345678-aaaa",),
                        cpu_list=(0,), chat=lambda p: ("{}", {}), campaign=lambda *a, **k: [])
-    assert "deployed frozen pin" in rec["stop"]
+    assert "committed-file pin" in rec["stop"]
 
 
 def test_timed_chat_records_wall_seconds():

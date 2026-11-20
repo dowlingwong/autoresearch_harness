@@ -30,8 +30,7 @@ from typing import Any, Callable
 from autoresearch.trackg import gpu_identity
 from autoresearch.trackg.campaign_v2_diff import V2DiffCampaignError, run_v2_diff_campaign
 from autoresearch.trackg.manager_v2_diff import Chat, ManagerTransportStop, V2DiffManager, openai_compatible_chat
-from autoresearch.trackg.noise_floor import (NoiseFloorStop, check_effective, frozen_pin_sha256, sha256_file)
-from autoresearch.trackg import isolation
+from autoresearch.trackg.noise_floor import NoiseFloorStop, check_effective, check_node_pins
 from autoresearch.trackg.node_template import load_trackg_node_spec
 from autoresearch.trackg.runner import IntegrityError, ResourceLimits, RunnerError
 
@@ -76,9 +75,12 @@ def validate_pilot(data: dict[str, Any]) -> dict[str, Any]:
     seconds = data.get("measured_run_seconds")
     if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or not 0 < seconds <= 300:
         raise PilotStop("STOP: measured_run_seconds (census) must be in (0, 300]")
-    for key in ("node_spec_sha256", "frozen_pin_sha256"):
+    for key in ("node_spec_sha256", "committed_pin_sha256"):
         if not isinstance(data.get(key), str) or len(data[key]) != 64:
             raise PilotStop(f"STOP: {key} must be a sha256")
+    dm = data.get("data_manifest_sha256", "missing")
+    if dm is not None and (not isinstance(dm, str) or len(dm) != 64):
+        raise PilotStop("STOP: data_manifest_sha256 must be a sha256, or null for a node without data")
     for key in ("spec_path", "node_dir", "base_url", "model", "cgroup_parent", "interpreter", "memory_limit"):
         if not isinstance(data.get(key), str) or not data[key]:
             raise PilotStop(f"STOP: {key} must be a non-empty string")
@@ -110,9 +112,7 @@ def run_pilot(data: dict[str, Any], harness_root: Path, out_dir: Path, *, gpu_uu
         node_dir = (harness_root / data["node_dir"]).resolve()
         if spec.name != data["node"] or spec.raw_sha256 != data["node_spec_sha256"] or spec.isolation is None:
             raise PilotStop("STOP: node spec name/sha256 differ from the pilot pins, or the node is not isolated")
-        pin = frozen_pin_sha256(isolation.frozen_file_hashes(node_dir, spec.frozen_paths))
-        if pin != data["frozen_pin_sha256"]:
-            raise PilotStop(f"STOP: deployed frozen pin {pin} differs from the census pin {data['frozen_pin_sha256']}")
+        check_node_pins(spec, node_dir, data["committed_pin_sha256"], data["data_manifest_sha256"])
         limits = ResourceLimits(gpu_uuids=gpu_uuids, cpu_list=cpu_list, memory_bytes=None, memory_method="external",
                                 external_limit=data["memory_limit"],
                                 measured_run_seconds=float(data["measured_run_seconds"]), timeout_factor=3.0,

@@ -35,7 +35,8 @@ def chunk(conditions=("train",), seed_range=(1001, 1003), **over) -> dict:
     data = {
         "schema": nf.CHUNK_SCHEMA, "label": "ENGINEERING_ONLY", "chunk_id": "mlab_cifar10-train-1001-1003",
         "node": NODE, "spec_path": SPEC, "node_dir": NODE_DIR,
-        "node_spec_sha256": spec_sha, "frozen_pin_sha256": pin_sha, "edits_manifest_sha256": man_sha, "n_edits": n,
+        "node_spec_sha256": spec_sha, "committed_pin_sha256": pin_sha, "data_manifest_sha256": None,
+        "edits_manifest_sha256": man_sha, "n_edits": n,
         "conditions": list(conditions), "seed_range": list(seed_range) if seeded else None,
         "runs": nf.expected_runs(n, list(conditions), tuple(seed_range) if seeded else None),
         "measured_run_seconds": 12.297, "timeout_factor": 3.0, "deadline_epoch": 10 ** 12,
@@ -81,7 +82,8 @@ def test_valid_chunk_and_default_chunk():
     ({"n_edits": 6}, "n_edits"),
     ({"seed_range": [1001, 1031]}, "not inside"),
     ({"seed_range": [2001, 2003]}, "not inside"),
-    ({"frozen_pin_sha256": "0" * 63}, "frozen_pin_sha256"),
+    ({"committed_pin_sha256": "0" * 63}, "committed_pin_sha256"),
+    ({"data_manifest_sha256": "x"}, "data_manifest_sha256"),
 ])
 def test_chunk_refusals(over, needle):
     data = chunk()
@@ -128,10 +130,63 @@ def test_gate_refuses_a_record_without_isolation():
 def test_load_node_checks_the_pins():
     spec, node_dir, pin, texts = nf.load_node(nf.validate_chunk(chunk()), HARNESS)
     assert spec.name == NODE and len(texts) == 4 and all(t.startswith(("---", "diff")) or "@@" in t for t in texts)
-    for key in ("node_spec_sha256", "frozen_pin_sha256", "edits_manifest_sha256"):
+    for key in ("node_spec_sha256", "committed_pin_sha256", "edits_manifest_sha256"):
         data = chunk(**{key: "f" * 64})
         with pytest.raises(nf.NoiseFloorStop, match="differs"):
             nf.load_node(nf.validate_chunk(data), HARNESS)
+
+
+def _copy_harness(tmp: Path) -> Path:
+    """A minimal harness root holding the node and its spec (so a test can add a data link or change files)."""
+    import shutil
+    root = tmp / "h"
+    (root / "configs/trackg/nodes").mkdir(parents=True)
+    shutil.copy2(HARNESS / SPEC, root / SPEC)
+    shutil.copytree(HARNESS / NODE_DIR, root / NODE_DIR, symlinks=True,
+                    ignore=shutil.ignore_patterns("data", "__pycache__"))
+    return root
+
+
+def test_data_link_is_left_out_of_the_pin_and_the_data_manifest_is_checked(tmp_path):
+    """Kit review of G.1b, B1: the data link's host path must not change the pin; the data bytes are bound by the
+    census data manifest sha256."""
+    root = _copy_harness(tmp_path)
+    data = tmp_path / "somewhere_on_h200" / "mlab_cifar10"
+    data.mkdir(parents=True)
+    (data / "data_manifest.json").write_text('{"files": {}}\n')
+    (root / NODE_DIR / "data").symlink_to(data)
+    good = nf.sha256_file(data / "data_manifest.json")
+    spec, node_dir, pin, _ = nf.load_node(nf.validate_chunk(chunk(data_manifest_sha256=good)), root)
+    assert pin["data"] == "link:" + str(data)  # the runner still pins the full tree, link included
+    with pytest.raises(nf.NoiseFloorStop, match="differ from the census data"):
+        nf.load_node(nf.validate_chunk(chunk(data_manifest_sha256="e" * 64)), root)
+    with pytest.raises(nf.NoiseFloorStop, match="declares no data"):
+        nf.load_node(nf.validate_chunk(chunk(data_manifest_sha256=None)), root)
+    (root / NODE_DIR / "data").unlink()
+    with pytest.raises(nf.NoiseFloorStop, match="missing"):
+        nf.load_node(nf.validate_chunk(chunk(data_manifest_sha256=good)), root)
+
+
+def test_edit_file_sha_and_unisolated_spec_are_refused(tmp_path):
+    root = _copy_harness(tmp_path)
+    edit = root / NODE_DIR / "representative_edits" / "E2.diff"
+    edit.write_text(edit.read_text() + "\n")
+    with pytest.raises(nf.NoiseFloorStop, match="committed-file pin"):
+        nf.load_node(nf.validate_chunk(chunk()), root)
+    # even with a pin taken from the changed tree, the edit file must match the manifest's sha256
+    from autoresearch.trackg import isolation
+    from autoresearch.trackg.node_template import load_trackg_node_spec as _load
+    changed = nf.frozen_pin_sha256(isolation.frozen_file_hashes(root / NODE_DIR, _load(root / SPEC).frozen_paths))
+    with pytest.raises(nf.NoiseFloorStop, match="E2.diff sha256 differs"):
+        nf.load_node(nf.validate_chunk(chunk(committed_pin_sha256=changed)), root)
+    import yaml
+    root2 = _copy_harness(tmp_path / "b")
+    mapping = yaml.safe_load((root2 / SPEC).read_text())
+    del mapping["isolation"]
+    (root2 / SPEC).write_text(yaml.safe_dump(mapping))
+    from autoresearch.trackg.node_template import load_trackg_node_spec
+    with pytest.raises(nf.NoiseFloorStop, match="no isolation block"):
+        nf.load_node(nf.validate_chunk(chunk(node_spec_sha256=load_trackg_node_spec(root2 / SPEC).raw_sha256)), root2)
 
 
 # ---------------------------------------------------------------------------------------------- run loop

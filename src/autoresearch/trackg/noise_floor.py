@@ -11,9 +11,12 @@ runs it, through :class:`~autoresearch.trackg.runner.WorkingCopyRunner`, and wri
 fails the gate STOPs the chunk at once: the row is not written, the record stays on disk as evidence, and the
 chunk record names the run.  The gate is not configurable from the command line.
 
-The chunk's ``frozen_pin_sha256`` is the census's *deployed* pin: the node's frozen files after its
-``setup_command`` linked the data, so the data bytes are checked too (the G.0 census records it per node as
-``deployed_pin``); the harness commit fixes the committed files.
+Pins (kit review of G.1b, B1).  The chunk's ``committed_pin_sha256`` is the census's committed-file pin: the
+node's frozen files without the ``data`` link (``frozen_file_hashes`` records that link by its target path, which
+differs between hosts, so it is left out here).  The data bytes are bound by ``data_manifest_sha256``: the sha256
+of the node's ``data/data_manifest.json`` must equal the census value, and every run's frozen parent checks the
+data files against that manifest.  A node without data (Breakout) has ``data_manifest_sha256: null`` and must not
+have a ``data`` link.
 
 Other STOPs: a node whose spec, frozen pin or declared-edit manifest differs from the chunk's pins; an edit file
 whose sha256 differs from the manifest; a run plan that is not the canonical expansion of the chunk's
@@ -126,9 +129,12 @@ def validate_chunk(data: dict[str, Any]) -> Chunk:
     node = data.get("node")
     if not isinstance(node, str) or not _NODE.fullmatch(node):
         raise NoiseFloorStop(f"STOP: invalid node id {node!r}")
-    for key in ("node_spec_sha256", "frozen_pin_sha256", "edits_manifest_sha256"):
+    for key in ("node_spec_sha256", "committed_pin_sha256", "edits_manifest_sha256"):
         if not isinstance(data.get(key), str) or not _SHA.fullmatch(data[key]):
             raise NoiseFloorStop(f"STOP: chunk.{key} must be a sha256")
+    dm = data.get("data_manifest_sha256", "missing")
+    if dm is not None and (not isinstance(dm, str) or not _SHA.fullmatch(dm)):
+        raise NoiseFloorStop("STOP: chunk.data_manifest_sha256 must be a sha256, or null for a node without data")
     n_edits = data.get("n_edits")
     if type(n_edits) is not int or not 3 <= n_edits <= 5:
         raise NoiseFloorStop("STOP: chunk.n_edits must be the node's declared edit count (3-5)")
@@ -179,6 +185,33 @@ def frozen_pin_sha256(pin: dict[str, str]) -> str:
     return hashlib.sha256(json.dumps(pin, sort_keys=True).encode()).hexdigest()
 
 
+def committed_view(pin: dict[str, str]) -> dict[str, str]:
+    """The pin without the host-specific ``data`` link entry (the committed files only)."""
+    return {k: v for k, v in pin.items() if not (k == "data" and v.startswith("link:"))}
+
+
+def check_node_pins(spec: TrackGNodeSpec, node_dir: Path, committed_pin: str, data_manifest: str | None) -> dict:
+    """The committed-file pin (without the host-specific data link) and the data manifest against the census;
+    returns the full pin (with the link) for the runner."""
+    pin = isolation.frozen_file_hashes(node_dir, spec.frozen_paths)
+    committed = frozen_pin_sha256(committed_view(pin))
+    if committed != committed_pin:
+        raise NoiseFloorStop(f"STOP: the committed-file pin {committed} differs from the census pin {committed_pin}")
+    link = node_dir / "data"
+    if data_manifest is None:
+        if link.exists() or link.is_symlink():
+            raise NoiseFloorStop("STOP: the census declares no data for this node, but it has a data entry")
+        return pin
+    manifest_file = link / "data_manifest.json"
+    if not manifest_file.is_file():
+        raise NoiseFloorStop(f"STOP: {manifest_file} missing: run the node's setup_command first")
+    got = sha256_file(manifest_file)
+    if got != data_manifest:
+        raise NoiseFloorStop(f"STOP: data manifest sha256 {got} differs from the census {data_manifest} "
+                             "(the data bytes differ from the census data)")
+    return pin
+
+
 def load_node(chunk: Chunk, harness_root: Path) -> tuple[TrackGNodeSpec, Path, dict[str, str], list[str]]:
     """Load the node from the harness checkout and check it against the chunk's pins; return the edit texts."""
     data = chunk.data
@@ -193,10 +226,7 @@ def load_node(chunk: Chunk, harness_root: Path) -> tuple[TrackGNodeSpec, Path, d
         raise NoiseFloorStop(f"STOP: node spec sha256 {spec.raw_sha256} differs from the pin {data['node_spec_sha256']}")
     if spec.isolation is None:
         raise NoiseFloorStop(f"STOP: {chunk.node} has no isolation block: unisolated nodes are refused")
-    pin = isolation.frozen_file_hashes(node_dir, spec.frozen_paths)
-    if frozen_pin_sha256(pin) != data["frozen_pin_sha256"]:
-        raise NoiseFloorStop(f"STOP: frozen_pin_sha256 {frozen_pin_sha256(pin)} differs from the census pin "
-                             f"{data['frozen_pin_sha256']}")
+    pin = check_node_pins(spec, node_dir, data["committed_pin_sha256"], data["data_manifest_sha256"])
     manifest_path = node_dir / "representative_edits" / "manifest.json"
     if sha256_file(manifest_path) != data["edits_manifest_sha256"]:
         raise NoiseFloorStop("STOP: representative_edits/manifest.json differs from the pin")
@@ -252,8 +282,8 @@ def row_of(chunk: Chunk, run: dict[str, Any], result: RunResult, record_sha: str
         "record_sha256": record_sha,
         "code_state_sha256": record.get("code_state_sha256"),
         "frozen_pin_sha256": record.get("frozen_pin_sha256"),
-        "isolation": {"effective": iso.get("effective"), "waivers": iso.get("waivers"),
-                      "exceptions": iso.get("exceptions")},
+        "isolation": {key: iso.get(key) for key in ("effective", "waivers", "exceptions", "log_intact",
+                                                     "parent_traced_by", "parent_dumpable_at_accept")},
     }
 
 
