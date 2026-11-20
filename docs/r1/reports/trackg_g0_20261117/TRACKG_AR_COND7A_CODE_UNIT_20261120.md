@@ -158,8 +158,9 @@ checked in both the port test and the §5 command).
 
 ## 7. Commit
 
-Branch `mac-trackg-iso-ar-cond7a-20261120`, base `448f6820f885d70ee6872b692284fe861afd3a33`; the local commit
-sha is recorded in §9 after committing. No push.
+Branch `mac-trackg-iso-ar-cond7a-20261120`, base `448f6820f885d70ee6872b692284fe861afd3a33`. The
+code/test/spec/manifest change is commit **`0e0b82093c6b12703f16b82239e981aee33ad56b`**; this report is added
+in the docs commit that follows it. No push.
 
 ## 8. Expected behavior and expected slowdown (to be measured on Ada, not now)
 
