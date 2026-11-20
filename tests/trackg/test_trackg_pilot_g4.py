@@ -187,3 +187,22 @@ def test_manager_temperature_and_memory_mode(tmp_path):
         V2DiffManager(chat=lambda p: ("{}", {}), model="m", temperature=5)
     with pytest.raises(ValueError, match="include_history"):
         V2DiffManager(chat=lambda p: ("{}", {}), model="m", include_history="yes")
+
+
+def test_run_pilot_refuses_a_node_spec_mismatch(tmp_path):
+    rec = pg.run_pilot(pilot(node_spec_sha256="e" * 64), HARNESS, tmp_path / "out", gpu_uuids=("GPU-12345678-aaaa",),
+                       cpu_list=(0,), chat=lambda p: ("{}", {}), campaign=lambda *a, **k: [])
+    assert "node spec name/sha256" in rec["stop"]
+
+
+def test_memory_mode_none_maps_to_no_history(tmp_path):
+    seen = []
+
+    def fake_campaign(spec, node_dir, runs_root, manager, limits, budget, **kw):
+        seen.append(manager.include_history)
+        Path(runs_root).mkdir(parents=True)
+        (Path(runs_root) / "campaign_ledger.jsonl").write_text("")
+        return []
+    rec = pg.run_pilot(pilot(memory_mode="none"), HARNESS, tmp_path / "out", gpu_uuids=("GPU-12345678-aaaa",),
+                       cpu_list=(0,), chat=lambda payload: ("{}", {}), campaign=fake_campaign)
+    assert rec["stop"] is None and seen == [False, False]
