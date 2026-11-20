@@ -1,0 +1,13 @@
+# GPU host (Ada / L40S) for node mlgym_breakout_minatar (frozen): the same pins as requirements.txt with the
+# CUDA 12 build of jax. Install in one resolver call (pip install -r requirements_gpu.txt) into the separate JAX
+# environment, and record the versions in the census and run records.
+jax[cuda12]==0.4.35
+flax==0.10.2
+optax==0.2.4
+chex==0.1.88
+gymnax==0.0.9
+tensorflow-probability==0.25.0
+dotmap==1.3.30
+PyYAML
+tqdm==4.70.1  # imported by the wrapper and policy.py (progress bars, disabled)
+numpy==2.5.4

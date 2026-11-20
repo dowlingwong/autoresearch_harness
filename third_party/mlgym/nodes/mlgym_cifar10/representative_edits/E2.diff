@@ -1,0 +1,11 @@
+--- a/train.py
++++ b/train.py
+@@ -20,7 +20,7 @@
+     "grad_clip": 1.0,
+     "amp_bf16": False,
+ }
+-LEARNING_RATE = 5e-5
++LEARNING_RATE = 1e-3
+ WEIGHT_DECAY = 0.01
+ WARMUP_STEPS = 500
+ 

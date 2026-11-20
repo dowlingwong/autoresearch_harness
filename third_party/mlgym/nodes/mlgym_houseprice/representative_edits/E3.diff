@@ -1,0 +1,13 @@
+--- a/train.py
++++ b/train.py
+@@ -38,8 +38,8 @@
+ 
+ 
+ def transform_target(y):
+-    return y
++    return np.log1p(y)
+ 
+ 
+ def inverse_transform_target(z):
+-    return z
++    return np.expm1(z)

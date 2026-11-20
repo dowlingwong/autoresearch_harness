@@ -125,6 +125,24 @@ def test_manager_proposal_v1_campaign_is_byte_identical_to_the_base_commit(tmp_p
     assert b'"parse_failed": true' in base["out/trials.jsonl"] or b'"parse_failed":true' in base["out/trials.jsonl"]
 
 
+# R1-TRACKG-PORT-DECISIONS: the root README and LICENSE carry a licence-scope line for third_party/mlgym/
+# (CC BY-NC 4.0).  Those two base files may differ from the base commit by added lines only, and every added
+# non-blank line must name third_party/mlgym/ or be a separator; nothing else of a base file may change.
+SCOPE_FILES = ("LICENSE", "README.md")
+
+
+def _scope_line_only(name: str, rev: str | None) -> bool:
+    if name not in SCOPE_FILES:
+        return False
+    diff = subprocess.run(["git", "-C", str(ROOT), "diff", "-U0", BASE_COMMIT, *([rev] if rev else []), "--", name],
+                          check=True, capture_output=True, text=True).stdout.splitlines()
+    body = [line for line in diff if not line.startswith(("diff ", "index ", "--- ", "+++ ", "@@"))]
+    if any(line.startswith("-") for line in body):
+        return False
+    added = [line[1:].strip() for line in body if line.startswith("+")]
+    return all(not text or text == "---" or "third_party/mlgym/" in text for text in added)
+
+
 def test_no_base_file_differs_and_no_t0_module_imports_trackg():
     try:
         changed = subprocess.run(
@@ -134,11 +152,13 @@ def test_no_base_file_differs_and_no_t0_module_imports_trackg():
         if os.environ.get("TRACKG_T0_ALLOW_SKIP") == "1":
             pytest.skip(str(error))
         pytest.fail(f"cannot diff against {BASE_COMMIT}: {error}")
+    changed = [name for name in changed if not _scope_line_only(name, "HEAD")]
     assert changed == [], f"files of the base commit changed: {changed}"
     # the same against the working tree, so uncommitted edits of base files are caught too
     worktree_changed = subprocess.run(
         ["git", "-C", str(ROOT), "diff", "--diff-filter=MDRT", "--name-only", BASE_COMMIT],
         check=True, capture_output=True, text=True).stdout.split()
+    worktree_changed = [name for name in worktree_changed if not _scope_line_only(name, None)]
     assert worktree_changed == [], f"files of the base commit changed in the working tree: {worktree_changed}"
     import ast
 

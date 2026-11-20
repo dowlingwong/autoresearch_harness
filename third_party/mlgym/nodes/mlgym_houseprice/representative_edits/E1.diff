@@ -1,0 +1,11 @@
+--- a/train.py
++++ b/train.py
+@@ -15,7 +15,7 @@
+ from sklearn.pipeline import Pipeline
+ from sklearn.preprocessing import OneHotEncoder, StandardScaler
+ 
+-ALPHA = 0.1
++ALPHA = 1.0
+ 
+ 
+ def build_model(x_train, seed):

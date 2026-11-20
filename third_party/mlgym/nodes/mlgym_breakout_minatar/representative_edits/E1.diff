@@ -1,0 +1,13 @@
+--- a/config.yaml
++++ b/config.yaml
+@@ -9,8 +9,8 @@
+   gamma: 0.999  # Discount factor
+   n_steps: 128 # "GAE n-steps"
+   n_minibatch: 8 # "Number of PPO minibatches"
+-  lr_begin: 5e-04  # Start PPO learning rate
+-  lr_end: 5e-04 #  End PPO learning rate
++  lr_begin: 1e-03  # Start PPO learning rate
++  lr_end: 1e-03 #  End PPO learning rate
+   lr_warmup: 0.05 # Prop epochs until warmup is completed
+   epoch_ppo: 4  # "Number of PPO epochs on a single batch"
+   clip_eps: 0.2 # "Clipping range"

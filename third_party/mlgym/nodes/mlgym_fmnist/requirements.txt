@@ -1,0 +1,7 @@
+# Runs: torch, numpy. Setup only: datasets, huggingface_hub.
+# Versions of the port's local CPU check (17 Nov 2026); the Ada/L40S deployment pins its own CUDA build
+# and records the versions in the census and run records.
+torch==2.6.0
+numpy==2.5.4
+datasets  # setup_command only
+huggingface_hub  # setup_command only

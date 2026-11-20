@@ -1,0 +1,25 @@
+# EDITABLE in the Track G node mlgym_breakout_minatar: MLGym's data/rlBreakoutMinAtar/src/config.yaml
+# (CC BY-NC 4.0, Meta Platforms) without the three keys the frozen wrapper owns: num_train_steps (the step
+# budget, set from --steps), evaluate_every_epochs (in-training evaluation, off) and num_test_rollouts
+# (evaluation is frozen). The wrapper stops if any of them appears here.
+
+train_config:
+  num_train_envs: 64 # Number of parallel env workers
+  max_grad_norm: 0.5  # Global norm to clip gradients by
+  gamma: 0.999  # Discount factor
+  n_steps: 128 # "GAE n-steps"
+  n_minibatch: 8 # "Number of PPO minibatches"
+  lr_begin: 5e-04  # Start PPO learning rate
+  lr_end: 5e-04 #  End PPO learning rate
+  lr_warmup: 0.05 # Prop epochs until warmup is completed
+  epoch_ppo: 4  # "Number of PPO epochs on a single batch"
+  clip_eps: 0.2 # "Clipping range"
+  gae_lambda: 0.95 # "GAE lambda"
+  entropy_coeff: 0.01 # "Entropy loss coefficient"
+  critic_coeff: 0.5  # "Value loss coefficient"
+
+  network_name: "Model"
+  network_config:
+    num_hidden_units: 256
+    num_hidden_layers: 2
+    flatten_3d: True
