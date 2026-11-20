@@ -50,7 +50,7 @@
   ],
   "measured": false,
   "node": "autoresearch_fixedtokens",
-  "node_spec_sha256": "5f48b86f03e0224cc12104ef1d335460310c271e723704055dbf9948bc135ff9",
+  "node_spec_sha256": "5c1bdf3d84c0721818adc239186ac30ffa2c2bb3b6b373e56b236e47cbd61192",
   "run_budget": {
     "kind": "tokens",
     "value": 32768000

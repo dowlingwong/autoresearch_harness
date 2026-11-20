@@ -17,8 +17,12 @@ Metric (computed here): autoresearch's bits per byte on the pinned validation sh
 length 0 excluded).  This process builds every validation batch with prepare's loader and the frozen tokenizer
 before it starts the worker, with a fixed evaluation batch size (``EVAL_BATCH_SIZE``, not train.py's), then
 sends each batch's input tokens to the worker, which writes ``model(x)`` (float32 logits of shape (B, T,
-vocab)) into a buffer this process owns (a CUDA tensor shared by CUDA IPC on a GPU, a ``memfd`` buffer on the
-CPU), and computes the per-token cross-entropy and the byte counts here, with the targets it holds.  Before the
+vocab)) into a CPU buffer this process owns (a sealed ``memfd`` the worker maps, passed over the socket with
+``SCM_RIGHTS``), and computes the per-token cross-entropy and the byte counts here, with the targets it holds.
+Only this process computes the metric; the worker returns logits.  There is **no CUDA IPC** in the result path
+(condition 7 of R1-HARNESS-ISOLATION: CUDA IPC cannot cross the worker's user namespace on the Ada host/driver,
+and it would need a shared ``/dev/shm``): the parent allocates the CPU buffer, snapshots it after each answer and
+moves the copy to its own device when it has one.  Before the
 sum, a causality probe compares the logits of the first validation batch with the logits of the same rows whose
 suffix after a cut position was replaced: the logits before the cut must not change (exit 9 otherwise;
 tolerance ``CAUSAL_ATOL``; equal infinities count as equal); the largest change is printed as ``AR_INFO
@@ -57,41 +61,35 @@ NODE = "autoresearch_fixedtokens"
 
 
 class LogitSource:
-    """The worker's logits for an input batch, through a buffer this process owns."""
+    """The worker's logits for an input batch, through a CPU buffer this process owns.
+
+    R1-TRACKG-AR-COND7 option A: the parent allocates the ``memfd`` CPU buffer (``iso.SharedBuffer``) and passes
+    its descriptor to the worker with ``bind_cpu``; the worker maps it as CPU memory and copies the
+    (bf16-autocast) ``model(x)`` output into it as float32.  This is the path on a GPU host too: after each
+    answer the parent takes a private snapshot and moves it to its own device.  No CUDA IPC is used (it cannot
+    cross the worker's user namespace on the Ada host/driver and would need a shared ``/dev/shm``).
+    """
 
     def __init__(self, worker, shape, torch, device):
         self.worker, self.torch, self.device = worker, torch, device
         self.shape = tuple(int(d) for d in shape)
-        self.shared = None
-        if device.type == "cuda":
-            # Kit review round 1, B1: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True (the spec's isolation env, for
-            # the worker's training) also reaches this process.  torch cannot share expandable-segment memory
-            # with a process in another PID namespace (it needs pidfd_getfd on this non-dumpable process), so the
-            # shared buffer is allocated with expandable segments off; this process does no training.
-            torch.cuda.memory._set_allocator_settings("expandable_segments:False")
-            self.buffer = torch.empty(self.shape, dtype=torch.float32, device=device)
-            P.call(worker, "bind_cuda", {"buffer": iso.cuda_share(self.buffer)})
-        else:
-            self.shared = iso.SharedBuffer(self.shape, "float32")
-            try:
-                worker.conn.send("bind_cpu", {"buffer": self.shared.describe()}, {}, [self.shared.fd])
-                op, meta, _arrays, fds = worker.conn.recv()
-            except (iso.IsolationProtocolError, OSError) as error:
-                P.fail(P.EXIT_WORKER, f"worker bind_cpu: {error}")
-            for fd in fds:
-                os.close(fd)
-            if op != "ok":
-                P.fail(P.EXIT_WORKER, f"worker bind_cpu: {meta.get('error', op)}")
+        self.shared = iso.SharedBuffer(self.shape, "float32")
+        try:
+            worker.conn.send("bind_cpu", {"buffer": self.shared.describe()}, {}, [self.shared.fd])
+            op, meta, _arrays, fds = worker.conn.recv()
+        except (iso.IsolationProtocolError, OSError) as error:
+            P.fail(P.EXIT_WORKER, f"worker bind_cpu: {error}")
+        for fd in fds:
+            os.close(fd)
+        if op != "ok":
+            P.fail(P.EXIT_WORKER, f"worker bind_cpu: {meta.get('error', op)}")
 
     def __call__(self, x):
         """A private float32 copy of the worker's logits for x (B, T), on this process's device."""
         torch = self.torch
         tokens = x.detach().to("cpu", torch.int64).numpy()
         P.call(self.worker, "logits", {}, {"x": tokens})
-        if self.shared is not None:
-            return torch.from_numpy(self.shared.snapshot()).to(self.device)
-        torch.cuda.synchronize(self.device)
-        return self.buffer.clone()  # the worker keeps its mapping: work on a private copy
+        return torch.from_numpy(self.shared.snapshot()).to(self.device)
 
 
 def causality_probe(logits_of, x, base, vocab: int, torch) -> float:
