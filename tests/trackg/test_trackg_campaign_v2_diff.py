@@ -277,3 +277,23 @@ def test_a_run_that_changes_the_incumbent_stops_the_campaign(tmp_path, monkeypat
                              enable_v2_diff=True, unisolated_reason="test fixture (not isolated)")
     lines = [json.loads(x) for x in (tmp_path / "runs" / "campaign_ledger.jsonl").read_text().splitlines()]
     assert lines[-1]["decision"] == "stop_integrity" and "evaluate.py" in lines[-1]["error"]
+
+
+def test_record_gate_refusal_writes_stop_unisolated_and_stops(tmp_path):
+    """T1 jobs pass noise_floor.check_effective as record_gate: an unisolated run stops the campaign."""
+    from autoresearch.trackg.noise_floor import UnisolatedRunError, check_effective
+
+    node = make_node(tmp_path)
+    chat = ScriptedChat([reply(lr("0.1", "0.2"))])
+    with pytest.raises(V2DiffCampaignError, match="record gate"):
+        run_v2_diff_campaign(spec(), node, tmp_path / "runs", V2DiffManager(chat, "m"), LIMITS, 1,
+                             enable_v2_diff=True, unisolated_reason="test fixture (not isolated)",
+                             record_gate=check_effective)
+    ledger = [json.loads(s) for s in (tmp_path / "runs" / "campaign_ledger.jsonl").read_text().splitlines()]
+    assert [e["decision"] for e in ledger] == ["stop_unisolated"] and "UnisolatedRunError" in ledger[0]["error"]
+    assert chat.payloads == []  # stopped at the baseline, before any manager call
+    calls = []
+    entries = run_v2_diff_campaign(spec(), node, tmp_path / "runs2", V2DiffManager(ScriptedChat([reply(lr("0.1", "0.2"))]), "m"),
+                                   LIMITS, 1, enable_v2_diff=True, unisolated_reason="test fixture (not isolated)",
+                                   record_gate=lambda record: calls.append(record["run_id"]))
+    assert [e["decision"] for e in entries] == ["baseline", "kept"] and calls == ["s000_baseline", "s001"]

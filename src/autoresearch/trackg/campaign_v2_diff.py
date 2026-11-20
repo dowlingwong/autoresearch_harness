@@ -41,7 +41,8 @@ given (never for T1 label runs or RL training).  It pins the frozen files from t
 and passes the pin, the kit (read-only for the worker) and the incumbent's expected code state to every run; a
 working copy that differs (something outside the declared diffs changed the kit or an incumbent snapshot)
 writes a ``stop_integrity`` ledger line and STOPs. A transport
-failure of the manager (``ManagerTransportStop``) writes a ``stop_transport`` line and STOPs. The campaign has no
+failure of the manager (``ManagerTransportStop``) writes a ``stop_transport`` line and STOPs. ``record_gate`` (optional; the T1 jobs pass ``noise_floor.check_effective``) is called on every executed run
+record; a refusal writes a ``stop_unisolated`` line and STOPs.  The campaign has no
 resume: an HTCondor eviction of the job that runs it ends the campaign, and a restart refuses the existing
 ``runs_root`` (Unit 2's resume-safe units are not wired here).
 
@@ -53,7 +54,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from autoresearch.trackg.diff_support import EvaluatedStates
 from autoresearch.trackg.manager_v2_diff import ManagerTransportStop, V2DiffManager
@@ -87,6 +88,7 @@ def run_v2_diff_campaign(
     split_seed: int | None = None,
     interpreter: str = "python3",
     unisolated_reason: str | None = None,
+    record_gate: Callable[[dict[str, Any]], None] | None = None,
 ) -> list[dict[str, Any]]:
     if enable_v2_diff is not True:
         raise V2DiffCampaignError("the v2-diff campaign path is off: pass enable_v2_diff=True explicitly")
@@ -137,6 +139,14 @@ def run_v2_diff_campaign(
                         "error": str(error), "runs": entry["runs"], "incumbent_after": str(incumbent_dir)})
                 raise
             entry["runs"].append(manager_view(result.record))
+            if record_gate is not None and result.record.get("executed"):
+                try:
+                    record_gate(result.record)
+                except Exception as error:  # the gate's refusal: the run is not usable, the campaign STOPs
+                    append({"schema": LEDGER_SCHEMA, "step": entry.get("step"), "decision": "stop_unisolated",
+                            "error": f"{type(error).__name__}: {error}", "runs": entry["runs"],
+                            "incumbent_after": str(incumbent_dir)})
+                    raise V2DiffCampaignError(f"STOP: run {run_id} failed the record gate: {error}") from error
             outcome = result.outcome
             if outcome is None:
                 entry["decision_hint"] = f"not_run_{result.record['diff']['status']}"
