@@ -29,8 +29,9 @@ file system that holds only an allow-list: a private ``/tmp``; read-only binds o
 directories, the run interpreter's installation and ``sys.path``, the data, the determinism shim); ``/sys``
 read-only with an empty read-only ``tmpfs`` over ``/sys/fs/cgroup`` and every cgroup file system below it; the
 ``rw`` paths (the run's working copy) writable, with the ``ro_in_rw`` paths (its frozen files) read-only again;
-``/dev``, with a private ``/dev/shm`` unless the node sets ``shared_dev_shm`` (torch's CUDA IPC reference
-counters live there); and the host ``/proc`` for the moment.  It then enters that root with ``pivot_root``,
+``/dev``, with a private ``/dev/shm`` unless the node sets ``shared_dev_shm`` (only a node that shares CUDA
+tensors needs torch's CUDA IPC reference counters there; the ported nodes' result paths do not); and the
+host ``/proc`` for the moment.  It then enters that root with ``pivot_root``,
 detaches the old one and makes the new root read-only.  Nothing else exists for the worker: no home directory,
 no runs tree (other runs' results), no ``/run``, no socket of a daemon outside.  The launcher then forks PID 1 of
 the new PID namespace, which mounts a fresh ``/proc`` over the host one, drops every capability (bounding set,
@@ -48,10 +49,11 @@ one), and when PID 1 dies the kernel kills every process of the namespace.
 Messages are a fixed magic, an 8-byte header length, a JSON header and the raw bytes of each array (no
 pickle).  Arrays are checked against a dtype whitelist and their declared shape.  For large outputs the parent
 can hand the worker a shared buffer: a CPU buffer (``memfd``, sealed against shrinking and growing, passed over
-the socket with ``SCM_RIGHTS``) or, on a GPU, a CUDA tensor shared by CUDA IPC (:func:`cuda_share` /
-:func:`cuda_open`); the parent reads a private copy of either after each answer.  The CUDA path needs a GPU and
-is exercised by the kits' GPU smoke only; it relies on torch's IPC reference counter files in ``/dev/shm``,
-which is therefore not made private.
+the socket with ``SCM_RIGHTS``); the parent reads a private copy of it after each answer.  This is the path every
+isolated node uses, on a GPU too: the parent allocates the CPU buffer and moves the copy to its device.  The
+:func:`cuda_share` / :func:`cuda_open` helpers below are kept for compatibility only (a CUDA tensor shared by
+CUDA IPC), and no node uses them: CUDA IPC cannot cross the worker's user namespace on the Ada host/driver
+(R1-HARNESS-ISOLATION condition 7), and it relies on torch's IPC reference counter files in ``/dev/shm``.
 """
 from __future__ import annotations
 
@@ -624,9 +626,15 @@ def cuda_share(tensor) -> dict:
 
 
 def cuda_open(desc: dict):
-    """Open a tensor described by :func:`cuda_share` (worker side)."""
+    """Open a tensor described by :func:`cuda_share` (worker side).
+
+    Compatibility helper only: no isolated node uses it (see the module docstring).  The CUDA context is
+    initialized first: opening a shared CUDA storage from a process that has not initialized CUDA segfaults
+    (latent bug found under R1-HARNESS-ISOLATION; the fix is kept for any future non-PID-namespace GPU user).
+    """
     import torch
 
+    torch.cuda.init()
     dec = lambda s: base64.b64decode(s) if isinstance(s, str) else s  # noqa: E731
     storage = torch.UntypedStorage._new_shared_cuda(
         desc["device"], dec(desc["handle"]), desc["size"], desc["offset"], dec(desc["ref_handle"]),

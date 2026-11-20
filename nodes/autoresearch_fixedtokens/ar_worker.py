@@ -8,9 +8,10 @@ factory (ar_budget.py) and run train.py (``runpy``, as ``__main__``); exit 7 for
 exception or ``SystemExit`` out of train.py, 3 unless train.py used the whole budget; print ``AR_TOKENS
 consumed=``; check the data again; restore prepare's module attributes (undoing patches such as a changed
 ``VAL_FILENAME``); take the ``model`` train.py left, put it in eval mode without calling its methods, and
-record its weights' fingerprint.  ``bind_cuda`` / ``bind_cpu``: open the parent's output buffer.  ``logits``:
-``model(x)`` for the parent's input tokens (bf16 autocast), which must be a plain tensor of shape (B, T,
-vocab), written as float32 into the buffer.  ``finish``: the weights must be unchanged by the evaluation
+record its weights' fingerprint.  ``bind_cpu``: map the parent's CPU output buffer (a ``memfd`` handed over the
+socket).  ``logits``: ``model(x)`` for the parent's input tokens (bf16 autocast), which must be a plain tensor
+of shape (B, T, vocab), written as float32 into that CPU buffer -- on a GPU host too, so the result path carries
+no CUDA IPC (R1-TRACKG-AR-COND7 option A).  ``finish``: the weights must be unchanged by the evaluation
 (exit 10).  The metric is computed by the parent.
 """
 import ar_isolated as iso
@@ -138,11 +139,6 @@ def train(meta, arrays, fds):
             "tokens": served()}, {}
 
 
-def bind_cuda(meta, arrays, fds):
-    STATE["out"] = iso.cuda_open(meta["buffer"])
-    return {}, {}
-
-
 def bind_cpu(meta, arrays, fds):
     desc = meta["buffer"]
     STATE["shared"] = iso.SharedBuffer(tuple(desc["shape"]), desc["dtype"], fd=fds[0])
@@ -152,7 +148,7 @@ def bind_cpu(meta, arrays, fds):
 
 def logits(meta, arrays, fds):
     torch, model, device = STATE["torch"], STATE["model"], STATE["device"]
-    out = STATE["out"]
+    out = STATE["out"]   # float32 CPU buffer: the parent's, mapped through the memfd (no CUDA IPC)
     x = torch.from_numpy(arrays["x"].astype("int64")).to(device)
     if tuple(x.shape) != tuple(out.shape[:2]):
         fail(EXIT_BAD_EDITABLE_API, f"input batch {tuple(x.shape)} does not fit the output buffer {tuple(out.shape)}")
@@ -162,9 +158,7 @@ def logits(meta, arrays, fds):
     if type(result) is not torch.Tensor or tuple(result.shape) != tuple(out.shape):
         fail(EXIT_BAD_EDITABLE_API, f"model(x) must return a plain torch.Tensor of logits of shape {tuple(out.shape)}")
     with torch.no_grad(), torch._C.DisableTorchFunction():
-        out.copy_(result.float())
-        if out.device.type == "cuda":
-            torch.cuda.synchronize(out.device)
+        out.copy_(result.float())   # device -> host copy; synchronous, the parent's next request sees it
     return {}, {}
 
 
@@ -174,4 +168,4 @@ def finish(meta, arrays, fds):
     return {}, {}
 
 
-iso.serve({"train": train, "bind_cuda": bind_cuda, "bind_cpu": bind_cpu, "logits": logits, "finish": finish}, CONN)
+iso.serve({"train": train, "bind_cpu": bind_cpu, "logits": logits, "finish": finish}, CONN)

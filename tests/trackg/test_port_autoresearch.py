@@ -35,10 +35,24 @@ def test_static():
     ps.check_static(NODE, NODES)
 
 
-def test_shared_dev_shm_for_cuda_ipc():
-    """The worker hands logits to the parent through CUDA IPC, whose reference counters live in /dev/shm, so
-    this node (alone among the ports) opts out of the private /dev/shm; its runs record the exception."""
-    assert ps.load(NODE).isolation.shared_dev_shm is True
+def test_result_path_uses_the_cpu_buffer_not_cuda_ipc():
+    """R1-TRACKG-AR-COND7 option A: the worker hands logits to the parent through the CPU ``memfd`` buffer
+    (``iso.SharedBuffer`` + ``bind_cpu`` + SCM_RIGHTS), never CUDA IPC, on a GPU host too; the node therefore
+    keeps the private ``/dev/shm`` (no ``shared_dev_shm`` exception, ``exceptions: []`` in the run record).
+    ``cuda_open`` stays in the frozen library for compatibility and is initialized before use."""
+    assert ps.load(NODE).isolation.shared_dev_shm is False
+    node = ps.node_dir(NODE)
+    parent = (node / "run_fixed_budget.py").read_text()
+    worker = (node / "ar_worker.py").read_text()
+    for text, what in ((parent, "the frozen parent"), (worker, "the frozen worker")):
+        assert "cuda_share" not in text and "bind_cuda" not in text, what
+        assert "cuda_open" not in text, what
+    assert "iso.SharedBuffer(" in parent and '"bind_cpu"' in parent and "snapshot()" in parent
+    assert "iso.SharedBuffer(" in worker and "def bind_cpu(" in worker and "out.copy_(result.float())" in worker
+    library = ps.NODE_LIB_MASTER.read_text()
+    open_body = library[library.index("def cuda_open("):]
+    open_body = open_body[:open_body.index("\ndef ")]
+    assert "torch.cuda.init()" in open_body
 
 
 def test_manifest_complete():
