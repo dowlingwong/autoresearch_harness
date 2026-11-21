@@ -206,3 +206,22 @@ def test_memory_mode_none_maps_to_no_history(tmp_path):
     rec = pg.run_pilot(pilot(memory_mode="none"), HARNESS, tmp_path / "out", gpu_uuids=("GPU-12345678-aaaa",),
                        cpu_list=(0,), chat=lambda payload: ("{}", {}), campaign=fake_campaign)
     assert rec["stop"] is None and seen == [False, False]
+
+
+def test_cli_explicit_gpu_for_a_direct_host_run(tmp_path, monkeypatch):
+    from autoresearch.trackg import pilot_g4 as pg
+    for name in ("NVIDIA_VISIBLE_DEVICES", "_CONDOR_AssignedGPUs", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(name, raising=False)
+    seen = {}
+    monkeypatch.setattr(pg, "validate_pilot", lambda data: {"node": "mlab_cifar10"})
+    monkeypatch.setattr(pg.gpu_identity, "resolve_explicit_on_host", lambda uuid, env: ((uuid,), {}))
+    monkeypatch.setattr(pg, "run_pilot", lambda data, root, out, *, gpu_uuids, cpu_list: seen.update(g=gpu_uuids)
+                        or {"stop": None})
+    monkeypatch.setattr(pg, "summarise", lambda out: {"proposals": 0})
+    path = tmp_path / "pilot.json"
+    path.write_text("{}")
+    uuid = "GPU-4d623e76-7587-ee15-a633-46f60d220d94"
+    assert pg.main(["run", "--pilot", str(path), "--harness-root", str(tmp_path), "--out", str(tmp_path / "o"),
+                    "--gpu-uuid", uuid]) == 0
+    assert seen["g"] == (uuid,)
+

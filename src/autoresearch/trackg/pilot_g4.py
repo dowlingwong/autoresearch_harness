@@ -2,8 +2,10 @@
 
 R1-TRACKG-G3-EARLY (20 Nov 2026): the G.4 pilot runs on three T1 nodes (``mlab_cifar10``, ``mlgym_fmnist`` and
 ``autoresearch_fixedtokens``, or ``mlgym_breakout_minatar`` while autoresearch is not ready) on NEMO2 H200
-(R1-T1-HOST-H200).  The paper repository's job (``sweep2/g4/``) starts the pinned llama-server (main proposer
-``gemma4_31b``, thinking off) and writes the pilot file; this module runs, for one node, a few independent
+(R1-T1-HOST-H200; since 21 Nov R1-T1-HOST-TASL: the worker on TASL-2, the proposer's llama-server on TASL-7, reached
+over Tailscale; ``--gpu-uuid`` names the leased worker GPU).  The paper repository's job (``sweep2/g4/``, or
+``sweep2/t1_tasl/`` for the TASL pair) provides the pinned llama-server (main proposer ``gemma4_31b``, thinking off)
+and writes the pilot file; this module runs, for one node, a few independent
 campaign instances of :func:`~autoresearch.trackg.campaign_v2_diff.run_v2_diff_campaign`
 (``manager_proposal/v2-diff``), with:
 
@@ -259,6 +261,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run"); r.add_argument("--pilot", required=True, type=Path)
     r.add_argument("--harness-root", required=True, type=Path); r.add_argument("--out", required=True, type=Path)
+    r.add_argument("--gpu-uuid", default=None,
+                   help="direct host run (R1-T1-HOST-TASL): the full UUID of the leased worker GPU")
     s = sub.add_parser("summarise"); s.add_argument("out", type=Path)
     a = ap.parse_args(argv)
     if a.cmd == "summarise":
@@ -267,7 +271,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         data = validate_pilot(json.loads(a.pilot.read_text()))
         import os
-        gpus, _ = gpu_identity.resolve_from_job(os.environ)
+        if a.gpu_uuid is not None:
+            gpus, _ = gpu_identity.resolve_explicit_on_host(a.gpu_uuid, os.environ)
+        else:
+            gpus, _ = gpu_identity.resolve_from_job(os.environ)
     except (PilotStop, gpu_identity.GpuIdentityError, OSError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
