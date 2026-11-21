@@ -56,6 +56,12 @@ NODE_LIB_EARLIER = {
     "37d99ab092c73d885b95daa443d0b145148f0b02a6ff464e055704c39e48b610":
         "master at c025f89a (before R1-TRACKG-AR-COND7 option A); frozen in the seven T1 nodes' pins",
 }
+# the nodes allowed to carry each earlier master (no other node, and no future node, may)
+NODE_LIB_EARLIER_NODES = {
+    "37d99ab092c73d885b95daa443d0b145148f0b02a6ff464e055704c39e48b610": frozenset({
+        "mlab_cifar10", "mlab_imdb", "mlab_ogbn_arxiv", "mlgym_breakout_minatar", "mlgym_cifar10", "mlgym_fmnist",
+        "mlgym_houseprice"}),
+}
 NODE_LIB_CURRENT_ONLY = {"autoresearch_fixedtokens"}       # nodes that must carry the current master
 ISOLATED_FROZEN = ("run_fixed_budget.py", "ar_worker.py", "ar_parent.py", "ar_isolated.py")
 METRIC_PREFIXES = ("AR_METRIC", "AR_TEST")
@@ -197,12 +203,14 @@ def _imports(tree) -> set[str]:
 
 
 def node_lib_copy_ok(node: str, copy_bytes: bytes) -> bool:
-    """A node's ``ar_isolated.py`` is the current master, or (for a node not in NODE_LIB_CURRENT_ONLY) a declared
-    earlier master version."""
+    """A node's ``ar_isolated.py`` is the current master, or a declared earlier master version that the node is named
+    for (NODE_LIB_EARLIER_NODES; never a node in NODE_LIB_CURRENT_ONLY)."""
     import hashlib
     if copy_bytes == NODE_LIB_MASTER.read_bytes():
         return True
-    return node not in NODE_LIB_CURRENT_ONLY and hashlib.sha256(copy_bytes).hexdigest() in NODE_LIB_EARLIER
+    digest = hashlib.sha256(copy_bytes).hexdigest()
+    return node not in NODE_LIB_CURRENT_ONLY and digest in NODE_LIB_EARLIER and \
+        node in NODE_LIB_EARLIER_NODES.get(digest, frozenset())
 
 
 def check_isolated(node: str) -> None:
