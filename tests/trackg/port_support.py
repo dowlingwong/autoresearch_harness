@@ -48,6 +48,15 @@ from autoresearch.trackg.smoke import run_smoke_campaign
 ROOT = Path(__file__).resolve().parents[2]
 SHARED_FROZEN = ("ar_data.py", "ar_fixed_loop.py", "ar_parent.py", "ar_isolated.py")
 NODE_LIB_MASTER = ROOT / "src" / "autoresearch" / "trackg" / "node_lib" / "ar_isolated.py"
+# Earlier master versions a node may still carry in its frozen pin (sha256 -> where it comes from). A node's copy is part
+# of its committed pin, so a master change is not copied into nodes whose pins are signed for a table: R1-TRACKG-AR-COND7
+# option A changed the master (a docstring, and torch.cuda.init() in cuda_open, which these nodes never call) for
+# autoresearch_fixedtokens only; the seven T1 nodes keep the c025f89a master, as their pins in the signed G.1b spec do.
+NODE_LIB_EARLIER = {
+    "37d99ab092c73d885b95daa443d0b145148f0b02a6ff464e055704c39e48b610":
+        "master at c025f89a (before R1-TRACKG-AR-COND7 option A); frozen in the seven T1 nodes' pins",
+}
+NODE_LIB_CURRENT_ONLY = {"autoresearch_fixedtokens"}       # nodes that must carry the current master
 ISOLATED_FROZEN = ("run_fixed_budget.py", "ar_worker.py", "ar_parent.py", "ar_isolated.py")
 METRIC_PREFIXES = ("AR_METRIC", "AR_TEST")
 DATA_SUFFIXES = {".npy", ".npz", ".parquet", ".csv", ".pkl", ".pt", ".pth", ".safetensors", ".bin", ".arrow",
@@ -187,6 +196,15 @@ def _imports(tree) -> set[str]:
     return names
 
 
+def node_lib_copy_ok(node: str, copy_bytes: bytes) -> bool:
+    """A node's ``ar_isolated.py`` is the current master, or (for a node not in NODE_LIB_CURRENT_ONLY) a declared
+    earlier master version."""
+    import hashlib
+    if copy_bytes == NODE_LIB_MASTER.read_bytes():
+        return True
+    return node not in NODE_LIB_CURRENT_ONLY and hashlib.sha256(copy_bytes).hexdigest() in NODE_LIB_EARLIER
+
+
 def check_isolated(node: str) -> None:
     """R1-HARNESS-ISOLATION: the node runs as a frozen parent that never imports editable code and writes the
     result lines only to the result channel; the frozen worker entry alone imports the editable code."""
@@ -196,8 +214,9 @@ def check_isolated(node: str) -> None:
     assert spec.isolation.entry == "run_fixed_budget.py" and "{budget}" in spec.isolation.args
     for name in ISOLATED_FROZEN:
         assert name in spec.frozen_paths and (base / name).is_file(), f"isolated node lacks frozen {name}"
-    assert (base / "ar_isolated.py").read_bytes() == NODE_LIB_MASTER.read_bytes(), \
-        "ar_isolated.py differs from the harness master (autoresearch/trackg/node_lib/ar_isolated.py)"
+    assert node_lib_copy_ok(node, (base / "ar_isolated.py").read_bytes()), \
+        "ar_isolated.py is neither the harness master (autoresearch/trackg/node_lib/ar_isolated.py) nor a declared " \
+        "earlier master version allowed for this node (NODE_LIB_EARLIER)"
     editable_modules = {Path(rel).stem for rel in spec.editable_paths if rel.endswith(".py")}
     parent_text = (base / "run_fixed_budget.py").read_text()
     parent = ast.parse(parent_text)
