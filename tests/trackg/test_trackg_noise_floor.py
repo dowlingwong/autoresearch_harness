@@ -285,3 +285,46 @@ def test_cli_refuses_without_an_htcondor_gpu(tmp_path, monkeypatch):
     bad = chunk(isolation_waivers={"root": "x"})
     path.write_text(json.dumps(bad))
     assert nf.main(["--chunk", str(path), "--harness-root", str(HARNESS), "--out", str(tmp_path / "o")]) == 2
+
+
+SMI = ("GPU 0: NVIDIA GeForce RTX 4090 (UUID: GPU-4d623e76-7587-ee15-a633-46f60d220d94)\n")
+UUID = "GPU-4d623e76-7587-ee15-a633-46f60d220d94"
+
+
+def test_explicit_gpu_for_a_direct_host_run():
+    from autoresearch.trackg import gpu_identity as gi
+    assert gi.resolve_explicit(UUID, {}, SMI)[0] == (UUID,)
+    for env, match in (({"NVIDIA_VISIBLE_DEVICES": "GPU-4d623e76"}, "scheduler variables"),
+                       ({"CUDA_VISIBLE_DEVICES": "0"}, "must be empty")):
+        with pytest.raises(gi.GpuIdentityError, match=match):
+            gi.resolve_explicit(UUID, env, SMI)
+    with pytest.raises(gi.GpuIdentityError, match="full GPU UUID"):
+        gi.resolve_explicit("GPU-4d623e76", {}, SMI)
+    with pytest.raises(gi.GpuIdentityError, match="exactly once"):
+        gi.resolve_explicit("GPU-00000000-0000-0000-0000-000000000000", {}, SMI)
+
+
+def test_cli_explicit_gpu_and_cpu_only_chunks(tmp_path, monkeypatch):
+    for name in ("NVIDIA_VISIBLE_DEVICES", "_CONDOR_AssignedGPUs", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(name, raising=False)
+    seen = {}
+
+    def fake_run_chunk(chunk_, root, out, *, gpu_uuids, cpu_list, **kw):
+        seen["gpus"] = gpu_uuids
+        return {"node": chunk_.node, "chunk_id": None, "expected_runs": 1, "written_rows": 1, "stop": None}
+    monkeypatch.setattr(nf, "run_chunk", fake_run_chunk)
+    monkeypatch.setattr(nf.gpu_identity, "resolve_explicit_on_host",
+                        lambda uuid, env: nf.gpu_identity.resolve_explicit(uuid, env, SMI))
+    path = tmp_path / "chunk.json"
+    path.write_text(json.dumps(chunk()))
+    args = ["--chunk", str(path), "--harness-root", str(HARNESS), "--out", str(tmp_path / "o")]
+    assert nf.main(args + ["--gpu-uuid", UUID]) == 0 and seen["gpus"] == (UUID,)
+    path.write_text(json.dumps(chunk(device="cpu")))
+    assert nf.main(args) == 0 and seen["gpus"] == ()
+    assert nf.main(args + ["--gpu-uuid", UUID]) == 2              # a CPU-only chunk takes no GPU
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    assert nf.main(args) == 2
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES")
+    path.write_text(json.dumps(chunk(device="tpu")))
+    assert nf.main(args) == 2
+

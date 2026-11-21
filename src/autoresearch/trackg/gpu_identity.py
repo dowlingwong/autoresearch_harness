@@ -123,3 +123,34 @@ def resolve_from_job(env: Mapping[str, str], runner: Callable[..., subprocess.Co
     if res.returncode != 0:
         raise GpuIdentityError(f"nvidia-smi -L exited {res.returncode}: {res.stderr.strip()[:200]}")
     return resolve(env, res.stdout)
+
+
+def resolve_explicit(uuid: str, env: Mapping[str, str], smi_text: str) -> tuple[tuple[str, ...], dict]:
+    """A direct host run (R1-T1-HOST-TASL): the operator names one full GPU UUID. It must be listed exactly once by
+    ``nvidia-smi -L``; no scheduler assignment may be set (``NVIDIA_VISIBLE_DEVICES``, ``_CONDOR_AssignedGPUs``), so
+    the two ways of naming a GPU never mix; ``CUDA_VISIBLE_DEVICES``, if set, must be empty (the runner sets it for
+    its child)."""
+    if not _UUID_FORM.match(uuid or "") or len(uuid) < 40:
+        raise GpuIdentityError(f"--gpu-uuid {uuid!r} must be a full GPU UUID")
+    present = [name for name in SOURCES if env.get(name)]
+    if present:
+        raise GpuIdentityError(f"a direct host run names its GPU explicitly; scheduler variables are set: {present}")
+    if env.get("CUDA_VISIBLE_DEVICES", "") != "":
+        raise GpuIdentityError("CUDA_VISIBLE_DEVICES must be empty for a direct host run (the runner sets it)")
+    listed = parse_nvidia_smi_l(smi_text)
+    if listed.count(uuid) != 1:
+        raise GpuIdentityError(f"{uuid} is not listed exactly once by nvidia-smi -L ({listed})")
+    return (uuid,), {"explicit": uuid, "nvidia_smi_uuids": listed}
+
+
+def resolve_explicit_on_host(uuid: str, env: Mapping[str, str],
+                             runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+                             nvidia_smi: Sequence[str] = ("nvidia-smi", "-L")) -> tuple[tuple[str, ...], dict]:
+    try:
+        res = runner(list(nvidia_smi), capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise GpuIdentityError(f"nvidia-smi -L failed: {exc}") from exc
+    if res.returncode != 0:
+        raise GpuIdentityError(f"nvidia-smi -L exited {res.returncode}: {res.stderr.strip()[:200]}")
+    return resolve_explicit(uuid, env, res.stdout)
+

@@ -171,6 +171,8 @@ def validate_chunk(data: dict[str, Any]) -> Chunk:
     for key in ("cgroup_parent", "interpreter", "memory_limit"):
         if not isinstance(data.get(key), str) or not data[key].strip():
             raise NoiseFloorStop(f"STOP: chunk.{key} must be a non-empty string")
+    if data.get("device", "gpu") not in ("gpu", "cpu"):
+        raise NoiseFloorStop("STOP: chunk.device must be gpu or cpu (a CPU-only node such as mlgym_houseprice)")
     if data.get("isolation_waivers", {}) != {}:
         raise NoiseFloorStop("STOP: a G.1b chunk carries no isolation waiver")
     return Chunk(data)
@@ -356,12 +358,25 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--chunk", required=True, type=Path)
     ap.add_argument("--harness-root", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
+    ap.add_argument("--gpu-uuid", default=None,
+                    help="direct host run (R1-T1-HOST-TASL): the full UUID of the leased GPU; without it the GPU is "
+                         "resolved from the HTCondor assignment")
     a = ap.parse_args(argv)
     try:
         chunk = validate_chunk(json.loads(a.chunk.read_text()))
-        gpus, note = gpu_identity.resolve_from_job(os.environ)
-        if len(gpus) != 1:
-            raise NoiseFloorStop(f"STOP: one GPU per G.1b job, got {gpus}")
+        if chunk.data.get("device", "gpu") == "cpu":
+            if a.gpu_uuid is not None or any(os.environ.get(n) for n in gpu_identity.SOURCES):
+                raise NoiseFloorStop("STOP: a CPU-only chunk runs without any GPU")
+            if os.environ.get("CUDA_VISIBLE_DEVICES", "") != "":
+                raise NoiseFloorStop("STOP: a CPU-only chunk needs CUDA_VISIBLE_DEVICES empty")
+            gpus = ()
+        else:
+            if a.gpu_uuid is not None:
+                gpus, note = gpu_identity.resolve_explicit_on_host(a.gpu_uuid, os.environ)
+            else:
+                gpus, note = gpu_identity.resolve_from_job(os.environ)
+            if len(gpus) != 1:
+                raise NoiseFloorStop(f"STOP: one GPU per G.1b job, got {gpus}")
     except (NoiseFloorStop, gpu_identity.GpuIdentityError, OSError, ValueError) as exc:
         print(f"{exc}", file=sys.stderr)
         return 2
