@@ -54,6 +54,7 @@ CONDITIONS = ("default", "default_repeat", "train", "split", "joint")
 SEED_CONDITIONS = ("train", "split", "joint")
 SEEDS_PER_CONDITION = 30
 SEED_BASES = {"train": 1001, "split": 2001, "joint": 3001}
+CPU_ONLY_NODES = frozenset({"mlgym_houseprice"})  # the only port node that runs without a GPU (U4 census)
 RESERVED_SEEDS = (range(7001, 7011), range(9001, 10000))  # B.2 audit seeds and exam seeds: never used here
 _SHA = re.compile(r"^[0-9a-f]{64}$")
 _NODE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
@@ -173,6 +174,10 @@ def validate_chunk(data: dict[str, Any]) -> Chunk:
             raise NoiseFloorStop(f"STOP: chunk.{key} must be a non-empty string")
     if data.get("device", "gpu") not in ("gpu", "cpu"):
         raise NoiseFloorStop("STOP: chunk.device must be gpu or cpu (a CPU-only node such as mlgym_houseprice)")
+    if data.get("device", "gpu") == "cpu" and node not in CPU_ONLY_NODES:
+        raise NoiseFloorStop(f"STOP: {node} is not a CPU-only node; only {sorted(CPU_ONLY_NODES)} run without a GPU")
+    if not isinstance(data.get("stop_on_timeout", False), bool):
+        raise NoiseFloorStop("STOP: chunk.stop_on_timeout must be true or false")
     if data.get("isolation_waivers", {}) != {}:
         raise NoiseFloorStop("STOP: a G.1b chunk carries no isolation waiver")
     return Chunk(data)
@@ -341,6 +346,12 @@ def run_chunk(chunk: Chunk, harness_root: Path, out_dir: Path, *, gpu_uuids: tup
                 record["written_rows"] += 1
                 record["successful_rows"] += int(row["success"])
                 shutil.rmtree(result.work_dir, ignore_errors=True)  # the node copy; the record and log stay
+                if chunk.data.get("stop_on_timeout") and str(row.get("failure") or "").startswith("divergent:timeout"):
+                    # direct host runs on another GPU model (R1-T1-HOST-TASL): the census timing is an estimate, so
+                    # the first run that reaches the declared timeout stops the chunk for the author
+                    record["stop_kind"] = "timeout"
+                    raise NoiseFloorStop(f"STOP: {result.run_id} reached the declared timeout "
+                                         f"(3 x {chunk.data['measured_run_seconds']} s) and stop_on_timeout is set")
     except (NoiseFloorStop, IntegrityError, RunnerError, gpu_identity.GpuIdentityError) as exc:
         record["stop"] = f"{type(exc).__name__}: {exc}"
     record["finished_epoch"] = clock()

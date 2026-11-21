@@ -263,6 +263,21 @@ def test_infrastructure_failure_stops_divergent_is_a_failed_row(tmp_path, fake):
     assert rec["written_rows"] == 5 and "infrastructure failure" in rec["stop"]
 
 
+def test_stop_on_timeout_stops_right_after_the_first_timeout_row(tmp_path, fake):
+    div = effective_record()
+    div["outcome"] = {"kind": "divergent", "value": None, "reason": "timeout"}
+    fake.script["c1_train_t1001_sd"] = div
+    rec = nf.run_chunk(nf.validate_chunk(chunk(stop_on_timeout=True)), HARNESS, tmp_path / "out",
+                       gpu_uuids=("GPU-12345678-aaaa",), cpu_list=(0,), runner_factory=fake)
+    assert rec["written_rows"] == 2 and rec["stop_kind"] == "timeout" and "declared timeout" in rec["stop"]
+    assert _rows(tmp_path / "out")[1]["failure"] == "divergent:timeout"      # the evidence row is kept
+    assert len(fake.calls) == 2
+    with pytest.raises(nf.NoiseFloorStop, match="stop_on_timeout"):
+        nf.validate_chunk(chunk(stop_on_timeout="yes"))
+    with pytest.raises(nf.NoiseFloorStop, match="not a CPU-only node"):
+        nf.validate_chunk(chunk(device="cpu"))
+
+
 def test_unapplied_edit_and_deadline_stop(tmp_path, fake):
     refused = effective_record()
     refused["executed"] = False
@@ -320,6 +335,8 @@ def test_cli_explicit_gpu_and_cpu_only_chunks(tmp_path, monkeypatch):
     args = ["--chunk", str(path), "--harness-root", str(HARNESS), "--out", str(tmp_path / "o")]
     assert nf.main(args + ["--gpu-uuid", UUID]) == 0 and seen["gpus"] == (UUID,)
     path.write_text(json.dumps(chunk(device="cpu")))
+    assert nf.main(args) == 2                                      # mlab_cifar10 is not a CPU-only node
+    monkeypatch.setattr(nf, "CPU_ONLY_NODES", frozenset({NODE}))   # as for mlgym_houseprice
     assert nf.main(args) == 0 and seen["gpus"] == ()
     assert nf.main(args + ["--gpu-uuid", UUID]) == 2              # a CPU-only chunk takes no GPU
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
