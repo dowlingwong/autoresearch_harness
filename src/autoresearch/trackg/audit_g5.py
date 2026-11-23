@@ -14,7 +14,10 @@ The contract (``g5_job.engine_contract()``), item by item:
   (``manager_proposal/v2-diff``) as G.4 does, and writes ``<out>/instance_<k>_<mode>/campaign_ledger.jsonl`` (the
   G.4 ledger schema ``trackg_v2_diff_campaign_ledger/v1``; every executed run record carries ``executed`` and
   ``elapsed_seconds_info_only``, every manager call its ``request`` with ``cache_prompt: false``) and
-  ``<out>/campaign_record.json`` (``stop``).  Each instance has training seed = split seed = manager seed =
+  ``<out>/campaign_record.json`` (``stop``).  Every run record in a ledger that has a code state carries
+  ``code_state_sha256`` at its top level, a not-run duplicate or inert diff included (:class:`G5CampaignRunner`
+  lifts it from the diff provenance; the paper's assembly reads it there).  Each instance has training seed = split
+  seed = manager seed =
   5100 + k, inside 5101-5112, and k must be one of the wave's instances (wave 1: 1-4; wave 2: 5-12).
 * A reply whose completion reached the cap (``usage.completion_tokens >= max_tokens``, the counting rule of the
   job's diagnostics) is an ``invalid_proposal`` (R1-EXAM-B1-TRUNCATION-INVALID): :class:`TruncationInvalidManager`
@@ -190,7 +193,8 @@ def resolve_gpus(node: str, gpu_uuid: str | None, env: Mapping[str, str],
     """A direct host run on TASL-2 (R1-T1-HOST-TASL): a GPU node names its leased GPU with ``--gpu-uuid``; a CPU-only
     node (noise_floor's set) runs without any GPU and with ``CUDA_VISIBLE_DEVICES`` empty."""
     if gpu_uuid is None:
-        _need(node in CPU_ONLY_NODES, f"STOP: {node} needs --gpu-uuid (only {sorted(CPU_ONLY_NODES)} run without a GPU)")
+        _need(node in CPU_ONLY_NODES,
+              f"STOP: {node} needs --gpu-uuid (only {sorted(CPU_ONLY_NODES)} run without a GPU)")
         _need(not any(env.get(name) for name in gpu_identity.SOURCES)
               and env.get("CUDA_VISIBLE_DEVICES", "") == "",
               "STOP: a CPU-only run needs no scheduler GPU variable and CUDA_VISIBLE_DEVICES empty")
@@ -204,7 +208,8 @@ def resolve_gpus(node: str, gpu_uuid: str | None, env: Mapping[str, str],
 # =============================================================================================== campaign
 def validate_campaign(data: dict[str, Any]) -> dict[str, Any]:
     """Fail-closed validation of a ``trackg_g5_campaign/v1`` file (``g5_job.campaign_file`` writes it)."""
-    _need(isinstance(data, dict) and data.get("schema") == CAMPAIGN_SCHEMA, f"STOP: campaign file must be {CAMPAIGN_SCHEMA}")
+    _need(isinstance(data, dict) and data.get("schema") == CAMPAIGN_SCHEMA,
+          f"STOP: campaign file must be {CAMPAIGN_SCHEMA}")
     _need(set(data) == CAMPAIGN_KEYS, f"STOP: campaign file keys differ from {CAMPAIGN_SCHEMA}: "
                                       f"{sorted(set(data) ^ CAMPAIGN_KEYS)}")
     _check_common(data)
@@ -224,7 +229,8 @@ def validate_campaign(data: dict[str, Any]) -> dict[str, Any]:
     seen: set[tuple[int, str]] = set()
     by_mode: dict[str, set[int]] = {}
     for inst in instances:
-        _need(isinstance(inst, dict) and set(inst) == INSTANCE_KEYS, f"STOP: an instance has exactly {sorted(INSTANCE_KEYS)}")
+        _need(isinstance(inst, dict) and set(inst) == INSTANCE_KEYS,
+              f"STOP: an instance has exactly {sorted(INSTANCE_KEYS)}")
         k, mode = inst["instance"], inst["memory_mode"]
         _need(type(k) is int and k in wave, f"STOP 10: instance {k!r} is not an instance of wave {data['wave']}")
         _need(mode in MEMORY_MODES, f"STOP: memory_mode must be one of {sorted(MEMORY_MODES)}")
@@ -232,7 +238,8 @@ def validate_campaign(data: dict[str, Any]) -> dict[str, Any]:
             seed = inst[key]
             _need(type(seed) is int and seed in INSTANCE_SEEDS,
                   f"STOP 10: {key} {seed!r} is outside the G.5 instance seeds 5101-5112")
-            _need(seed == INSTANCE_SEED_BASE + k, f"STOP 10: instance {k} has {key} {seed}, not {INSTANCE_SEED_BASE + k}")
+            _need(seed == INSTANCE_SEED_BASE + k,
+                  f"STOP 10: instance {k} has {key} {seed}, not {INSTANCE_SEED_BASE + k}")
         _need((k, mode) not in seen, f"STOP: instance {k} appears twice in memory mode {mode}")
         seen.add((k, mode))
         by_mode.setdefault(mode, set()).add(k)
@@ -244,6 +251,24 @@ def validate_campaign(data: dict[str, Any]) -> dict[str, Any]:
 def instance_dir_name(inst: dict[str, Any]) -> str:
     """``instance_<k>_<mode>``: the member name the job's ledger pattern reads."""
     return f"instance_{inst['instance']}_{inst['memory_mode']}"
+
+
+class G5CampaignRunner(WorkingCopyRunner):
+    """The campaign's runner with one addition for the G.5 ledgers: a diff that was not run (a duplicate, inert or
+    refused diff) gets its code state from the diff provenance at the top level of the run record
+    (``code_state_sha256``, ``code_state_raw_sha256``, and ``code_state_source: "diff_provenance"``), where an executed
+    run already has it.  A refused diff whose provenance has no code state gets none.  ``run_record.json`` on disk
+    is the runner's own record, unchanged."""
+
+    def run(self, run_id, limits, **kw):  # noqa: ANN001 - the parent's signature
+        result = super().run(run_id, limits, **kw)
+        rec = result.record
+        diff = rec.get("diff") or {}
+        if not rec.get("executed") and "code_state_sha256" not in rec and diff.get("code_state_sha256"):
+            rec["code_state_sha256"] = diff["code_state_sha256"]
+            rec["code_state_raw_sha256"] = diff.get("code_state_raw_sha256")
+            rec["code_state_source"] = "diff_provenance"
+        return result
 
 
 class TruncationInvalidManager(V2DiffManager):
@@ -296,7 +321,7 @@ def run_campaign(data: dict[str, Any], harness_root: Path, out_dir: Path, *, gpu
             try:
                 campaign(spec, node_dir, out_dir / instance_dir_name(inst), manager, limits, data["budget"],
                          enable_v2_diff=True, train_seed=inst["train_seed"], split_seed=inst["split_seed"],
-                         interpreter=data["interpreter"], record_gate=gate)
+                         interpreter=data["interpreter"], record_gate=gate, runner_factory=G5CampaignRunner)
             finally:   # a STOPped instance still counts its time
                 entry["wall_seconds"] = round(clock() - started, 1)
     except (G5EngineStop, V2DiffCampaignError, ManagerTransportStop, IntegrityError, RunnerError,
@@ -318,12 +343,14 @@ def audit_seeds(k: int) -> tuple[list[int], list[int]]:
 def validate_chunk(data: dict[str, Any]) -> dict[str, Any]:
     """Fail-closed validation of a ``trackg_g5_audit_chunk/v1`` file (``g5_job.audit_chunk_file`` writes it)."""
     _need(isinstance(data, dict) and data.get("schema") == CHUNK_SCHEMA, f"STOP: chunk file must be {CHUNK_SCHEMA}")
-    _need(set(data) == CHUNK_KEYS, f"STOP: chunk file keys differ from {CHUNK_SCHEMA}: {sorted(set(data) ^ CHUNK_KEYS)}")
+    _need(set(data) == CHUNK_KEYS,
+          f"STOP: chunk file keys differ from {CHUNK_SCHEMA}: {sorted(set(data) ^ CHUNK_KEYS)}")
     _check_common(data)
     _need(type(data["chunk"]) is int and data["chunk"] >= 0, "STOP: chunk must be a non-negative integer")
     label, evaluation = audit_seeds(data["K"])
     allowed = set(label) | set(evaluation)
-    _need(data["split_policy"] == "vary", "STOP: G.5 audits vary the split seed with the audit seed (split_policy vary)")
+    _need(data["split_policy"] == "vary",
+          "STOP: G.5 audits vary the split seed with the audit seed (split_policy vary)")
     _need(data["record_gate"] == "noise_floor.check_effective", "STOP: the record gate is noise_floor.check_effective")
     units = data["units"]
     _need(isinstance(units, list), "STOP: units must be a list")
@@ -540,7 +567,8 @@ def run_audit(data: dict[str, Any], harness_root: Path, out_dir: Path, *, gpu_uu
                           f"STOP: integrity: run {n + 1} ran another code state than the planned unit's")
                     outcome, attribution = attribute(result.outcome, before, after)
                     shutil.rmtree(result.work_dir, ignore_errors=True)   # the node copy; record and log stay
-                    base = {"run_id": result.run_id, "executed": True, "code_state_sha256": rec.get("code_state_sha256"),
+                    base = {"run_id": result.run_id, "executed": True,
+                            "code_state_sha256": rec.get("code_state_sha256"),
                             "record_sha256": _record_sha(result), "frozen_pin_sha256": rec.get("frozen_pin_sha256"),
                             "elapsed_seconds_info_only": rec.get("elapsed_seconds_info_only"),
                             "isolation": _isolation_block(rec), "attribution": attribution}
