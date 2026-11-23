@@ -255,6 +255,147 @@ def test_truncation_is_an_invalid_proposal(tmp_path):
     assert m.propose(spec, root / NODE_REL, [], 4)[0] is None
 
 
+# =============================================================================================== campaign deadline (M1)
+class Clock:
+    def __init__(self, t=0.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+
+class TimedChat(ScriptedChat):
+    """A scripted LLM whose every call takes ``seconds`` of the fake clock."""
+
+    def __init__(self, replies, clock, seconds):
+        super().__init__(replies)
+        self.clock, self.seconds, self.started = clock, seconds, []
+
+    def __call__(self, payload):
+        self.started.append(self.clock.t)
+        self.clock.t += self.seconds
+        return super().__call__(payload)
+
+
+def fake_campaign_runs(monkeypatch, clock, seconds, outcome=lambda n: RunOutcome.ok(0.5), log="AR_DEVICE cpu\n"):
+    """Replace the real run (WorkingCopyRunner.run, which G5CampaignRunner calls) with one that copies the incumbent,
+    applies the diff for real and takes ``seconds`` of the fake clock; returns the list of run start times."""
+    starts = []
+
+    def run(self, run_id, limits, *, train_seed=None, split_seed=None, diff_text=None, evaluated=None,
+            register_evaluated=True, keep_code_snapshot=True, interpreter="python3", expected_incumbent_state=None):
+        run_dir = self.runs_root / run_id
+        work = run_dir / "work"
+        shutil.copytree(self.node_root, work, symlinks=True)
+        base = self.spec.to_base_node_spec()
+        record = {"run_id": run_id, "diff": None}
+        record["incumbent_code_state_sha256"], _ = code_state_hashes(work, base)
+        if diff_text is not None:
+            app = apply_diff(work, diff_text, base, evaluated=evaluated)
+            record["diff"] = {"status": app.status, **app.provenance}
+            if not app.applied:
+                record.update(executed=False, outcome=None)
+                return RunResult(run_id, run_dir, work, None, record)
+        record["code_state_sha256"], record["code_state_raw_sha256"] = code_state_hashes(work, base)
+        starts.append(clock.t)
+        clock.t += seconds
+        result_outcome = outcome(len(starts))
+        record.update(executed=True, outcome=result_outcome.to_dict(), elapsed_seconds_info_only=float(seconds),
+                      isolation={"effective": True, "waivers": {}, "exceptions": []})
+        (run_dir / "run.log").write_text(log)
+        return RunResult(run_id, run_dir, work, result_outcome, record, work)
+    monkeypatch.setattr(WorkingCopyRunner, "run", run)
+    return starts
+
+
+DEADLINE_REPLIES = [(reply(D_HALF), 300), (reply(D_EXTRA0), 300), (reply(D_INERT0), 300)] * 4
+
+
+@pytest.mark.parametrize("llm_seconds, runs, calls", [
+    (10.0, [0.0, 60.0, 120.0], 2),     # the 3rd manager call is refused: 170 + 120 + 120 > 400
+    (300.0, [0.0], 1),                  # the 1st call ends at 350; its run is refused: 350 + 120 > 400
+])
+def test_campaign_deadline_no_run_or_call_starts_that_could_end_past_it(tmp_path, monkeypatch, llm_seconds, runs,
+                                                                        calls):
+    """census 20 s: a run needs 3 x 20 + 60 = 120 s left, a manager call 120 s more; runs take 50 s of the clock."""
+    root = make_harness(tmp_path / "h")
+    clock = Clock(0.0)
+    starts = fake_campaign_runs(monkeypatch, clock, 50.0)
+    chat = TimedChat(DEADLINE_REPLIES, clock, llm_seconds)
+    data = A.validate_campaign(campaign_file(root, budget=3, deadline_epoch=400.0))
+    rec = A.run_campaign(data, root, tmp_path / "out", gpu_uuids=(), cpu_list=(0,), chat=chat,
+                         gate=lambda r: None, clock=clock)
+    assert rec["stop_kind"] == "deadline" and "deadline" in rec["stop"]
+    assert starts == runs and len(chat.started) == calls
+    assert all(t + 3 * 20.0 + 60.0 <= 400.0 for t in starts)            # no run could end past the deadline
+    assert all(t + 120.0 + 120.0 <= 400.0 for t in chat.started)
+    assert [i["instance"] for i in rec["instances"]] == [1]               # instances 2-4 never started
+    crec = json.loads((tmp_path / "out" / "campaign_record.json").read_text())
+    assert crec["stop_kind"] == "deadline" and crec["deadline_rule"].startswith("a run starts only")
+
+
+def test_campaign_deadline_before_an_instance_and_catch_all(tmp_path, monkeypatch):
+    root = make_harness(tmp_path / "h")
+    data = A.validate_campaign(campaign_file(root, budget=1, deadline_epoch=100.0))
+    rec = A.run_campaign(data, root, tmp_path / "a", gpu_uuids=(), cpu_list=(0,), chat=ScriptedChat([]),
+                         gate=lambda r: None, clock=Clock(100.0))
+    assert rec["stop_kind"] == "deadline" and rec["instances"] == []
+
+    def broken(*a, **kw):
+        raise KeyError("unforeseen")
+    rec = A.run_campaign(A.validate_campaign(campaign_file(root, budget=1)), root, tmp_path / "b", gpu_uuids=(),
+                         cpu_list=(0,), chat=ScriptedChat([]), campaign=broken, gate=lambda r: None)
+    assert rec["stop_kind"] == "error" and rec["stop"].startswith("KeyError")
+    assert json.loads((tmp_path / "b" / "campaign_record.json").read_text())["stop_kind"] == "error"
+
+
+def test_campaign_stop_kinds_from_the_ledger(tmp_path, monkeypatch):
+    root = make_harness(tmp_path / "h")
+    clock = Clock(0.0)
+    fake_campaign_runs(monkeypatch, clock, 1.0, outcome=lambda n: RunOutcome.divergent("no_metric_at_budget"))
+    data = A.validate_campaign(campaign_file(root, budget=1))
+    rec = A.run_campaign(data, root, tmp_path / "a", gpu_uuids=(), cpu_list=(0,), chat=ScriptedChat([]),
+                         gate=lambda r: None, clock=clock)
+    assert rec["stop_kind"] == "baseline_failed"
+
+    def refuse(record):
+        raise nf.UnisolatedRunError("not effective")
+    clock2 = Clock(0.0)
+    fake_campaign_runs(monkeypatch, clock2, 1.0)
+    rec = A.run_campaign(data, root, tmp_path / "b", gpu_uuids=(), cpu_list=(0,), chat=ScriptedChat([]),
+                         gate=refuse, clock=clock2)
+    assert rec["stop_kind"] == "unisolated"
+
+
+def test_campaign_attribution_memory_limit_kill_is_discarded_divergent(tmp_path, monkeypatch):
+    """Decision 4: the campaign applies attribute() too; a parent killed at the scope's memory limit is
+    discarded_divergent (registered as evaluated), not infrastructure_failure_final."""
+    root = make_harness(tmp_path / "h")
+    clock = Clock(0.0)
+    scope = tmp_path / "cg" / "job.scope"
+    scope.mkdir(parents=True)
+    (scope / "memory.max").write_text("8589934592\n")
+    (scope / "memory.events").write_text("oom 0\noom_kill 0\n")
+    killed = RunOutcome.infrastructure_failure("killed", signal=9)
+
+    def outcome(n):
+        if n == 2:                                                      # the step-1 run: the edit's OOM kill
+            (scope / "memory.events").write_text("oom 1\noom_kill 1\n")
+            return killed
+        return RunOutcome.ok(0.5)
+    fake_campaign_runs(monkeypatch, clock, 1.0, outcome=outcome)
+    data = A.validate_campaign(campaign_file(root, budget=2, cgroup_parent=str(scope)))
+    chat = ScriptedChat([(reply(D_HALF), 300), (reply(D_HALF), 300)] + [(reply(D_EXTRA0), 300)] * 6)
+    rec = A.run_campaign(data, root, tmp_path / "out", gpu_uuids=(), cpu_list=(0,), chat=chat,
+                         gate=lambda r: None, clock=clock)
+    assert rec["stop"] is None and rec["memory_events_cgroup"] == str(scope)
+    led = [json.loads(x) for x in (tmp_path / "out" / "instance_1_history" / A.LEDGER_NAME).read_text().splitlines()]
+    assert [e["decision"] for e in led] == ["baseline", "discarded_divergent", "not_run_duplicate"]
+    assert led[1]["final_outcome"]["reason"] == "oom_kill_memory_limit" and len(led[1]["runs"]) == 1
+    assert led[1]["runs"][0]["outcome_attribution"]["memory_events"] == {"oom": 1, "oom_kill": 1}
+    assert led[2]["runs"][0]["code_state_sha256"] == led[1]["runs"][0]["code_state_sha256"]   # registered
+
+
 # =============================================================================================== chunk file
 def units_of(root: Path, tmp: Path, chains: list[list[str]]) -> list[dict]:
     return [{"unit": f"unit-{i}", "code_state_sha256": state_of(root, c, tmp), "diffs": c} for i, c in enumerate(chains)]
@@ -311,8 +452,27 @@ def test_attribution_edit_caused_failures_are_divergent():
     out, _ = A.attribute(RunOutcome.infrastructure_failure("killed", returncode=137), events(2, 2), events(3, 3))
     assert (out.kind, out.reason) == ("divergent", "oom_kill_memory_limit")
     for sig in (signal.SIGSEGV, signal.SIGBUS, signal.SIGABRT, signal.SIGFPE, signal.SIGILL):
-        out, why = A.attribute(RunOutcome.infrastructure_failure("killed", signal=int(sig)), None, None)
-        assert (out.kind, out.reason) == ("divergent", "crash_signal") and why["memory_events"] == "unavailable"
+        crash = RunOutcome.infrastructure_failure("killed", signal=int(sig))
+        out, why = A.attribute(crash, None, None)                         # first fault: rerun (review m2)
+        assert out is crash and why["crash_signal"] is True and why["memory_events"] == "unavailable"
+        out, why = A.attribute(crash, None, None, prior_crash=True)       # it recurs on the rerun: divergent
+        assert (out.kind, out.reason) == ("divergent", "crash_signal_repeated") and why["crash_signal"] is True
+
+
+LOG_HEAD = "parent dumpable-off; starting worker\n"
+
+
+def test_attribution_default_log_pattern_after_ar_device_is_divergent():
+    disk = RunOutcome.infrastructure_failure("infrastructure_log_pattern", pattern="No space left on device")
+    after = LOG_HEAD + "AR_DEVICE cuda NVIDIA x torch=2\nstep 1 loss 0.5\nOSError: No space left on device\n"
+    out, why = A.attribute(disk, None, None, log_text=after)
+    assert (out.kind, out.reason) == ("divergent", "infrastructure_pattern_after_ar_device")
+    before = LOG_HEAD + "No space left on device\nAR_DEVICE cuda x\nOSError: No space left on device\n"
+    assert A.attribute(disk, None, None, log_text=before)[0] is disk           # the host's, before the edit runs
+    assert A.attribute(disk, None, None, log_text="no device line\nNo space left on device\n")[0] is disk
+    assert A.attribute(disk, None, None, log_text=None)[0] is disk
+    node = RunOutcome.infrastructure_failure("infrastructure_log_pattern", pattern=r"AR_INFRA no GPU")
+    assert A.attribute(node, None, None, log_text="AR_DEVICE cuda\nAR_INFRA no GPU\n")[0] is node   # node-specific
 
 
 def test_attribution_keeps_host_failures_infrastructure():
@@ -324,7 +484,7 @@ def test_attribution_keeps_host_failures_infrastructure():
     assert A.attribute(term, events(), events())[0].kind == "infrastructure_failure"
     for o in (RunOutcome.infrastructure_failure("launch_error", error="x"),
               RunOutcome.infrastructure_failure("infrastructure_log_pattern", pattern="No space left on device")):
-        out, why = A.attribute(o, events(), events(oom=1, oom_kill=1))
+        out, why = A.attribute(o, events(), events(oom=1, oom_kill=1), prior_crash=True)
         assert out is o and why["rule"].startswith("infrastructure")
     for o in (RunOutcome.ok(0.5), RunOutcome.divergent("timeout"), RunOutcome.divergent("non_finite_loss"),
               RunOutcome.divergent("no_metric_at_budget"), RunOutcome.divergent("nonzero_exit", returncode=4)):
@@ -350,8 +510,8 @@ class FakeFactory:
     """Runner factory whose runs copy the incumbent and apply the diff for real (so code-state hashes are real), and
     whose outcome comes from ``behaviour(state, seed, attempt) -> (RunOutcome, isolation overrides)``."""
 
-    def __init__(self, behaviour, on_run=None):
-        self.behaviour, self.on_run = behaviour, on_run
+    def __init__(self, behaviour, on_run=None, log=lambda state, seed, n: LOG_HEAD + "AR_DEVICE cpu\n"):
+        self.behaviour, self.on_run, self.log = behaviour, on_run, log
         self.calls: list[tuple[str, int]] = []
         self.attempt: dict[tuple, int] = {}
 
@@ -388,6 +548,7 @@ class _FakeRunner:
                   "outcome": outcome.to_dict(), "elapsed_seconds_info_only": 1.5, "frozen_pin_sha256": "b" * 64,
                   "sealed_test": {"test_accuracy": 0.4242}}
         (run_dir / "run_record.json").write_text(json.dumps(record))
+        (run_dir / "run.log").write_text(self.f.log(state, train_seed, n))
         (work / "model.bin").write_bytes(bytes(range(256)))
         return RunResult(run_id, run_dir, work, outcome, record)
 
@@ -425,6 +586,7 @@ def test_audit_rows_one_per_planned_run_with_values(tmp_path):
     assert not (tmp_path / "out" / "states").exists() and not list((tmp_path / "out" / "runs").glob("*/work"))
     crec = json.loads((tmp_path / "out" / "chunk_record.json").read_text())
     assert crec["stop"] is None and crec["units_rematerialised"] == 3 and crec["memory_events_cgroup"] is None
+    assert crec["stop_kind"] is None
 
 
 def test_audit_infrastructure_reruns_then_one_row(tmp_path):
@@ -476,7 +638,6 @@ def test_audit_runner_refusal_is_infrastructure_after_reruns(tmp_path):
     (RunOutcome.divergent("non_finite_loss", token="nan"), "non_finite_loss"),
     (RunOutcome.divergent("no_metric_at_budget"), "no_metric_at_budget"),
     (RunOutcome.divergent("nonzero_exit", returncode=4), "nonzero_exit"),
-    (RunOutcome.infrastructure_failure("killed", signal=int(signal.SIGSEGV)), "crash_signal"),
 ])
 def test_audit_edit_caused_failures_are_divergent_rows_without_rerun(tmp_path, failure, reason):
     root = make_harness(tmp_path / "h")
@@ -487,6 +648,50 @@ def test_audit_edit_caused_failures_are_divergent_rows_without_rerun(tmp_path, f
     assert rec["stop"] is None and len(f.calls) == 2
     assert all(r["outcome"] == {"kind": "divergent", "reason": reason} and r["attempts"] == 1 for r in rows)
     assert all(r["isolation"]["effective"] is True for r in rows)
+
+
+def test_audit_fault_signal_is_rerun_then_divergent_if_it_recurs(tmp_path):
+    root = make_harness(tmp_path / "h")
+    units = units_of(root, tmp_path, [[D_HALF]])
+    segv = RunOutcome.infrastructure_failure("killed", signal=int(signal.SIGSEGV))
+    # seed 7001: the fault recurs on the rerun (divergent); 7002: a one-off fault, the rerun is ok
+    f = FakeFactory(lambda st, seed, n: (segv, None) if seed == 7001 or n == 0 else (RunOutcome.ok(0.5), None))
+    rec = run_audit(chunk_file(root, units, [7001, 7002]), root, tmp_path / "out", f)
+    rows = {r["seed"]: r for r in _rows(tmp_path / "out")}
+    assert rec["stop"] is None and len(f.calls) == 4
+    assert rows[7001]["outcome"] == {"kind": "divergent", "reason": "crash_signal_repeated"}
+    assert rows[7001]["attempts"] == 2 and rows[7001]["earlier_attempts"][0]["reason"] == "killed"
+    assert rows[7002]["outcome"]["kind"] == "ok" and rows[7002]["attempts"] == 2
+
+
+def test_audit_default_log_pattern_in_the_edited_output_is_divergent(tmp_path):
+    root = make_harness(tmp_path / "h")
+    units = units_of(root, tmp_path, [[], [D_HALF]])
+    half = units[1]["code_state_sha256"]
+    disk = RunOutcome.infrastructure_failure("infrastructure_log_pattern", pattern="No space left on device")
+    log = (lambda st, seed, n: LOG_HEAD + ("AR_DEVICE cpu\nOSError: No space left on device\n" if st == half
+                                          else "OSError: No space left on device\nAR_DEVICE cpu\n"))
+    f = FakeFactory(lambda st, seed, n: (disk, None), log=log)
+    rec = run_audit(chunk_file(root, units, [7001]), root, tmp_path / "out", f)
+    rows = {r["unit"]: r for r in _rows(tmp_path / "out")}
+    assert rec["stop"] is None
+    assert rows["unit-1"]["outcome"] == {"kind": "divergent", "reason": "infrastructure_pattern_after_ar_device"}
+    assert rows["unit-1"]["attempts"] == 1                                 # no rerun, so no infrastructure loop
+    assert rows["unit-0"]["outcome"]["kind"] == "infrastructure_failure" and rows["unit-0"]["attempts"] == 3
+
+
+def test_audit_unexpected_exception_still_writes_the_record(tmp_path):
+    root = make_harness(tmp_path / "h")
+
+    class Broken:
+        def __init__(self, *a, **kw):
+            pass
+
+        def run(self, *a, **kw):
+            raise KeyError("something unforeseen")
+    rec = run_audit(chunk_file(root, units_of(root, tmp_path, [[]]), [7001]), root, tmp_path / "out", Broken)
+    crec = json.loads((tmp_path / "out" / "chunk_record.json").read_text())
+    assert crec["stop"].startswith("KeyError") and crec["stop_kind"] == "error" == rec["stop_kind"]
 
 
 def test_audit_oom_kill_from_the_edit_is_divergent_a_host_oom_is_rerun(tmp_path):
@@ -537,6 +742,7 @@ def test_audit_unisolated_record_writes_its_row_and_stops(tmp_path):
     rec = run_audit(c, root, tmp_path / "out", f)
     rows = _rows(tmp_path / "out")
     assert rec["stop"].startswith("G5EngineStop: STOP: stop_unisolated") and len(rows) == 3
+    assert rec["stop_kind"] == "unisolated"
     assert rows[-1]["isolation"]["effective"] is False and "value" not in rows[-1]["outcome"]
     assert "0.737373" not in rec["stop"] and "7001" not in rec["stop"]          # no value, no seed in the stop text
     if (PAPER_T1 / "g5_job.py").is_file():
@@ -552,6 +758,7 @@ def test_audit_integrity_stops_before_any_run(tmp_path):
     f = FakeFactory(lambda st, seed, n: (RunOutcome.ok(0.5), None))
     rec = run_audit(chunk_file(root, units, [7001]), root, tmp_path / "out", f)
     assert "integrity: unit 1" in rec["stop"] and f.calls == [] and _rows(tmp_path / "out") == []
+    assert rec["stop_kind"] == "integrity"
     units = [{"unit": "u", "code_state_sha256": "e" * 64, "diffs": [D_EXTRA]}]   # D_EXTRA needs D_HALF first
     rec = run_audit(chunk_file(root, units, [7001]), root, tmp_path / "out2", f)
     assert "integrity: unit 0" in rec["stop"] and f.calls == []
@@ -566,12 +773,12 @@ def test_audit_pins_and_deadline(tmp_path):
     units = units_of(root, tmp_path, [[]])
     f = FakeFactory(lambda st, seed, n: (RunOutcome.ok(0.5), None))
     rec = run_audit(chunk_file(root, units, [7001], node_spec_sha256="d" * 64), root, tmp_path / "a", f)
-    assert "spec sha256" in rec["stop"]
+    assert "spec sha256" in rec["stop"] and rec["stop_kind"] == "refused"
     rec = run_audit(chunk_file(root, units, [7001], committed_pin_sha256="d" * 64), root, tmp_path / "b", f)
     assert "committed-file pin" in rec["stop"]
     rec = run_audit(chunk_file(root, units, [7001, 7002], deadline_epoch=1000.0), root, tmp_path / "c", f,
                     clock=lambda: 900.0)
-    assert "deadline: run 1 of 2" in rec["stop"] and f.calls == []
+    assert "deadline: run 1 of 2" in rec["stop"] and f.calls == [] and rec["stop_kind"] == "deadline"
     unisolated = make_harness(tmp_path / "h2", isolation=None)
     rec = run_audit(chunk_file(unisolated, units_of(unisolated, tmp_path, [[]]), [7001]), unisolated, tmp_path / "d", f)
     assert "no isolation block" in rec["stop"]
@@ -595,6 +802,7 @@ def test_cli_refusals_leave_a_record(tmp_path, monkeypatch):
     assert A.main(["audit", "--chunk", str(path), "--harness-root", str(root), "--out", str(tmp_path / "o")]) == 2
     crec = json.loads((tmp_path / "o" / "chunk_record.json").read_text())
     assert "needs --gpu-uuid" in crec["stop"] and crec["refused_before_running"] is True
+    assert crec["stop_kind"] == "refused"
     path.write_text(json.dumps(dict(c, runs=[dict(c["runs"][0], seed=9001)])))
     assert A.main(["audit", "--chunk", str(path), "--harness-root", str(root), "--out", str(tmp_path / "o2")]) == 2
     assert "STOP 10" in json.loads((tmp_path / "o2" / "chunk_record.json").read_text())["stop"]
@@ -666,10 +874,26 @@ def real_campaign(tmp_path_factory):
     kept.  Instance 1 keeps D_HALF, discards D_EXTRA (a chain of two diffs), then an unparseable reply (invalid);
     2: D_HALF, D_CRASH (divergent), then D_HALF again in a reply at the cap (invalid, not run); 3: D_HALF, D_NAN
     (divergent), unparseable; 4: D_EXTRA0 on the baseline (discarded), the same diff again (not-run duplicate), and a
-    comment-only diff (not-run inert)."""
+    comment-only diff (not-run inert).
+
+    With the paper worktree present, the input file is made by the paper's own ``g5_job.campaign_file`` (from a copy
+    of ``g5_tasl_spec.json`` with W = 3 and the runs tree in the test directory); otherwise by this test's copy.  The
+    engine writes to ``attempt-1/out/campaign``, the job's layout."""
     tmp = tmp_path_factory.mktemp("g5camp")
     root = make_harness(tmp / "h", metric_direction="minimize")
-    data = A.validate_campaign(campaign_file(root, budget=3))
+    spec = node = None
+    if (PAPER_T1 / "g5_job.py").is_file():
+        J, _, _ = paper()
+        spec = json.loads((PAPER_T1 / "g5_tasl_spec.json").read_text())
+        spec["campaign"]["W"] = 3
+        spec["worker"]["runs_root"] = str(tmp / "runs")
+        node = {"node": NODE, "family": "G5-7", "spec_path": SPEC_REL, "node_dir": NODE_REL, **pins(root),
+                "slowest_census_seconds": 20.0, "run_seconds": 5.0}
+        data = J.campaign_file(spec, node, 1, interpreter=sys.executable, cgroup_parent="/sys/fs/cgroup/fake.scope",
+                               deadline_epoch=time.time() + 3600)
+    else:
+        data = campaign_file(root, budget=3)
+    data = A.validate_campaign(data)
     chat = ScriptedChat([(reply(D_HALF, "half"), 300), (reply(D_EXTRA, "extra"), 300), ("not json", 100),
                          (reply(D_HALF, "half"), 300), (reply(D_CRASH, "crash"), 300), (reply(D_HALF, "half"), 4096),
                          (reply(D_HALF, "half"), 300), (reply(D_NAN, "nan"), 300), ("not json", 100),
@@ -678,11 +902,37 @@ def real_campaign(tmp_path_factory):
     mp = pytest.MonkeyPatch()
     mp.setattr(A, "build_limits", _test_limits)
     try:
-        rec = A.run_campaign(data, root, tmp / "out" / "campaign", gpu_uuids=(), cpu_list=(0,), chat=chat,
-                             gate=_waiver_gate)
+        rec = A.run_campaign(data, root, tmp / "attempt-1" / "out" / "campaign", gpu_uuids=(), cpu_list=(0,),
+                             chat=chat, gate=_waiver_gate)
     finally:
         mp.undo()
-    return {"root": root, "data": data, "record": rec, "out": tmp / "out" / "campaign", "chat": chat, "tmp": tmp}
+    return {"root": root, "data": data, "record": rec, "out": tmp / "attempt-1" / "out" / "campaign", "chat": chat,
+            "tmp": tmp, "spec": spec, "node": node}
+
+
+def _tar_attempt(attempt: Path) -> Path:
+    """The job's sealing of an attempt: ``tar -cf out.tar out`` and SHA256SUMS (as g5_job.run_job)."""
+    J, _, _ = paper()
+    assert J.make_tar(attempt)
+    digest = subprocess.run(["sha256sum", "out.tar"], cwd=attempt, capture_output=True, text=True, check=True).stdout
+    (attempt / "SHA256SUMS").write_text(digest)
+    return attempt / "out.tar"
+
+
+def test_real_campaign_paper_diagnostics_and_tar_members(real_campaign):
+    """g5_job.campaign_file made the input; g5_job.campaign_diagnostics and check_diagnostics accept the real output;
+    tar_members finds exactly the four ledgers in the tar of the attempt, binaries and run trees included."""
+    J, _, _ = paper()
+    rc = real_campaign
+    assert rc["data"]["schema"] == A.CAMPAIGN_SCHEMA and rc["data"]["budget"] == 3 and rc["data"]["temperature"] == 0.2
+    diag = J.campaign_diagnostics(rc["spec"], rc["node"], 1, {"attempt": 1, "spec_sha256": "s" * 64}, rc["out"])
+    assert diag["stop"] is None and diag["counts"]["proposals"] == 12 and diag["counts"]["truncated_not_invalid"] == 0
+    J.check_diagnostics(dict(diag, gpu_seconds=1.0))
+    tar = _tar_attempt(rc["out"].parent.parent)
+    members = J.tar_members(rc["spec"], tar, J.LEDGER_MEMBER, "audit planning: test of the G.5 engines")
+    assert members == _ledgers(rc["out"])
+    log = (Path(rc["spec"]["worker"]["runs_root"]) / rc["spec"]["run_id"] / "_access_log.jsonl").read_text()
+    assert J.check_access_log(rc["spec"]) and "audit planning" in log
 
 
 def _ledgers(out: Path) -> dict[str, list[str]]:
@@ -730,10 +980,11 @@ def test_real_campaign_ledgers_and_record(real_campaign):
 
 def test_real_campaign_then_audit_through_the_paper_readers(real_campaign, tmp_path):
     """Ledgers -> g5_job.audit_plan / chunk files -> the real audit engine -> g5_job.read_rows and
-    g5_seal.reduce_rows: re-materialised normalised hashes equal the ledgers', ok rows carry outcome.value."""
+    g5_seal.reduce_rows, the rows read back from the attempt's out.tar with g5_job.tar_members: re-materialised
+    normalised hashes equal the ledgers', ok rows carry outcome.value."""
     J, SE, S = paper()
     rc = real_campaign
-    spec = json.loads((PAPER_T1 / "g5_tasl_spec.json").read_text())
+    spec = rc["spec"]
     ledgers = _ledgers(rc["out"])
     counts = J.campaign_counts(ledgers, max_tokens=4096, ctx=32768, timeout_basis=20.0)
     assert counts["counts"]["truncated"] == 1 and counts["counts"]["truncated_not_invalid"] == 0
@@ -763,8 +1014,12 @@ def test_real_campaign_then_audit_through_the_paper_readers(real_campaign, tmp_p
         (out / "chunk.json").write_text(json.dumps(chunk))
         rec = A.run_audit(A.validate_chunk(chunk), rc["root"], out / "audit", gpu_uuids=(), cpu_list=(0,),
                           runner_factory=HostRunner)
-        assert rec["stop"] is None, rec["stop"]
-        lines = (out / "audit" / "rows.jsonl").read_text().splitlines()
+        assert rec["stop"] is None and rec["stop_kind"] is None, rec["stop"]
+        # the job's route: out.tar of the attempt, then only the two named members (binaries and run trees unread)
+        members = J.tar_members(spec, _tar_attempt(out.parent), J.CHUNK_MEMBERS, "wave E5: test of the G.5 engines")
+        assert json.loads("\n".join(members["out/chunk.json"])) == chunk
+        lines = members["out/audit/rows.jsonl"]
+        assert lines == (out / "audit" / "rows.jsonl").read_text().splitlines()
         got = J.read_rows(lines, chunk)                     # schema, plan, seeds, isolation, code states
         reduced = SE.reduce_rows(spec, lines, chunk, "traindev")
         assert reduced["evaluation_rows_dropped"] == 3
