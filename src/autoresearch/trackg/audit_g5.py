@@ -17,8 +17,12 @@ The contract (``g5_job.engine_contract()``), item by item:
   ``<out>/campaign_record.json`` (``stop``).  Every run record in a ledger that has a code state carries
   ``code_state_sha256`` at its top level, a not-run duplicate or inert diff included (:class:`G5CampaignRunner`
   lifts it from the diff provenance; the paper's assembly reads it there).  Each instance has training seed = split
-  seed = manager seed =
-  5100 + k, inside 5101-5112, and k must be one of the wave's instances (wave 1: 1-4; wave 2: 5-12).
+  seed = manager seed = 5100 + k, inside 5101-5112, and k must be one of the wave's instances (wave 1: 1-4; wave 2:
+  5-12).
+* **Deadline** (review M1).  The job kills the engine at ``deadline_epoch``, and an isolated run it supervised would
+  outlive it.  So no run starts (campaign or audit) unless 3 x census + 60 s fit before the deadline, and no manager
+  call starts unless 120 s more fit as well (:class:`CampaignGuard`); the engine then stops with ``stop_kind:
+  "deadline"``.
 * A reply whose completion reached the cap (``usage.completion_tokens >= max_tokens``, the counting rule of the
   job's diagnostics) is an ``invalid_proposal`` (R1-EXAM-B1-TRUNCATION-INVALID): :class:`TruncationInvalidManager`
   applies it to G.5 campaigns only, so ``manager_v2_diff.py`` and G.4's pilot are unchanged.
@@ -36,13 +40,16 @@ The contract (``g5_job.engine_contract()``), item by item:
   be false and the isolation block absent).
 * **Edit-caused failures are divergent, never infrastructure** (3b-1 review, ruling 1).  The runner's classifier
   (:mod:`autoresearch.trackg.outcome`) already makes a non-finite loss or metric, a missing metric, a measured
-  timeout and a non-zero exit (the edited code crashed in the worker, so the frozen parent failed) divergent.  It
-  makes a process killed by a signal an infrastructure failure; this engine re-attributes two cases to the code
-  state (:func:`attribute`): a kill while the job scope's memory limit was hit (``memory.events``: ``oom`` and
-  ``oom_kill`` both rose during the run; the scope holds only this engine and the run, so the run's own memory
-  reached the limit), and a synchronous fault signal of the run's process (SIGSEGV, SIGBUS, SIGFPE, SIGILL,
-  SIGABRT, SIGTRAP, SIGSYS).  A kill without that evidence, a launch error and an infrastructure log pattern stay
-  infrastructure failures and are rerun.
+  timeout and a non-zero exit (the edited code crashed in the worker, so the frozen parent failed) divergent.  Of
+  its infrastructure outcomes, :func:`attribute` gives three to the code state: a kill while the job scope's memory
+  limit was hit (``oom`` and ``oom_kill`` both rose in its ``memory.events``), a fault signal of the frozen parent
+  that recurs on the rerun of the same code state and seed, and a default infrastructure log pattern that appears
+  only after the run's first ``AR_DEVICE`` line.  A kill without that evidence, a first fault signal, a launch error
+  and other log patterns stay infrastructure failures and are rerun.  The audit and (through
+  :class:`G5CampaignRunner`) the campaign apply the same rules.
+* **Records** carry ``stop`` (text) and ``stop_kind``, one of ``refused`` (input, pins, node), ``deadline``,
+  ``integrity``, ``unisolated``, ``transport``, ``baseline_failed``, ``runner`` (a host refusal outside a run
+  attempt) and ``error`` (anything else, caught so that a record is always written).
 * Members: the job reads only the ledgers, ``out/chunk.json`` (its own file) and ``out/audit/rows.jsonl``.  The run
   directories under ``<out>`` (run records, logs, result channels; campaign working copies and code snapshots with
   any binaries a run wrote) stay in ``out.tar`` unread.  As in G.1b and G.4, a run record on disk keeps the sealed
@@ -59,6 +66,7 @@ imports this module (P5).
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import math
@@ -69,6 +77,7 @@ import signal
 import subprocess
 import sys
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -78,7 +87,8 @@ from autoresearch.trackg.diff_support import apply_diff, code_state_hashes
 from autoresearch.trackg.manager_v2_diff import Chat, ManagerTransportStop, V2DiffManager, openai_compatible_chat
 from autoresearch.trackg.node_template import TrackGNodeSpec, load_trackg_node_spec
 from autoresearch.trackg.noise_floor import CPU_ONLY_NODES, NoiseFloorStop, check_effective, check_node_pins
-from autoresearch.trackg.outcome import DIVERGENT, INFRASTRUCTURE_FAILURE, OK, RunOutcome
+from autoresearch.trackg.outcome import (DEFAULT_INFRASTRUCTURE_LOG_PATTERNS, DIVERGENT, INFRASTRUCTURE_FAILURE, OK,
+                                         RunOutcome)
 from autoresearch.trackg.pilot_g4 import MAX_TOKENS, MEMORY_MODES, timed_chat
 from autoresearch.trackg.runner import _COPY_IGNORE as RUNNER_COPY_IGNORE
 from autoresearch.trackg.runner import IntegrityError, ResourceLimits, RunnerError, RunResult, WorkingCopyRunner
@@ -102,6 +112,10 @@ MAX_MEASURED_RUN_SECONDS = 300.0                   # as noise_floor and pilot_g4
 CRASH_SIGNALS = frozenset({signal.SIGSEGV, signal.SIGBUS, signal.SIGFPE, signal.SIGILL, signal.SIGABRT,
                            signal.SIGTRAP, signal.SIGSYS})
 KILL_EXIT_SIGNALS = {137: signal.SIGKILL, 143: signal.SIGTERM}         # shell-reported, as outcome.py's defaults
+RUN_DEADLINE_MARGIN_SECONDS = 60.0                 # a run starts only if 3 x census + 60 s fit before the deadline
+LLM_CALL_ALLOWANCE_SECONDS = 120.0                 # a manager call starts only if this plus one run fit as well
+AR_DEVICE_LINE = re.compile(r"^AR_DEVICE ", re.MULTILINE)   # printed by every GPU node before editable code runs
+STOP_KINDS = ("refused", "deadline", "integrity", "unisolated", "transport", "baseline_failed", "runner", "error")
 CAMPAIGN_KEYS = frozenset({
     "schema", "label", "run_id", "node", "family", "wave", "spec_path", "node_dir", "node_spec_sha256",
     "committed_pin_sha256", "data_manifest_sha256", "proposal_schema", "extra_payload", "budget", "w_semantics",
@@ -121,12 +135,42 @@ _NODE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
 
 
 class G5EngineStop(RuntimeError):
-    """A pre-declared STOP of a G.5 engine: the wave or chunk ends; what it wrote stays on disk."""
+    """A pre-declared STOP of a G.5 engine: the wave or chunk ends; what it wrote stays on disk.  ``kind`` is one of
+    :data:`STOP_KINDS` and goes into the record's ``stop_kind``."""
+
+    def __init__(self, message: str, kind: str = "refused") -> None:
+        super().__init__(message)
+        if kind not in STOP_KINDS:
+            raise ValueError(f"unknown stop kind {kind!r}")
+        self.kind = kind
 
 
-def _need(condition: bool, message: str) -> None:
+def _need(condition: bool, message: str, kind: str = "refused") -> None:
     if not condition:
-        raise G5EngineStop(message)
+        raise G5EngineStop(message, kind)
+
+
+_LEDGER_STOP_KINDS = {"stop_unisolated": "unisolated", "baseline_failed": "baseline_failed",
+                      "stop_integrity": "integrity", "stop_transport": "transport"}
+
+
+def _stop_kind(exc: BaseException, ledger: Path | None = None) -> str:
+    """The structured class of an engine stop (the record's ``stop_kind``), so the job need not parse the text."""
+    if isinstance(exc, G5EngineStop):
+        return exc.kind
+    if isinstance(exc, IntegrityError):
+        return "integrity"
+    if isinstance(exc, ManagerTransportStop):
+        return "transport"
+    if isinstance(exc, V2DiffCampaignError) and ledger is not None and ledger.is_file():
+        lines = [x for x in ledger.read_text().splitlines() if x.strip()]
+        if lines:
+            return _LEDGER_STOP_KINDS.get(json.loads(lines[-1]).get("decision"), "error")
+    if isinstance(exc, RunnerError):
+        return "runner"
+    if isinstance(exc, gpu_identity.GpuIdentityError):
+        return "refused"
+    return "error"
 
 
 def _is_number(value: Any) -> bool:
@@ -177,7 +221,7 @@ def load_node(data: dict[str, Any], harness_root: Path) -> tuple[TrackGNodeSpec,
     try:
         pin = check_node_pins(spec, node_dir, data["committed_pin_sha256"], data["data_manifest_sha256"])
     except NoiseFloorStop as exc:
-        raise G5EngineStop(str(exc)) from exc
+        raise G5EngineStop(str(exc), "refused") from exc
     return spec, node_dir, pin
 
 
@@ -253,30 +297,103 @@ def instance_dir_name(inst: dict[str, Any]) -> str:
     return f"instance_{inst['instance']}_{inst['memory_mode']}"
 
 
+@dataclass
+class CampaignGuard:
+    """What a G.5 campaign checks before every run and every manager call (review M1): the job kills the engine at
+    ``deadline_epoch``, and an isolated run it was supervising would outlive it, so nothing starts that could end
+    past the deadline.  It also carries the ``memory.events`` source and the crash-signal counts for
+    :func:`attribute` (the same rules as the audit)."""
+
+    deadline_epoch: float
+    run_seconds: float                       # 3 x census + RUN_DEADLINE_MARGIN_SECONDS
+    clock: Callable[[], float]
+    memory_cgroup: Path | None = None
+    memory_events: Callable[[Path | None], dict[str, int] | None] | None = None
+    crashes: dict[tuple[str, int | None], int] = field(default_factory=dict)
+
+    def check_run(self, run_id: str) -> None:
+        _need(self.clock() + self.run_seconds <= self.deadline_epoch,
+              f"STOP: deadline: campaign run {run_id} could not finish before the wave's deadline", "deadline")
+
+    def check_call(self, step: int) -> None:
+        _need(self.clock() + LLM_CALL_ALLOWANCE_SECONDS + self.run_seconds <= self.deadline_epoch,
+              f"STOP: deadline: the manager call of step {step} and its run could not finish before the wave's "
+              f"deadline", "deadline")
+
+    def events(self) -> dict[str, int] | None:
+        return self.memory_events(self.memory_cgroup) if self.memory_events else None
+
+
 class G5CampaignRunner(WorkingCopyRunner):
-    """The campaign's runner with one addition for the G.5 ledgers: a diff that was not run (a duplicate, inert or
-    refused diff) gets its code state from the diff provenance at the top level of the run record
-    (``code_state_sha256``, ``code_state_raw_sha256``, and ``code_state_source: "diff_provenance"``), where an executed
-    run already has it.  A refused diff whose provenance has no code state gets none.  ``run_record.json`` on disk
-    is the runner's own record, unchanged."""
+    """The campaign's runner, with three additions for G.5 (``run_record.json`` on disk stays the runner's own):
+
+    * before every run, ``guard.check_run`` (review M1): no run starts unless 3 x census + 60 s fit before the
+      wave's deadline (:class:`G5EngineStop`, kind ``deadline``; ``run_v2_diff_campaign`` lets it propagate);
+    * a diff that was not run (duplicate, inert or refused) gets its code state from the diff provenance at the top
+      level of the run record (``code_state_sha256``, ``code_state_raw_sha256``, ``code_state_source:
+      "diff_provenance"``); a refused diff whose provenance has no code state gets none;
+    * an executed run's infrastructure outcome goes through :func:`attribute`, as in the audit (an OOM kill at the
+      scope's memory limit, a fault signal that recurs on the rerun, a default infrastructure log pattern only after
+      ``AR_DEVICE`` are divergent); the record then carries ``outcome_attribution`` and the new outcome, and a state
+      made divergent is registered as evaluated, as the runner registers any non-infrastructure run."""
+
+    def __init__(self, *args, guard: CampaignGuard | None = None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.guard = guard
 
     def run(self, run_id, limits, **kw):  # noqa: ANN001 - the parent's signature
+        guard = self.guard
+        if guard is not None:
+            guard.check_run(run_id)
+        before = guard.events() if guard is not None else None
         result = super().run(run_id, limits, **kw)
+        after = guard.events() if guard is not None else None
         rec = result.record
         diff = rec.get("diff") or {}
         if not rec.get("executed") and "code_state_sha256" not in rec and diff.get("code_state_sha256"):
             rec["code_state_sha256"] = diff["code_state_sha256"]
             rec["code_state_raw_sha256"] = diff.get("code_state_raw_sha256")
             rec["code_state_source"] = "diff_provenance"
+        if guard is not None and rec.get("executed") and result.outcome is not None:
+            key = (rec.get("code_state_sha256"), kw.get("train_seed"))
+            prior = guard.crashes.get(key, 0)
+            outcome, why = attribute(result.outcome, before, after, log_text=_run_log(result),
+                                     prior_crash=prior > 0)
+            if why is not None:
+                rec["outcome_attribution"] = why
+                if why.get("crash_signal"):
+                    guard.crashes[key] = prior + 1
+            if outcome is not result.outcome:
+                result.outcome = outcome
+                rec["outcome"] = outcome.to_dict()
+                evaluated = kw.get("evaluated")
+                if evaluated is not None and kw.get("register_evaluated", True):
+                    evaluated.register(run_id, code_state_sha256=rec["code_state_sha256"],
+                                       normalised_diff_sha256=diff.get("normalised_diff_sha256"),
+                                       incumbent_code_state_sha256=rec.get("incumbent_code_state_sha256"))
         return result
 
 
+def _run_log(result: RunResult) -> str | None:
+    path = result.run_dir / "run.log"
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+@dataclass
 class TruncationInvalidManager(V2DiffManager):
     """The v2-diff manager with R1-EXAM-B1-TRUNCATION-INVALID: a reply whose completion reached the cap is an
     invalid proposal (charged, nothing runs), whether or not it parses.  The rule is the job's counting rule
-    (``usage.completion_tokens >= max_tokens``), so its diagnostics never see a reply at the cap that ran."""
+    (``usage.completion_tokens >= max_tokens``), so its diagnostics never see a reply at the cap that ran.  With a
+    ``guard``, no call starts unless the call allowance plus one run fit before the wave's deadline (review M1)."""
+
+    guard: CampaignGuard | None = None
 
     def propose(self, spec, incumbent_dir, history, step):  # noqa: ANN001 - the parent's signature
+        if self.guard is not None:
+            self.guard.check_call(step)
         proposal, call = super().propose(spec, incumbent_dir, history, step)
         usage = call.get("usage") or {}
         try:
@@ -293,40 +410,54 @@ class TruncationInvalidManager(V2DiffManager):
 
 def run_campaign(data: dict[str, Any], harness_root: Path, out_dir: Path, *, gpu_uuids: tuple[str, ...],
                  cpu_list: tuple[int, ...], chat: Chat | None = None, campaign=run_v2_diff_campaign,
-                 gate=check_effective, clock: Callable[[], float] = time.time) -> dict[str, Any]:
+                 gate=check_effective, clock: Callable[[], float] = time.time,
+                 memory_events: Callable[[Path | None], dict[str, int] | None] | None = None) -> dict[str, Any]:
     """One campaign wave of one node: the instances in order, each a G.4 v2-diff campaign with the record gate on
-    every executed run.  The first instance that STOPs ends the wave (its ledger holds the STOP line)."""
+    every executed run, the deadline checked before every run and manager call (:class:`CampaignGuard`) and
+    :func:`attribute` applied to every executed run (:class:`G5CampaignRunner`).  The first instance that STOPs ends
+    the wave: its ledger holds the STOP line (a gate refusal, a failed baseline, an integrity or transport stop), or,
+    for a deadline stop, simply ends; ``campaign_record.json`` names it in ``stop`` and ``stop_kind``."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=False)
     record: dict[str, Any] = {"schema": CAMPAIGN_RECORD_SCHEMA, "label": LABEL, "engine_contract": ENGINE_CONTRACT,
                               "node": data["node"], "run_id": data["run_id"], "wave": data["wave"], "instances": [],
-                              "stop": None, "started_epoch": clock(), "gate": GATE_TEXT,
+                              "stop": None, "stop_kind": None, "started_epoch": clock(), "gate": GATE_TEXT,
                               "truncation_invalid": f"completion_tokens >= {data['max_tokens']}"}
+    ledger: Path | None = None
     try:
         spec, node_dir, _pin = load_node(data, harness_root)
         limits = build_limits(data, gpu_uuids, cpu_list)
         record["limits"] = limits.to_dict()
+        mem_cgroup = memory_limit_cgroup(data["cgroup_parent"])
+        record["memory_events_cgroup"] = str(mem_cgroup) if mem_cgroup is not None else None
+        guard = CampaignGuard(deadline_epoch=float(data["deadline_epoch"]),
+                              run_seconds=3.0 * float(data["measured_run_seconds"]) + RUN_DEADLINE_MARGIN_SECONDS,
+                              clock=clock, memory_cgroup=mem_cgroup,
+                              memory_events=memory_events or read_memory_events)
+        record["deadline_rule"] = (f"a run starts only with 3 x census + {RUN_DEADLINE_MARGIN_SECONDS:g} s left, a "
+                                   f"manager call only with {LLM_CALL_ALLOWANCE_SECONDS:g} s more")
         transport = timed_chat(chat or openai_compatible_chat(data["base_url"]))
         for inst in data["instances"]:
             _need(clock() < float(data["deadline_epoch"]),
-                  f"STOP: the wave's deadline was reached before instance {inst['instance']} ({inst['memory_mode']})")
+                  f"STOP: deadline: reached before instance {inst['instance']} ({inst['memory_mode']})", "deadline")
             manager = TruncationInvalidManager(chat=transport, model=data["model"], seed=inst["manager_seed"],
                                                max_tokens=int(data["max_tokens"]),
                                                temperature=float(data["temperature"]),
                                                include_history=MEMORY_MODES[inst["memory_mode"]],
-                                               extra_payload={"cache_prompt": False})
+                                               extra_payload={"cache_prompt": False}, guard=guard)
             entry = {"instance": inst["instance"], "memory_mode": inst["memory_mode"], "dir": instance_dir_name(inst)}
             record["instances"].append(entry)
+            ledger = out_dir / instance_dir_name(inst) / LEDGER_NAME
             started = clock()
             try:
                 campaign(spec, node_dir, out_dir / instance_dir_name(inst), manager, limits, data["budget"],
                          enable_v2_diff=True, train_seed=inst["train_seed"], split_seed=inst["split_seed"],
-                         interpreter=data["interpreter"], record_gate=gate, runner_factory=G5CampaignRunner)
+                         interpreter=data["interpreter"], record_gate=gate,
+                         runner_factory=functools.partial(G5CampaignRunner, guard=guard))
             finally:   # a STOPped instance still counts its time
                 entry["wall_seconds"] = round(clock() - started, 1)
-    except (G5EngineStop, V2DiffCampaignError, ManagerTransportStop, IntegrityError, RunnerError,
-            gpu_identity.GpuIdentityError, OSError, ValueError) as exc:
-        record["stop"] = _stop_text(exc)
+    except Exception as exc:  # noqa: BLE001 - every stop is recorded, with its structured kind (review m4)
+        record["stop"], record["stop_kind"] = _stop_text(exc), _stop_kind(exc, ledger)
     record["finished_epoch"] = clock()
     (out_dir / "campaign_record.json").write_text(json.dumps(record, indent=1, sort_keys=True, default=str) + "\n")
     return record
@@ -405,7 +536,7 @@ def prepare_states(spec: TrackGNodeSpec, node_dir: Path, data: dict[str, Any], r
             app = apply_diff(target, prefix[n - 1], base_spec, evaluated=None, allow_new_files=spec.allow_new_files,
                              interpreter=interpreter)
             _need(app.applied, f"STOP: integrity: unit {index}: diff {n} of its chain does not apply "
-                               f"({app.status}) when re-materialised")
+                               f"({app.status}) when re-materialised", "integrity")
             built[key] = target
         return built[prefix]
 
@@ -413,7 +544,7 @@ def prepare_states(spec: TrackGNodeSpec, node_dir: Path, data: dict[str, Any], r
         diffs, expected = unit["diffs"], unit["code_state_sha256"]
         if not diffs:
             _need(kit_state == expected, f"STOP: integrity: unit {index}: the node kit's code state differs from the "
-                                         f"chunk's baseline hash")
+                                         f"chunk's baseline hash", "integrity")
             out[unit["unit"]] = (node_dir, None)
             continue
         inc = incumbent(tuple(diffs[:-1]), index)
@@ -421,7 +552,7 @@ def prepare_states(spec: TrackGNodeSpec, node_dir: Path, data: dict[str, Any], r
                          interpreter=interpreter)
         _need(app.applied and app.provenance.get("code_state_sha256") == expected,
               f"STOP: integrity: unit {index}: the re-materialised code state differs from the chunk's hash "
-              f"({app.status})")
+              f"({app.status})", "integrity")
         out[unit["unit"]] = (inc, diffs[-1])
     return out
 
@@ -457,17 +588,32 @@ def read_memory_events(cgroup: Path | None) -> dict[str, int] | None:
     return out
 
 
-def attribute(outcome: RunOutcome, before: dict[str, int] | None, after: dict[str, int] | None
-              ) -> tuple[RunOutcome, dict[str, Any] | None]:
+def attribute(outcome: RunOutcome, before: dict[str, int] | None, after: dict[str, int] | None, *,
+              log_text: str | None = None, prior_crash: bool = False) -> tuple[RunOutcome, dict[str, Any] | None]:
     """Ruling 1: an infrastructure outcome that the code state caused becomes divergent.
 
-    Only the runner's ``killed`` class is re-attributed: (a) the job scope's memory limit was hit and a process was
-    OOM-killed during the run (``oom`` and ``oom_kill`` both rose in the scope's ``memory.events``) -- the scope holds
-    only this engine and the run, so the run's memory reached the limit: ``divergent``, reason
-    ``oom_kill_memory_limit``; (b) a synchronous fault signal, raised by the run's own execution
-    (:data:`CRASH_SIGNALS`): ``divergent``, reason ``crash_signal``.  Everything else keeps its class: a kill without
-    that evidence (a host-wide OOM raises ``oom_kill`` without ``oom``; an operator's SIGTERM), a launch error, no exit
-    status, an infrastructure log pattern.  ``ok`` and ``divergent`` pass unchanged."""
+    The runner's classifier already makes divergent: a non-finite loss or metric, no metric, the budget not
+    reached, a measured timeout, and a non-zero exit (the edited code runs only in the sandboxed worker; its crash, a
+    signal death included, makes the frozen parent exit non-zero).  Of its infrastructure outcomes, three cases are
+    re-attributed to the code state:
+
+    * ``oom_kill_memory_limit`` -- a ``killed`` run while ``oom`` and ``oom_kill`` both rose in the ``memory.events``
+      of the cgroup holding the job's memory limit: the scope's own limit was reached during the run.  The scope
+      holds the node wrapper, the G.5 job, this engine and the run; the run is the only one whose memory varies with
+      the code state, so its memory reached the limit;
+    * ``crash_signal_repeated`` -- a synchronous fault signal (:data:`CRASH_SIGNALS`) of the run's frozen parent on
+      this attempt **and** on an earlier attempt of the same code state and seed (``prior_crash``).  A first fault
+      stays infrastructure and is rerun, since a parent fault can also be a host fault (review m2); the record's
+      attribution says ``crash_signal: true`` so the caller can count it;
+    * ``infrastructure_pattern_after_ar_device`` -- a match of a **default** infrastructure log pattern
+      (``outcome.DEFAULT_INFRASTRUCTURE_LOG_PATTERNS``) whose every occurrence lies after the run's first
+      ``AR_DEVICE`` line, that is in the output of the edited code's phase (review m3).  Node-specific patterns are
+      anchored before ``AR_DEVICE`` by design and stay infrastructure; so does a default pattern in a node that never
+      prints ``AR_DEVICE`` (``mlgym_houseprice``).
+
+    Everything else keeps its class and is rerun: a kill without evidence that the run caused it (a host-wide OOM
+    raises ``oom_kill`` without ``oom``; an outside SIGTERM), a launch error, no exit status.  ``ok`` and
+    ``divergent`` pass unchanged."""
     if outcome.kind != INFRASTRUCTURE_FAILURE:
         return outcome, None
     evidence: dict[str, Any] = {"original_kind": outcome.kind, "original_reason": outcome.reason}
@@ -478,6 +624,17 @@ def attribute(outcome: RunOutcome, before: dict[str, int] | None, after: dict[st
         oom = after.get("oom", 0) - before.get("oom", 0)
         oom_kill = after.get("oom_kill", 0) - before.get("oom_kill", 0)
         evidence["memory_events"] = {"oom": oom, "oom_kill": oom_kill}
+    if outcome.reason == "infrastructure_log_pattern":
+        pattern = outcome.detail.get("pattern")
+        device = AR_DEVICE_LINE.search(log_text or "")
+        hits = [m.start() for m in re.finditer(pattern, log_text or "", re.MULTILINE)] if pattern else []
+        evidence["pattern"] = pattern
+        if pattern in DEFAULT_INFRASTRUCTURE_LOG_PATTERNS and device is not None and hits \
+                and min(hits) > device.start():
+            return RunOutcome.divergent("infrastructure_pattern_after_ar_device"), dict(
+                evidence, rule="edit-caused: a default infrastructure pattern only in the edited code's output")
+        return outcome, dict(evidence, rule="infrastructure (a log pattern before AR_DEVICE, node-specific, or no "
+                                            "AR_DEVICE line)")
     if outcome.reason != "killed":
         return outcome, dict(evidence, rule="infrastructure (not a kill)")
     sig = outcome.detail.get("signal") or KILL_EXIT_SIGNALS.get(outcome.detail.get("returncode"))
@@ -486,7 +643,11 @@ def attribute(outcome: RunOutcome, before: dict[str, int] | None, after: dict[st
         return RunOutcome.divergent("oom_kill_memory_limit"), dict(evidence, rule="edit-caused: the run reached the "
                                                                                   "job scope's memory limit")
     if sig is not None and int(sig) in CRASH_SIGNALS:
-        return RunOutcome.divergent("crash_signal"), dict(evidence, rule="edit-caused: a synchronous fault signal")
+        evidence["crash_signal"] = True
+        if prior_crash:
+            return RunOutcome.divergent("crash_signal_repeated"), dict(
+                evidence, rule="edit-caused: a fault signal on the rerun of the same code state and seed")
+        return outcome, dict(evidence, rule="infrastructure on the first fault signal (rerun; divergent if it recurs)")
     return outcome, dict(evidence, rule="infrastructure (a kill without evidence that the run caused it)")
 
 
@@ -521,7 +682,7 @@ def run_audit(data: dict[str, Any], harness_root: Path, out_dir: Path, *, gpu_uu
     record: dict[str, Any] = {"schema": CHUNK_RECORD_SCHEMA, "label": LABEL, "engine_contract": ENGINE_CONTRACT,
                               "node": data["node"], "run_id": data["run_id"], "wave": data["wave"],
                               "chunk": data["chunk"], "K": data["K"], "expected_runs": len(runs), "written_rows": 0,
-                              "stop": None, "started_epoch": clock(), "gate": GATE_TEXT,
+                              "stop": None, "stop_kind": None, "started_epoch": clock(), "gate": GATE_TEXT,
                               "infrastructure_reruns": INFRASTRUCTURE_RERUNS}
     try:
         spec, node_dir, pin = load_node(data, harness_root)
@@ -546,7 +707,8 @@ def run_audit(data: dict[str, Any], harness_root: Path, out_dir: Path, *, gpu_uu
                 row: dict[str, Any] | None = None
                 for attempt in range(1 + INFRASTRUCTURE_RERUNS):
                     _need(clock() + budget <= float(data["deadline_epoch"]),
-                          f"STOP: deadline: run {n + 1} of {len(runs)} could not finish before the chunk deadline")
+                          f"STOP: deadline: run {n + 1} of {len(runs)} could not finish before the chunk deadline",
+                          "deadline")
                     run_id = f"u{index_of[unit]:03d}_s{seed}_a{attempt}"
                     before = memory_events(mem_cgroup)
                     try:
@@ -562,10 +724,12 @@ def run_audit(data: dict[str, Any], harness_root: Path, out_dir: Path, *, gpu_uu
                     after = memory_events(mem_cgroup)
                     rec = result.record
                     _need(rec.get("executed") is True, f"STOP: integrity: run {n + 1} was not executed (diff "
-                                                       f"{(rec.get('diff') or {}).get('status')})")
+                                                       f"{(rec.get('diff') or {}).get('status')})", "integrity")
                     _need(rec.get("code_state_sha256") == expected[unit],
-                          f"STOP: integrity: run {n + 1} ran another code state than the planned unit's")
-                    outcome, attribution = attribute(result.outcome, before, after)
+                          f"STOP: integrity: run {n + 1} ran another code state than the planned unit's", "integrity")
+                    prior_crash = any((a.get("attribution") or {}).get("crash_signal") for a in attempts)
+                    outcome, attribution = attribute(result.outcome, before, after, log_text=_run_log(result),
+                                                     prior_crash=prior_crash)
                     shutil.rmtree(result.work_dir, ignore_errors=True)   # the node copy; record and log stay
                     base = {"run_id": result.run_id, "executed": True,
                             "code_state_sha256": rec.get("code_state_sha256"),
@@ -581,14 +745,15 @@ def run_audit(data: dict[str, Any], harness_root: Path, out_dir: Path, *, gpu_uu
                             rows.write(json.dumps(row, sort_keys=True) + "\n")
                             rows.flush()
                             record["written_rows"] += 1
-                        raise G5EngineStop(f"STOP: stop_unisolated: run {n + 1} failed the record gate") from exc
+                        raise G5EngineStop(f"STOP: stop_unisolated: run {n + 1} failed the record gate",
+                                           "unisolated") from exc
                     if outcome.kind == INFRASTRUCTURE_FAILURE:
                         attempts.append({**base, "kind": outcome.kind, "reason": outcome.reason})
                         continue
                     out_kind = {"kind": outcome.kind, "reason": outcome.reason or None}
                     if outcome.kind == OK:
                         _need(_is_number(outcome.value) and math.isfinite(outcome.value),
-                              f"STOP: run {n + 1}: an ok outcome without a finite value")
+                              f"STOP: run {n + 1}: an ok outcome without a finite value", "error")
                         out_kind["value"] = float(outcome.value)
                     row = _row(data, run, base, out_kind, attempts)
                     break
@@ -601,8 +766,8 @@ def run_audit(data: dict[str, Any], harness_root: Path, out_dir: Path, *, gpu_uu
                 rows.write(json.dumps(row, sort_keys=True) + "\n")
                 rows.flush()
                 record["written_rows"] += 1
-    except (G5EngineStop, IntegrityError, RunnerError, gpu_identity.GpuIdentityError, OSError, ValueError) as exc:
-        record["stop"] = _stop_text(exc)
+    except Exception as exc:  # noqa: BLE001 - every stop is recorded, with its structured kind (review m4)
+        record["stop"], record["stop_kind"] = _stop_text(exc), _stop_kind(exc)
     finally:
         shutil.rmtree(states_root, ignore_errors=True)       # re-derivable from the chunk file; hashes checked
     record["finished_epoch"] = clock()
@@ -632,7 +797,8 @@ def _refusal_record(out: Path, name: str, schema: str, message: str) -> None:
     try:
         out.mkdir(parents=True, exist_ok=False)
         (out / name).write_text(json.dumps({"schema": schema, "label": LABEL, "engine_contract": ENGINE_CONTRACT,
-                                            "stop": message[:600], "refused_before_running": True}, indent=1) + "\n")
+                                            "stop": message[:600], "stop_kind": "refused",
+                                            "refused_before_running": True}, indent=1) + "\n")
     except OSError:
         pass
 
@@ -654,7 +820,7 @@ def main(argv: list[str] | None = None) -> int:
         raw = json.loads(a.infile.read_text())
         data = validate_campaign(raw) if campaign else validate_chunk(raw)
         gpus = resolve_gpus(data["node"], a.gpu_uuid, os.environ)
-    except (G5EngineStop, gpu_identity.GpuIdentityError, OSError, ValueError) as exc:
+    except Exception as exc:  # noqa: BLE001 - a refused call still leaves its record
         _refusal_record(a.out, record_name, record_schema, str(exc))
         print(str(exc), file=sys.stderr)
         return 2
