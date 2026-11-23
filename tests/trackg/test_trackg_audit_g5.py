@@ -396,6 +396,25 @@ def test_campaign_attribution_memory_limit_kill_is_discarded_divergent(tmp_path,
     assert led[2]["runs"][0]["code_state_sha256"] == led[1]["runs"][0]["code_state_sha256"]   # registered
 
 
+def test_campaign_recurring_edit_phase_pattern_is_discarded_divergent(tmp_path, monkeypatch):
+    """The campaign's rerun of the same code state and seed decides, as in the audit: a default pattern after
+    AR_DEVICE on both attempts is discarded_divergent (two runs in the ledger), not infrastructure_failure_final."""
+    root = make_harness(tmp_path / "h")
+    clock = Clock(0.0)
+    disk = RunOutcome.infrastructure_failure("infrastructure_log_pattern", pattern="No space left on device")
+    fake_campaign_runs(monkeypatch, clock, 1.0, outcome=lambda n: disk if n in (2, 3) else RunOutcome.ok(0.5),
+                       log=LOG_HEAD + "AR_DEVICE cpu\nOSError: No space left on device\n")
+    data = A.validate_campaign(campaign_file(root, budget=1))
+    chat = ScriptedChat([(reply(D_HALF), 300)] + [(reply(D_EXTRA0), 300)] * 3)
+    rec = A.run_campaign(data, root, tmp_path / "out", gpu_uuids=(), cpu_list=(0,), chat=chat,
+                         gate=lambda r: None, clock=clock)
+    assert rec["stop"] is None
+    led = [json.loads(x) for x in (tmp_path / "out" / "instance_1_history" / A.LEDGER_NAME).read_text().splitlines()]
+    assert led[1]["decision"] == "discarded_divergent" and len(led[1]["runs"]) == 2
+    assert led[1]["final_outcome"]["reason"] == "infrastructure_pattern_after_ar_device_repeated"
+    assert [r["outcome"]["kind"] for r in led[1]["runs"]] == ["infrastructure_failure", "divergent"]
+
+
 # =============================================================================================== chunk file
 def units_of(root: Path, tmp: Path, chains: list[list[str]]) -> list[dict]:
     return [{"unit": f"unit-{i}", "code_state_sha256": state_of(root, c, tmp), "diffs": c} for i, c in enumerate(chains)]
@@ -462,15 +481,24 @@ def test_attribution_edit_caused_failures_are_divergent():
 LOG_HEAD = "parent dumpable-off; starting worker\n"
 
 
-def test_attribution_default_log_pattern_after_ar_device_is_divergent():
+def test_attribution_default_log_pattern_after_ar_device_is_divergent_when_it_recurs():
     disk = RunOutcome.infrastructure_failure("infrastructure_log_pattern", pattern="No space left on device")
     after = LOG_HEAD + "AR_DEVICE cuda NVIDIA x torch=2\nstep 1 loss 0.5\nOSError: No space left on device\n"
-    out, why = A.attribute(disk, None, None, log_text=after)
-    assert (out.kind, out.reason) == ("divergent", "infrastructure_pattern_after_ar_device")
+    out, why = A.attribute(disk, None, None, log_text=after)                 # first occurrence: rerun (round 2)
+    assert out is disk and why["edit_phase_pattern"] is True
+    out, why = A.attribute(disk, None, None, log_text=after, prior_pattern=True)
+    assert (out.kind, out.reason) == ("divergent", "infrastructure_pattern_after_ar_device_repeated")
+    assert A.attribute(disk, None, None, log_text=after, prior_crash=True)[0] is disk   # a different flag recurring
     before = LOG_HEAD + "No space left on device\nAR_DEVICE cuda x\nOSError: No space left on device\n"
-    assert A.attribute(disk, None, None, log_text=before)[0] is disk           # the host's, before the edit runs
-    assert A.attribute(disk, None, None, log_text="no device line\nNo space left on device\n")[0] is disk
-    assert A.attribute(disk, None, None, log_text=None)[0] is disk
+    out, why = A.attribute(disk, None, None, log_text=before, prior_pattern=True)
+    assert out is disk and "edit_phase_pattern" not in why                    # the host's, before the edit runs
+    # nit: another default pattern before AR_DEVICE keeps infrastructure, though the reported one follows it
+    mixed = LOG_HEAD + "Input/output error\nAR_DEVICE cuda x\nOSError: No space left on device\n"
+    out, why = A.attribute(disk, None, None, log_text=mixed, prior_pattern=True)
+    assert out is disk and "edit_phase_pattern" not in why
+    assert A.attribute(disk, None, None, log_text="no device line\nNo space left on device\n",
+                       prior_pattern=True)[0] is disk
+    assert A.attribute(disk, None, None, log_text=None, prior_pattern=True)[0] is disk
     node = RunOutcome.infrastructure_failure("infrastructure_log_pattern", pattern=r"AR_INFRA no GPU")
     assert A.attribute(node, None, None, log_text="AR_DEVICE cuda\nAR_INFRA no GPU\n")[0] is node   # node-specific
 
@@ -664,20 +692,30 @@ def test_audit_fault_signal_is_rerun_then_divergent_if_it_recurs(tmp_path):
     assert rows[7002]["outcome"]["kind"] == "ok" and rows[7002]["attempts"] == 2
 
 
-def test_audit_default_log_pattern_in_the_edited_output_is_divergent(tmp_path):
+def test_audit_default_log_pattern_in_the_edited_output_is_divergent_when_it_recurs(tmp_path):
     root = make_harness(tmp_path / "h")
     units = units_of(root, tmp_path, [[], [D_HALF]])
     half = units[1]["code_state_sha256"]
     disk = RunOutcome.infrastructure_failure("infrastructure_log_pattern", pattern="No space left on device")
-    log = (lambda st, seed, n: LOG_HEAD + ("AR_DEVICE cpu\nOSError: No space left on device\n" if st == half
-                                          else "OSError: No space left on device\nAR_DEVICE cpu\n"))
-    f = FakeFactory(lambda st, seed, n: (disk, None), log=log)
-    rec = run_audit(chunk_file(root, units, [7001]), root, tmp_path / "out", f)
-    rows = {r["unit"]: r for r in _rows(tmp_path / "out")}
+    edit_phase = "AR_DEVICE cpu\nOSError: No space left on device\n"
+    log = (lambda st, seed, n: LOG_HEAD + (edit_phase if st == half else
+                                          "OSError: No space left on device\nAR_DEVICE cpu\n"))
+
+    def behaviour(st, seed, n):
+        if st == half and seed == 7002 and n >= 1:      # a one-off host fault in the edit phase: the rerun is ok
+            return RunOutcome.ok(0.5), None
+        return disk, None
+    f = FakeFactory(behaviour, log=log)
+    rec = run_audit(chunk_file(root, units, [7001, 7002]), root, tmp_path / "out", f)
+    rows = {(r["unit"], r["seed"]): r for r in _rows(tmp_path / "out")}
     assert rec["stop"] is None
-    assert rows["unit-1"]["outcome"] == {"kind": "divergent", "reason": "infrastructure_pattern_after_ar_device"}
-    assert rows["unit-1"]["attempts"] == 1                                 # no rerun, so no infrastructure loop
-    assert rows["unit-0"]["outcome"]["kind"] == "infrastructure_failure" and rows["unit-0"]["attempts"] == 3
+    rep = rows[("unit-1", 7001)]                         # recurs on the rerun: divergent, so no infrastructure loop
+    assert rep["outcome"] == {"kind": "divergent", "reason": "infrastructure_pattern_after_ar_device_repeated"}
+    assert rep["attempts"] == 2 and rep["attribution"]["edit_phase_pattern"] is True
+    assert rows[("unit-1", 7002)]["outcome"]["kind"] == "ok" and rows[("unit-1", 7002)]["attempts"] == 2
+    for seed in (7001, 7002):                            # before AR_DEVICE: the host's, rerun twice, one row
+        assert rows[("unit-0", seed)]["outcome"]["kind"] == "infrastructure_failure"
+        assert rows[("unit-0", seed)]["attempts"] == 3
 
 
 def test_audit_unexpected_exception_still_writes_the_record(tmp_path):

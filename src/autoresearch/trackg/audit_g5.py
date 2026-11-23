@@ -44,8 +44,9 @@ The contract (``g5_job.engine_contract()``), item by item:
   its infrastructure outcomes, :func:`attribute` gives three to the code state: a kill while the job scope's memory
   limit was hit (``oom`` and ``oom_kill`` both rose in its ``memory.events``), a fault signal of the frozen parent
   that recurs on the rerun of the same code state and seed, and a default infrastructure log pattern that appears
-  only after the run's first ``AR_DEVICE`` line.  A kill without that evidence, a first fault signal, a launch error
-  and other log patterns stay infrastructure failures and are rerun.  The audit and (through
+  only after the run's first ``AR_DEVICE`` line and recurs on that rerun.  A kill without that evidence, a first
+  fault signal or edit-phase pattern, a launch error and other log patterns stay infrastructure failures and are
+  rerun.  The audit and (through
   :class:`G5CampaignRunner`) the campaign apply the same rules.
 * **Records** carry ``stop`` (text) and ``stop_kind``, one of ``refused`` (input, pins, node), ``deadline``,
   ``integrity``, ``unisolated``, ``transport``, ``baseline_failed``, ``runner`` (a host refusal outside a run
@@ -115,6 +116,7 @@ KILL_EXIT_SIGNALS = {137: signal.SIGKILL, 143: signal.SIGTERM}         # shell-r
 RUN_DEADLINE_MARGIN_SECONDS = 60.0                 # a run starts only if 3 x census + 60 s fit before the deadline
 LLM_CALL_ALLOWANCE_SECONDS = 120.0                 # a manager call starts only if this plus one run fit as well
 AR_DEVICE_LINE = re.compile(r"^AR_DEVICE ", re.MULTILINE)   # printed by every GPU node before editable code runs
+RECURRENCE_FLAGS = ("crash_signal", "edit_phase_pattern")      # attribution flags that need a recurrence
 STOP_KINDS = ("refused", "deadline", "integrity", "unisolated", "transport", "baseline_failed", "runner", "error")
 CAMPAIGN_KEYS = frozenset({
     "schema", "label", "run_id", "node", "family", "wave", "spec_path", "node_dir", "node_spec_sha256",
@@ -301,15 +303,16 @@ def instance_dir_name(inst: dict[str, Any]) -> str:
 class CampaignGuard:
     """What a G.5 campaign checks before every run and every manager call (review M1): the job kills the engine at
     ``deadline_epoch``, and an isolated run it was supervising would outlive it, so nothing starts that could end
-    past the deadline.  It also carries the ``memory.events`` source and the crash-signal counts for
-    :func:`attribute` (the same rules as the audit)."""
+    past the deadline.  It also carries the ``memory.events`` source and, per (code state, training seed), the
+    recurrence flags of earlier attempts (``crash_signal``, ``edit_phase_pattern``) for :func:`attribute` (the same
+    rules as the audit)."""
 
     deadline_epoch: float
     run_seconds: float                       # 3 x census + RUN_DEADLINE_MARGIN_SECONDS
     clock: Callable[[], float]
     memory_cgroup: Path | None = None
     memory_events: Callable[[Path | None], dict[str, int] | None] | None = None
-    crashes: dict[tuple[str, int | None], int] = field(default_factory=dict)
+    seen: dict[tuple[str, int | None], set[str]] = field(default_factory=dict)
 
     def check_run(self, run_id: str) -> None:
         _need(self.clock() + self.run_seconds <= self.deadline_epoch,
@@ -333,8 +336,8 @@ class G5CampaignRunner(WorkingCopyRunner):
       level of the run record (``code_state_sha256``, ``code_state_raw_sha256``, ``code_state_source:
       "diff_provenance"``); a refused diff whose provenance has no code state gets none;
     * an executed run's infrastructure outcome goes through :func:`attribute`, as in the audit (an OOM kill at the
-      scope's memory limit, a fault signal that recurs on the rerun, a default infrastructure log pattern only after
-      ``AR_DEVICE`` are divergent); the record then carries ``outcome_attribution`` and the new outcome, and a state
+      scope's memory limit, a fault signal or an edit-phase default log pattern that recurs on the rerun of the same
+      code state and seed are divergent); the record then carries ``outcome_attribution`` and the new outcome, and a state
       made divergent is registered as evaluated, as the runner registers any non-infrastructure run."""
 
     def __init__(self, *args, guard: CampaignGuard | None = None, **kwargs) -> None:
@@ -356,13 +359,13 @@ class G5CampaignRunner(WorkingCopyRunner):
             rec["code_state_source"] = "diff_provenance"
         if guard is not None and rec.get("executed") and result.outcome is not None:
             key = (rec.get("code_state_sha256"), kw.get("train_seed"))
-            prior = guard.crashes.get(key, 0)
+            prior = guard.seen.setdefault(key, set())
             outcome, why = attribute(result.outcome, before, after, log_text=_run_log(result),
-                                     prior_crash=prior > 0)
+                                     prior_crash="crash_signal" in prior,
+                                     prior_pattern="edit_phase_pattern" in prior)
             if why is not None:
                 rec["outcome_attribution"] = why
-                if why.get("crash_signal"):
-                    guard.crashes[key] = prior + 1
+                prior.update(flag for flag in RECURRENCE_FLAGS if why.get(flag))
             if outcome is not result.outcome:
                 result.outcome = outcome
                 rec["outcome"] = outcome.to_dict()
@@ -589,7 +592,8 @@ def read_memory_events(cgroup: Path | None) -> dict[str, int] | None:
 
 
 def attribute(outcome: RunOutcome, before: dict[str, int] | None, after: dict[str, int] | None, *,
-              log_text: str | None = None, prior_crash: bool = False) -> tuple[RunOutcome, dict[str, Any] | None]:
+              log_text: str | None = None, prior_crash: bool = False, prior_pattern: bool = False
+              ) -> tuple[RunOutcome, dict[str, Any] | None]:
     """Ruling 1: an infrastructure outcome that the code state caused becomes divergent.
 
     The runner's classifier already makes divergent: a non-finite loss or metric, no metric, the budget not
@@ -605,11 +609,17 @@ def attribute(outcome: RunOutcome, before: dict[str, int] | None, after: dict[st
       this attempt **and** on an earlier attempt of the same code state and seed (``prior_crash``).  A first fault
       stays infrastructure and is rerun, since a parent fault can also be a host fault (review m2); the record's
       attribution says ``crash_signal: true`` so the caller can count it;
-    * ``infrastructure_pattern_after_ar_device`` -- a match of a **default** infrastructure log pattern
-      (``outcome.DEFAULT_INFRASTRUCTURE_LOG_PATTERNS``) whose every occurrence lies after the run's first
-      ``AR_DEVICE`` line, that is in the output of the edited code's phase (review m3).  Node-specific patterns are
-      anchored before ``AR_DEVICE`` by design and stay infrastructure; so does a default pattern in a node that never
-      prints ``AR_DEVICE`` (``mlgym_houseprice``).
+    * ``infrastructure_pattern_after_ar_device_repeated`` -- a **default** infrastructure log pattern
+      (``outcome.DEFAULT_INFRASTRUCTURE_LOG_PATTERNS``) matched only after the run's first ``AR_DEVICE`` line, that
+      is in the output of the edited code's phase (review m3), with no default pattern at all before that line, on
+      this attempt **and** on an earlier attempt of the same code state and seed (``prior_pattern``).  A first such
+      match stays infrastructure and is rerun, since a host I/O fault during training looks the same (round-2
+      residual); the attribution says ``edit_phase_pattern: true``.  Node-specific patterns are anchored before
+      ``AR_DEVICE`` by design and stay infrastructure; so does a default pattern in a node that never prints
+      ``AR_DEVICE`` (``mlgym_houseprice``).
+
+    A host fault that persists across two consecutive attempts of the same code state and seed therefore gives a
+    ``*_repeated`` divergent outcome; its attribution names the rule and the evidence, so such rows can be counted.
 
     Everything else keeps its class and is rerun: a kill without evidence that the run caused it (a host-wide OOM
     raises ``oom_kill`` without ``oom``; an outside SIGTERM), a launch error, no exit status.  ``ok`` and
@@ -629,12 +639,19 @@ def attribute(outcome: RunOutcome, before: dict[str, int] | None, after: dict[st
         device = AR_DEVICE_LINE.search(log_text or "")
         hits = [m.start() for m in re.finditer(pattern, log_text or "", re.MULTILINE)] if pattern else []
         evidence["pattern"] = pattern
+        head = (log_text or "")[:device.start()] if device is not None else ""
+        before_device = any(re.search(p, head, re.MULTILINE) for p in DEFAULT_INFRASTRUCTURE_LOG_PATTERNS)
         if pattern in DEFAULT_INFRASTRUCTURE_LOG_PATTERNS and device is not None and hits \
-                and min(hits) > device.start():
-            return RunOutcome.divergent("infrastructure_pattern_after_ar_device"), dict(
-                evidence, rule="edit-caused: a default infrastructure pattern only in the edited code's output")
-        return outcome, dict(evidence, rule="infrastructure (a log pattern before AR_DEVICE, node-specific, or no "
-                                            "AR_DEVICE line)")
+                and min(hits) > device.start() and not before_device:
+            evidence["edit_phase_pattern"] = True
+            if prior_pattern:
+                return RunOutcome.divergent("infrastructure_pattern_after_ar_device_repeated"), dict(
+                    evidence, rule="edit-caused: a default infrastructure pattern only in the edited code's output, "
+                                   "again on the rerun of the same code state and seed")
+            return outcome, dict(evidence, rule="infrastructure on the first edit-phase pattern (rerun; divergent if "
+                                                "it recurs)")
+        return outcome, dict(evidence, rule="infrastructure (a default pattern before AR_DEVICE, a node-specific "
+                                            "pattern, or no AR_DEVICE line)")
     if outcome.reason != "killed":
         return outcome, dict(evidence, rule="infrastructure (not a kill)")
     sig = outcome.detail.get("signal") or KILL_EXIT_SIGNALS.get(outcome.detail.get("returncode"))
@@ -727,9 +744,10 @@ def run_audit(data: dict[str, Any], harness_root: Path, out_dir: Path, *, gpu_uu
                                                        f"{(rec.get('diff') or {}).get('status')})", "integrity")
                     _need(rec.get("code_state_sha256") == expected[unit],
                           f"STOP: integrity: run {n + 1} ran another code state than the planned unit's", "integrity")
-                    prior_crash = any((a.get("attribution") or {}).get("crash_signal") for a in attempts)
+                    earlier = [a.get("attribution") or {} for a in attempts]
                     outcome, attribution = attribute(result.outcome, before, after, log_text=_run_log(result),
-                                                     prior_crash=prior_crash)
+                                                     prior_crash=any(a.get("crash_signal") for a in earlier),
+                                                     prior_pattern=any(a.get("edit_phase_pattern") for a in earlier))
                     shutil.rmtree(result.work_dir, ignore_errors=True)   # the node copy; record and log stay
                     base = {"run_id": result.run_id, "executed": True,
                             "code_state_sha256": rec.get("code_state_sha256"),
