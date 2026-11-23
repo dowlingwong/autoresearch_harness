@@ -53,6 +53,8 @@ D_HALF = udiff(BASE_TRAIN, HALF_TRAIN)                                     # acc
 D_EXTRA = udiff(HALF_TRAIN, HALF_TRAIN.replace('MODE = "half"', 'MODE = "half"\nEXTRA = 1'))
 D_CRASH = udiff(HALF_TRAIN, HALF_TRAIN.replace('MODE = "half"', 'MODE = "crash"'))
 D_NAN = udiff(HALF_TRAIN, HALF_TRAIN.replace('MODE = "half"', 'MODE = "nan"'))
+D_EXTRA0 = udiff(BASE_TRAIN, BASE_TRAIN.replace('MODE = "ok"', 'MODE = "ok"\nEXTRA = 1'))   # on the baseline
+D_INERT0 = udiff(BASE_TRAIN, BASE_TRAIN.replace('MODE = "ok"', 'MODE = "ok"  # a comment only'))
 
 
 def paper():
@@ -152,6 +154,10 @@ def test_existing_callers_keep_their_guards():
                                     "mlgym_breakout_minatar")
     assert pilot_g4.PILOT_SEED_BLOCK == range(4001, 4100)
     assert nf.RESERVED_SEEDS == (range(7001, 7011), range(9001, 10000))
+    import inspect  # noqa: PLC0415
+    from autoresearch.trackg.campaign_v2_diff import run_v2_diff_campaign  # noqa: PLC0415
+    assert inspect.signature(run_v2_diff_campaign).parameters["runner_factory"].default is WorkingCopyRunner  # G.4
+    assert issubclass(A.G5CampaignRunner, WorkingCopyRunner)
     with pytest.raises(pilot_g4.PilotStop, match="4001-4099"):
         pilot_g4.validate_pilot({"schema": pilot_g4.PILOT_SCHEMA, "label": "ENGINEERING_ONLY", "node": "mlab_cifar10",
                                  "proposal_schema": "manager_proposal/v2-diff", "extra_payload": {"cache_prompt": False},
@@ -656,16 +662,19 @@ def _test_limits_from(limits: ResourceLimits) -> ResourceLimits:
 
 @pytest.fixture(scope="module")
 def real_campaign(tmp_path_factory):
-    """One real wave-1 campaign (4 instances, W = 2) on the isolated fake node, minimising accuracy so that D_HALF is
-    kept.  Instance 1 keeps D_HALF then discards D_EXTRA (a chain of two diffs); 2: D_HALF then D_CRASH (divergent);
-    3: D_HALF then D_NAN (divergent); 4: a reply at the cap (invalid), then an unparseable reply (invalid)."""
+    """One real wave-1 campaign (4 instances, W = 3) on the isolated fake node, minimising accuracy so that D_HALF is
+    kept.  Instance 1 keeps D_HALF, discards D_EXTRA (a chain of two diffs), then an unparseable reply (invalid);
+    2: D_HALF, D_CRASH (divergent), then D_HALF again in a reply at the cap (invalid, not run); 3: D_HALF, D_NAN
+    (divergent), unparseable; 4: D_EXTRA0 on the baseline (discarded), the same diff again (not-run duplicate), and a
+    comment-only diff (not-run inert)."""
     tmp = tmp_path_factory.mktemp("g5camp")
     root = make_harness(tmp / "h", metric_direction="minimize")
-    data = A.validate_campaign(campaign_file(root, budget=2))
-    chat = ScriptedChat([(reply(D_HALF, "half"), 300), (reply(D_EXTRA, "extra"), 300),
-                         (reply(D_HALF, "half"), 300), (reply(D_CRASH, "crash"), 300),
-                         (reply(D_HALF, "half"), 300), (reply(D_NAN, "nan"), 300),
-                         (reply(D_HALF, "half"), 4096), ("not json", 100)])
+    data = A.validate_campaign(campaign_file(root, budget=3))
+    chat = ScriptedChat([(reply(D_HALF, "half"), 300), (reply(D_EXTRA, "extra"), 300), ("not json", 100),
+                         (reply(D_HALF, "half"), 300), (reply(D_CRASH, "crash"), 300), (reply(D_HALF, "half"), 4096),
+                         (reply(D_HALF, "half"), 300), (reply(D_NAN, "nan"), 300), ("not json", 100),
+                         (reply(D_EXTRA0, "extra0"), 300), (reply(D_EXTRA0, "extra0"), 300),
+                         (reply(D_INERT0, "comment"), 300)])
     mp = pytest.MonkeyPatch()
     mp.setattr(A, "build_limits", _test_limits)
     try:
@@ -686,24 +695,33 @@ def test_real_campaign_ledgers_and_record(real_campaign):
     ledgers = _ledgers(rc["out"])
     assert sorted(ledgers) == [f"instance_{k}_history" for k in (1, 2, 3, 4)]
     decisions = {name: [json.loads(x)["decision"] for x in lines] for name, lines in ledgers.items()}
-    assert decisions == {"instance_1_history": ["baseline", "kept", "discarded"],
-                         "instance_2_history": ["baseline", "kept", "discarded_divergent"],
-                         "instance_3_history": ["baseline", "kept", "discarded_divergent"],
-                         "instance_4_history": ["baseline", "invalid_proposal", "invalid_proposal"]}
+    assert decisions == {"instance_1_history": ["baseline", "kept", "discarded", "invalid_proposal"],
+                         "instance_2_history": ["baseline", "kept", "discarded_divergent", "invalid_proposal"],
+                         "instance_3_history": ["baseline", "kept", "discarded_divergent", "invalid_proposal"],
+                         "instance_4_history": ["baseline", "discarded", "not_run_duplicate", "not_run_inert"]}
     for lines in ledgers.values():
         for e in map(json.loads, lines):
             assert e["schema"] == "trackg_v2_diff_campaign_ledger/v1"
             for run in e.get("runs", []):
-                assert run["executed"] is True and isinstance(run["elapsed_seconds_info_only"], float)
-                assert "sealed" not in run
+                assert run["executed"] is (e["decision"] not in ("not_run_duplicate", "not_run_inert"))
+                if run["executed"]:
+                    assert isinstance(run["elapsed_seconds_info_only"], float) and "code_state_source" not in run
+                assert "sealed" not in run and A._SHA.fullmatch(run["code_state_sha256"])   # top level, every run
             if e["step"] >= 1:
                 assert e["manager_call"]["request"]["cache_prompt"] is False
                 assert e["manager_call"]["request"]["max_tokens"] == 4096
                 assert e["manager_call"]["request"]["temperature"] == 0.2
-    trunc = json.loads(ledgers["instance_4_history"][1])["manager_call"]
+    inst4 = [json.loads(x) for x in ledgers["instance_4_history"]]
+    base_state, ran = inst4[0]["runs"][-1]["code_state_sha256"], inst4[1]["runs"][-1]
+    dup, inert = inst4[2]["runs"][-1], inst4[3]["runs"][-1]
+    # what g5_assemble reads for a not-run step: the last run record's top-level code_state_sha256
+    assert dup["code_state_sha256"] == ran["code_state_sha256"] == dup["diff"]["code_state_sha256"] != base_state
+    assert dup["code_state_source"] == "diff_provenance" and dup["diff"]["duplicate"] is True
+    assert inert["code_state_sha256"] == base_state and inert["code_state_source"] == "diff_provenance"
+    trunc = json.loads(ledgers["instance_2_history"][3])["manager_call"]
     assert trunc["truncated"] is True and trunc["usage"]["completion_tokens"] == 4096
     seeds = [p["seed"] for p in rc["chat"].payloads]
-    assert len(set(seeds)) == 8                       # D26 seed per instance seed and step
+    assert len(set(seeds)) == 12                      # D26 seed per instance seed and step
     runs = [json.loads(ledgers["instance_1_history"][0])["runs"][0]]
     assert runs[0]["seeds"] == {"train": 5101, "split": 5101}
     crec = json.loads((rc["out"] / "campaign_record.json").read_text())
@@ -719,10 +737,15 @@ def test_real_campaign_then_audit_through_the_paper_readers(real_campaign, tmp_p
     ledgers = _ledgers(rc["out"])
     counts = J.campaign_counts(ledgers, max_tokens=4096, ctx=32768, timeout_basis=20.0)
     assert counts["counts"]["truncated"] == 1 and counts["counts"]["truncated_not_invalid"] == 0
-    assert counts["counts"]["invalid"] == 2 and counts["checks"]["requests_without_cache_prompt_false"] == 0
+    assert counts["counts"]["invalid"] == 3 and counts["checks"]["requests_without_cache_prompt_false"] == 0
+    assert (counts["counts"]["duplicate"], counts["counts"]["inert"]) == (1, 1)
+    for lines in ledgers.values():                    # the expression g5_assemble.node_rows uses for not-run steps
+        for e in map(json.loads, lines):
+            if e["decision"] in ("not_run_duplicate", "not_run_inert"):
+                assert (e.get("runs") or [{}])[-1].get("code_state_sha256")
     plan = J.audit_plan(spec, NODE, 1, ledgers, k=6)
     by_diffs = {tuple(u["diffs"]): u for u in plan["units"]}
-    assert set(by_diffs) == {(), (D_HALF,), (D_HALF, D_EXTRA), (D_HALF, D_CRASH), (D_HALF, D_NAN)}
+    assert set(by_diffs) == {(), (D_HALF,), (D_HALF, D_EXTRA), (D_HALF, D_CRASH), (D_HALF, D_NAN), (D_EXTRA0,)}
     node = {"node": NODE, "family": "G5-7", "spec_path": SPEC_REL, "node_dir": NODE_REL, **pins(rc["root"]),
             "slowest_census_seconds": 20.0, "run_seconds": J.CHUNK_LIMIT_S / 1.875 / 6.5}   # chunks of 6 runs (one unit)
     chunks = J.chunk_plan(plan, node)

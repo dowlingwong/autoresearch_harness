@@ -42,7 +42,10 @@ and passes the pin, the kit (read-only for the worker) and the incumbent's expec
 working copy that differs (something outside the declared diffs changed the kit or an incumbent snapshot)
 writes a ``stop_integrity`` ledger line and STOPs. A transport
 failure of the manager (``ManagerTransportStop``) writes a ``stop_transport`` line and STOPs. ``record_gate`` (optional; the T1 jobs pass ``noise_floor.check_effective``) is called on every executed run
-record; a refusal writes a ``stop_unisolated`` line and STOPs.  The campaign has no
+record; a refusal writes a ``stop_unisolated`` line and STOPs.  ``runner_factory`` (optional; default
+:class:`WorkingCopyRunner`, so G.4's path is unchanged) builds the runner of every run with the same arguments; the
+G.5 engine (:mod:`autoresearch.trackg.audit_g5`) passes a subclass that adds the code state of a not-run diff to the
+top level of its record.  The campaign has no
 resume: an HTCondor eviction of the job that runs it ends the campaign, and a restart refuses the existing
 ``runs_root`` (Unit 2's resume-safe units are not wired here).
 
@@ -89,6 +92,7 @@ def run_v2_diff_campaign(
     interpreter: str = "python3",
     unisolated_reason: str | None = None,
     record_gate: Callable[[dict[str, Any]], None] | None = None,
+    runner_factory: Callable[..., WorkingCopyRunner] = WorkingCopyRunner,
 ) -> list[dict[str, Any]]:
     if enable_v2_diff is not True:
         raise V2DiffCampaignError("the v2-diff campaign path is off: pass enable_v2_diff=True explicitly")
@@ -130,8 +134,8 @@ def run_v2_diff_campaign(
         while True:
             run_id = step_tag + (f"_r{attempt}" if attempt else "")
             try:
-                result = WorkingCopyRunner(spec, incumbent_dir, runs, frozen_pin=frozen_pin,
-                                           protect_paths=(kit_dir,)).run(
+                result = runner_factory(spec, incumbent_dir, runs, frozen_pin=frozen_pin,
+                                         protect_paths=(kit_dir,)).run(
                     run_id, limits, train_seed=train_seed, split_seed=split_seed, diff_text=diff_text,
                     evaluated=evaluated, interpreter=interpreter, expected_incumbent_state=expected_state[0])
             except IntegrityError as error:
