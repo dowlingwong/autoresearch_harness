@@ -43,7 +43,7 @@ working copy that differs (something outside the declared diffs changed the kit 
 writes a ``stop_integrity`` ledger line and STOPs. A transport
 failure of the manager (``ManagerTransportStop``) writes a ``stop_transport`` line and STOPs. ``record_gate`` (optional; the T1 jobs pass ``noise_floor.check_effective``) is called on every executed run
 record; a refusal writes a ``stop_unisolated`` line and STOPs.  ``runner_factory`` (optional; default
-:class:`WorkingCopyRunner`, so G.4's path is unchanged) builds the runner of every run with the same arguments; the
+:class:`WorkingCopyRunner`, so G.4's runner is unchanged; the hunk-header recount below applies to G.4 too) builds the runner of every run with the same arguments; the
 G.5 engine (:mod:`autoresearch.trackg.audit_g5`) passes a subclass that adds the code state of a not-run diff to the
 top level of its record.  The campaign has no
 resume: an HTCondor eviction of the job that runs it ends the campaign, and a restart refuses the existing
@@ -52,14 +52,26 @@ resume: an HTCondor eviction of the job that runs it ends the campaign, and a re
 Every step appends one line to ``<runs_root>/campaign_ledger.jsonl`` (never overwritten): the proposal
 fields, the manager call record (prompt hash, seed, raw reply and its hash, usage), every run record of
 the step (``manager_view``: no sealed test metric), the decision and the incumbent after the step.
+
+**Hunk-header recount** (R1-G5-DIFF-RECOUNT, option A; :func:`recount_hunk_headers`).  Before a proposal's diff
+goes to the runner, the line counts of its hunk headers are recomputed from the hunk bodies (``git apply
+--recount`` semantics, with the differences listed in that function).  Only the counts in ``@@`` lines of a
+**copy** are rewritten; ``diff_support`` (the strict parser, scope, context and offset matching, inert and
+duplicate checks) is unchanged and applies the copy.  The ledger keeps the manager's text in ``proposal.diff``
+(D7-DIFF B, O1); the step's ``diff_recount`` block discloses whether, and which, headers were rewritten, with the
+sha256 of both texts.  The run record's ``diff.diff_text`` and ``diff.diff_sha256`` are those of the text the runner
+applied (the copy; equal to the manager's text when nothing was recounted).  The G.5 audit re-materialises units
+through the same function (:mod:`autoresearch.trackg.audit_g5`).
 """
 from __future__ import annotations
 
+import hashlib
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from autoresearch.trackg.diff_support import EvaluatedStates
+from autoresearch.trackg.diff_support import _ALLOWED_GIT_HEADERS, _HUNK_RE, _REFUSED_GIT_HEADERS, EvaluatedStates
 from autoresearch.trackg.manager_v2_diff import ManagerTransportStop, V2DiffManager
 from autoresearch.trackg.node_template import TrackGNodeSpec
 from autoresearch.trackg.outcome import DIVERGENT, INFRASTRUCTURE_FAILURE, OK, RunOutcome
@@ -74,6 +86,215 @@ TIMEOUT_REPEATED = "timeout_repeated"
 
 class V2DiffCampaignError(RuntimeError):
     pass
+
+
+# =============================================================================================== hunk-header recount
+DIFF_RECOUNT_RULE = "trackg_diff_recount/v1"
+_FILE_LEVEL_PREFIXES = _ALLOWED_GIT_HEADERS + _REFUSED_GIT_HEADERS   # lines no hunk body line can start with
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", errors="surrogateescape")).hexdigest()
+
+
+@dataclass
+class DiffRecount:
+    """The result of :func:`recount_hunk_headers`: ``text`` is what the runner applies."""
+
+    text: str
+    hunks: int = 0                                    # hunk headers the scan reached
+    recounted: list[dict[str, Any]] = field(default_factory=list)
+    left: str | None = None                           # why a hunk was left to the strict parser (scan stopped)
+    left_line: int | None = None
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.recounted)
+
+    def record(self, raw: str) -> dict[str, Any]:
+        """The ledger's ``diff_recount`` block (no diff text)."""
+        return {"rule": DIFF_RECOUNT_RULE, "changed": self.changed, "hunks_seen": self.hunks,
+                "hunks_recounted": len(self.recounted), "recounted": list(self.recounted),
+                "left_to_strict_parser": self.left, "left_at_line": self.left_line,
+                "raw_diff_sha256": _sha(raw), "applied_diff_sha256": _sha(self.text)}
+
+
+def _strict_end(lines: list[str], i: int, old_count: int, new_count: int) -> int | None:
+    """Where ``diff_support._parse_hunk`` would end a hunk read with the header's counts (the index after it), or
+    None where it would refuse (a bad line tag, or the counts not met before the end).  Same loop as the parser."""
+    old_seen = new_seen = 0
+    while i < len(lines) and (old_seen < old_count or new_seen < new_count):
+        line = lines[i]
+        if line.startswith("\\"):
+            i += 1
+            continue
+        tag = line[0] if line else " "
+        if tag not in " -+":
+            return None
+        old_seen += tag in " -"
+        new_seen += tag in " +"
+        i += 1
+    if old_seen != old_count or new_seen != new_count:
+        return None
+    if i < len(lines) and lines[i].startswith("\\"):
+        i += 1
+    return i
+
+
+def _separator(line: str) -> bool:
+    """A blank line that is not a context line: empty, or whitespace that does not start with a space (a line of
+    one space is the canonical empty context line and stays context)."""
+    return line.strip() == "" and not line.startswith(" ")
+
+
+def _is_pair(lines: list[str], i: int) -> bool:
+    return lines[i].startswith("--- ") and i + 1 < len(lines) and lines[i + 1].startswith("+++ ")
+
+
+def _strict_reading_fits(lines: list[str], end: int) -> bool:
+    """The header's counts describe the hunk: what follows its strict reading is not more hunk body.  That is the
+    end, a hunk header, or (after blank lines, which the strict parser skips between file patches) the end, a
+    ``---``/``+++`` file-header pair or any line that is not a body line other than ``@@`` (the strict parser then
+    decides as before).  Blank lines followed by ``@@`` are more body (empty context, as git counts them); the strict
+    parser refuses that layout, so this changes no diff it accepts."""
+    if end >= len(lines) or lines[end].startswith("@@"):
+        return True
+    j = end
+    while j < len(lines) and lines[j].strip() == "":
+        j += 1
+    if j >= len(lines) or _is_pair(lines, j):
+        return True
+    if lines[j].startswith("@@"):      # blank lines and then a hunk header: the blank lines are empty context
+        return False
+    return lines[j][0] not in " -+"
+
+
+def recount_hunk_headers(diff_text: Any) -> DiffRecount:
+    """Recompute each hunk header's line counts from its body (``git apply --recount`` semantics) in a copy.
+
+    The scan follows ``diff_support.parse_unified_diff``'s structure.  Per hunk:
+
+    1. **The header first.**  If the header's counts give the strict parser's reading and what follows is not more
+       body (:func:`_strict_reading_fits`), the hunk is left as it is.  So every diff the strict parser accepts is
+       returned unchanged (byte for byte), and so are its refusals that do not come from wrong counts.
+    2. **Otherwise the body decides.**  The body runs from the line after the header to the first of: a line that
+       starts with ``@@`` (the next hunk header, parsed or refused by the strict parser); a file-level git line
+       (``diff --git``, ``index``, ``new file mode``, ``deleted file mode``, or a refused rename/copy/mode/binary
+       line); in a file patch **without** a ``diff --git`` line, a ``--- `` line immediately followed by a ``+++ ``
+       line (the next file header); the end of the diff.  Blank lines just before a file header or the end (empty, or
+       whitespace not starting with a space) are separators, as the strict parser skips them between file patches;
+       a line of one space is always empty context, and elsewhere an empty line is empty context too (as in git).  Its old count is the context (`` ``, empty) plus removed (``-``) lines, its new count the
+       context plus added (``+``) lines; ``\\ No newline at end of file`` markers are not counted.  The header's
+       start lines and its trailing text are kept; only the two counts are rewritten (as ``start,count``).
+    3. **No safe recount: the hunk is left as it is**, the scan stops, and the strict parser refuses the diff with
+       the reason it gave before (``malformed_hunk`` or ``malformed_diff``):
+
+       * a body line with a bad tag (a line that is none of the above and does not start with `` ``, ``-``,
+         ``+`` or ``\\``);
+       * an empty body (no counted line);
+       * a body without old lines whose header has old lines: the header's start line alone would place the
+         insertion, and ``diff_support`` uses a different convention for an old count of 0, so the position would
+         change;
+       * in a file patch without a ``diff --git`` line, a ``--- ``/``+++ `` pair inside the body that is not
+         immediately followed by an ``@@`` line: it is either a removed ``-- ...`` line followed by an added
+         ``++ ...`` line, or a file header without hunks, and nothing decides which.
+
+    A hunk header that does not match the strict parser's pattern stops the scan too (``malformed_hunk`` follows),
+    as does any line the strict parser refuses between file patches.
+
+    **The ``-- ``/``++ `` rule.**  Where the patch has a ``diff --git`` line, a ``--- ``/``+++ `` pair inside a
+    recounted body is body (a removed line, then an added line), as in git, whose recount ends a body only at
+    ``@@ `` or ``diff ``; if it was in fact a second file's header without its ``diff --git`` line, the removed
+    line ``-- a/<path>`` must then match the first file exactly, so the diff is refused (``context_mismatch``),
+    never applied elsewhere.  Without a ``diff --git`` line (the prompt asks for ``--- a/``/``+++ b/`` headers),
+    such a pair followed by ``@@`` is a file header; the strict parser then checks it as one (paths, no rename,
+    a file only once).
+
+    Nothing else changes: the strict parser, the scope check, exact context matching with its unique-offset
+    search, and the inert and duplicate checks all run on the copy as before.  Not text: returned as it is."""
+    if not isinstance(diff_text, str):
+        return DiffRecount(text=diff_text)
+    rewritten = diff_text.split("\n")
+    lines = rewritten[:-1] if rewritten and rewritten[-1] == "" else list(rewritten)   # as the parser drops it
+    n = len(lines)
+    out = DiffRecount(text=diff_text)
+
+    def stop(reason: str, index: int) -> DiffRecount:
+        out.left, out.left_line = reason, index + 1
+        return finish()
+
+    def finish() -> DiffRecount:
+        if out.recounted:
+            out.text = "\n".join(rewritten)
+        return out
+
+    i, git_pending = 0, False
+    while i < n:
+        line = lines[i]
+        if line.startswith(_REFUSED_GIT_HEADERS) or (line.startswith("new file mode")
+                                                       and line.split()[-1] != "100644"):
+            return stop("unsupported_file_line", i)
+        if line.strip() == "" or line.startswith(_ALLOWED_GIT_HEADERS):
+            git_pending = git_pending or line.startswith("diff --git ")
+            i += 1
+            continue
+        if not _is_pair(lines, i):
+            return stop("not_a_file_header", i)
+        git_style, git_pending = git_pending, False
+        i += 2
+        while i < n and lines[i].startswith("@@"):
+            match = _HUNK_RE.match(lines[i])
+            if not match:
+                return stop("bad_hunk_header", i)
+            out.hunks += 1
+            h_old = int(match.group(2)) if match.group(2) is not None else 1
+            h_new = int(match.group(4)) if match.group(4) is not None else 1
+            end = _strict_end(lines, i + 1, h_old, h_new)
+            if end is not None and _strict_reading_fits(lines, end):
+                i = end
+                continue
+            # the body decides
+            j, terminator = i + 1, "end"
+            while j < n:
+                body = lines[j]
+                if body.startswith("@@"):
+                    terminator = "hunk"
+                    break
+                if body.startswith(_FILE_LEVEL_PREFIXES):
+                    terminator = "file"
+                    break
+                if not git_style and _is_pair(lines, j):
+                    if j + 2 >= n or not lines[j + 2].startswith("@@"):
+                        return stop("ambiguous_file_header_pair", j)
+                    terminator = "file"
+                    break
+                if body.strip() and body[0] not in " -+\\":
+                    return stop("bad_line_tag", j)
+                j += 1
+            stop_at = j
+            if terminator != "hunk":
+                while stop_at > i + 1 and _separator(lines[stop_at - 1]):
+                    stop_at -= 1
+            b_old = b_new = 0
+            for k in range(i + 1, stop_at):
+                body = lines[k]
+                if body.startswith("\\"):
+                    continue
+                tag = body[0] if body else " "
+                if tag not in " -+":       # a whitespace-only line such as a tab: a bad tag for the strict parser
+                    return stop("bad_line_tag", k)
+                b_old += tag in " -"
+                b_new += tag in " +"
+            if b_old + b_new == 0:
+                return stop("empty_body", i)
+            if b_old == 0 and h_old != 0:
+                return stop("no_old_lines", i)
+            if (b_old, b_new) != (h_old, h_new):
+                rewritten[i] = (f"@@ -{match.group(1)},{b_old} +{match.group(3)},{b_new} @@"
+                                + lines[i][match.end():])
+                out.recounted.append({"line": i + 1, "header": [h_old, h_new], "body": [b_old, b_new]})
+            i = stop_at
+    return finish()
 
 
 def run_v2_diff_campaign(
@@ -209,8 +430,10 @@ def run_v2_diff_campaign(
             summary = proposal.summary
             entry["proposal"] = {"schema_version": proposal.schema_version, "rationale": proposal.rationale,
                                  "summary": proposal.summary, "objective": proposal.objective,
-                                 "diff": proposal.diff}
-            outcome, result = run_with_retries(f"s{step:03d}", proposal.diff, entry)
+                                 "diff": proposal.diff}       # the manager's text as written (O1)
+            recount = recount_hunk_headers(proposal.diff)
+            entry["diff_recount"] = recount.record(proposal.diff)
+            outcome, result = run_with_retries(f"s{step:03d}", recount.text, entry)
             hint = entry.pop("decision_hint")
             if outcome is not None:
                 entry["final_outcome"] = outcome.to_dict()
