@@ -3,7 +3,9 @@
 **Status.** Coded, committed locally on two branches and unit-tested in a CPU container. Nothing is pushed. Nothing
 ran on a GPU, on TASL-2 or on TASL-7. No label, evaluation value, sealed file, G.1b or G.5 output was read. The
 report is ENGINEERING_ONLY. AI-assisted (Claude). The independent review ACCEPTED `e8a0dd65`/`04914a54` with no
-major finding; its six minors are applied in one code commit and this revised report (§12 maps each one).
+major finding; its six minors were applied (§12). The confirmation review of that round was NOT ACCEPTED: the m2
+change (trailing blank lines as context) moved hunks to other blank lines. This revision restores the separator
+rule, adds fail-closed guards, and keeps the other minors (§13).
 
 **Authority.** PLAN row `R1-G5-DIFF-RECOUNT` (paper `main` `3024db3f`, `docs/r1/PLAN.md` line 1508), option A: the
 G.5 harness commits apply a manager diff after recomputing each hunk header's line counts from the hunk body
@@ -15,17 +17,17 @@ user's task text for this unit, and the coordinator's constraint (below) that th
 
 | Family | Base (reviewed G.5 tip, READY 95) | Branch | Code commit | Report commit |
 |---|---|---|---|---|
-| G5-7 | `52e3c0b0` | `mac-trackg-g5-7-20261124` | `9eb0eb40`; review minors `a983b424` | `e8a0dd65` (accepted); this revision on top |
-| G5-AR | `00829da1` | `mac-trackg-g5-ar-20261124` | `197d3ecb`; review minors `326b4dcb` (`cherry-pick -x` of each) | `04914a54`; cherry-pick of this revision |
+| G5-7 | `52e3c0b0` | `mac-trackg-g5-7-20261124` | `9eb0eb40`; minors `a983b424`; confirmation round `f31050f5` | `e8a0dd65` (accepted), `db9c3d95`; this revision on top |
+| G5-AR | `00829da1` | `mac-trackg-g5-ar-20261124` | `197d3ecb`; `326b4dcb`; `a3ea5dd7` (`cherry-pick -x` of each) | `04914a54`, `fd87eeea`; cherry-pick of this revision |
 
 The files the unit adds or changes are byte-identical in both families:
 
 | File | sha256 (both families) |
 |---|---|
-| `src/autoresearch/trackg/campaign_v2_diff.py` (changed; was `904e498b…`) | `d179858f127f5fc17cc49d4bc5816b51d69b98d69fab820eb26dc9f239f201b3` |
+| `src/autoresearch/trackg/campaign_v2_diff.py` (changed; was `904e498b…`) | `b213c6543de33ee17a9fa403d69be193e3174ef5f76bbfb79775692def1a442e` |
 | `src/autoresearch/trackg/audit_g5.py` (changed; was `1089dbac…`) | `5f384204c34e297191281bb3981db57607d58333222adab6def97e8d099e2690` |
 | `scripts/trackg_g4_reclassify.py` (new) | `af1b3368c77ded6383d0b63ef1cc1b145b8b3ccc5e38e346714ea93a9a35804d` |
-| `tests/trackg/test_trackg_diff_recount.py` (new) | `289768b89a062d7a26b73ce3bc5c7eee3ce5449fce4d98df3b67d1e66dbf0997` |
+| `tests/trackg/test_trackg_diff_recount.py` (new) | `0e86693e00de45921ed2601c084297990848480c0c99d7862ea87c447d703b8b` |
 | `tests/trackg/test_trackg_g4_reclassify.py` (new) | `e699b51d8b2f2b21caef4e92bdf9bc6c294351b520cea471a9ad88e067eafbb4` |
 | `docs/r1/reports/trackg_g5_20261124/G5_DIFF_RECOUNT_20261124.md` (new) | this file |
 
@@ -95,30 +97,45 @@ file header; `@@` lines are hunks. Per hunk:
    added (`+`) lines. A context line starts with a space or is empty. `\ No newline at end of file` markers are not
    counted. The header's start lines and its trailing text (for example a function name) are kept; only the counts
    are rewritten, as `start,count`.
-3. **Blank lines** (revised after review m2). In a recounted body **every blank line is context**, as git counts
-   `'\n'` and `' '` lines. That includes blank lines just before the next file header, before an `@@` line, or at the
-   end of the diff, so each must match a blank line of the file. The only text not read as a line is the empty
-   string after the diff's final newline, which the strict parser drops too. A whitespace line that does not start
-   with a space (a tab, a carriage return) is a bad tag, as for the strict parser.
-   - This is the narrowest rule that fails closed. The first version treated trailing blank lines before a file
-     header or the end as separators. That dropped a real trailing empty context line, applying hunks that git
-     refuses, and it was inconsistent: the same diff was refused when its header happened to be too large by exactly
-     the trailing blanks. Both cases are now refused when the file has no blank line there (tested).
-   - Header-first still decides first: where the header's counts fit the hunk without the trailing blank lines, the
-     strict parser's accepted reading is kept and those lines stay the separators it skips, exactly as in G.4. The
-     identity check on more than 300 accepted diffs still passes.
+3. **Blank lines** (round 1's rule, restored in the confirmation round). In a recounted hunk, blank lines (empty
+   or whitespace only, a one-space line included) **directly before the next file header or the end of the diff are
+   separators**, as the strict parser skips them between file patches. Blank lines elsewhere (inside the body, or
+   before an `@@` line) are empty context, as in git. A whitespace line inside the body that does not start with a
+   space (a tab, a carriage return) is a bad tag, as for the strict parser.
+   - **This differs from git `--recount`,** which counts the trailing blank lines as context. Where a real trailing
+     empty context line is dropped, a hunk that git refuses may be accepted here, with one context line fewer,
+     placed by its other old lines. It is never moved: a hunk left with no non-blank old line is refused (point 4,
+     `blank_only_anchor`). The fuzz in §7 found no placement different from the correctly counted diff's.
+   - Round 2 counted the trailing blank lines as context, as git does (review m2). That moved insertions to other
+     blank lines of the file (the confirmation review's cases A, A2, B and C; about 2 per 100 of my fuzz diffs), so
+     it is withdrawn.
+   - Header-first still decides first: where the header's counts fit the hunk, the strict parser's reading is
+     kept, whether it counts a trailing blank line as context or skips it as a separator, exactly as in G.4. The
+     identity check on more than 300 accepted diffs passes.
 4. **No safe recount: the hunk is left as it is**, the scan stops, and the strict parser refuses the diff. In a
    one-hunk diff the reason is the one G.4 gave. In a diff with several hunks, earlier hunks may already be
    recounted, so the strict parser can reach a fault it did not reach before, and the reason can differ from G.4's
    (for example `malformed_hunk` where G.4 said `malformed_diff`, or the reverse). The diff is refused either way
    (review m4). This happens for:
-   - `bad_line_tag`: a body line that starts with none of space, `-`, `+` or `\`, and is not a terminator. A tab line
+   - `bad_line_tag`: a body line that starts with none of space, `-`, `+` or `\`, and is not a terminator. A tab line inside the body
      counts here, as it does for the strict parser. Refused `malformed_hunk` (or `malformed_diff`, as before).
    - `empty_body`: no counted line. Refused `malformed_hunk`.
    - `no_old_lines`: a body with no context and no removed line, whose header has old lines. Only the header's start
      line places such an insertion, and `diff_support` locates a hunk with an old count of 0 one line later than one
      with an old count of 1 or more. A recount would move it, so it is refused (`malformed_hunk`). A header whose old
      count is already 0 is recounted: only its new count changes, and the position stays the same.
+   - `blank_only_anchor` (confirmation round): a recounted hunk with no non-blank old line (no non-blank context and
+     no removed line) that has blank context lines or lost trailing blank lines as separators. It is placed only by
+     its header's start line and by blank lines, which match many places of a file. Whether a trailing blank line
+     was context or a separator decides the place: it changes the old count, and with it where `diff_support` looks
+     first. Nothing in the text decides which, so the hunk is refused (`malformed_hunk`). A pure insertion with no
+     blank line at all keeps the header's own convention and is recounted (only its new count changes).
+   - **Whole diff:** if any hunk of a diff is recounted, every hunk the header decides (point 1) must also have a
+     non-blank old line, or be a pure insertion with no blank line in it or right after it. Otherwise the whole diff
+     is left as written (`blank_only_anchor`), and the strict parser refuses it on its wrong-count hunks, as in G.4.
+     A header that fits by counting a trailing blank line as context places such a hunk at a blank line of the file,
+     which need not be where the manager meant. A diff the strict parser accepts recounts no hunk, so this changes
+     none of them.
    - `ambiguous_file_header_pair`: see the next point.
    - A hunk header that does not match the strict pattern (`bad_hunk_header`, then `malformed_hunk`), or a line the
      strict parser refuses between file patches.
@@ -165,7 +182,8 @@ apply.
 | Body ends at | `@@ ` or `diff ` | `@@`, any file-level git line, end; a `---`/`+++` pair followed by `@@` only in patches without `diff --git` |
 | Header counts | ignored | used only where they fit the body exactly (point 1); then identical to the old rule |
 | `---`/`+++` pair in the body | body (multi-file patches without `diff --git` then break in git) | body with `diff --git`; file header (or an ambiguity refusal) without; disclosed residual in §3.5 |
-| Blank lines in a recounted body (also before the next file or the end) | context | context (the same; revised after review m2) |
+| Blank lines directly before the next file or the end, in a recounted hunk | context | separators (the strict parser's convention); a hunk then left with no non-blank old line is refused |
+| Hunk placed only by blank lines | applied where git's search finds the blanks | refused (`blank_only_anchor`), never moved |
 | Unexpected line, empty hunk | header kept (usually a later failure) | header kept, strict parser refuses (same in effect) |
 | Context-free insertion whose header had old lines | header start used | refused (`no_old_lines`) |
 | Matching | git's (newpos guess, beginning/end anchoring, options) | `diff_support`'s, unchanged (zero fuzz, exact context, unique offset) |
@@ -195,7 +213,8 @@ apply.
   ```
   {"rule": "trackg_diff_recount/v1", "changed": bool, "hunks_seen": n, "hunks_recounted": k,
    "recounted": [{"line": header line in the diff (1-based), "header": [old, new], "body": [old, new]}, ...],
-   "left_to_strict_parser": null | "bad_line_tag" | "empty_body" | "no_old_lines" | "ambiguous_file_header_pair"
+   "left_to_strict_parser": null | "bad_line_tag" | "empty_body" | "no_old_lines" | "blank_only_anchor"
+                            | "ambiguous_file_header_pair"
                             | "bad_hunk_header" | "not_a_file_header" | "unsupported_file_line",
    "left_at_line": null | n, "raw_diff_sha256": sha256(proposal.diff), "applied_diff_sha256": sha256(applied text)}
   ```
@@ -256,7 +275,7 @@ counts on both worktrees):
 
 | File | Result |
 |---|---|
-| `tests/trackg/test_trackg_diff_recount.py` (new) | 59 passed |
+| `tests/trackg/test_trackg_diff_recount.py` (new) | 66 passed |
 | `tests/trackg/test_trackg_g4_reclassify.py` (new) | 9 passed (1 of them uses the real git lookup of this checkout) |
 | `test_trackg_diff_support.py` | 27 passed |
 | `test_trackg_campaign_v2_diff.py` | 16 passed |
@@ -281,9 +300,18 @@ counts on both worktrees):
   header after a recounted hunk; empty bodies; context-free insertions; the zero-zero hunk.
 - **The `-- `/`++ ` cases:** right counts; the ambiguous pair; a pair before `@@` in three variants, each refused;
   git style; a missing `diff --git` line refused.
-- **Structure:** several hunks and files; blank lines as context, including the reviewer's m2 example (a hunk
-  ending in an empty line where the file has none, refused under a wrong header and under a header too large by
-  exactly the trailing blank) and the header that excludes it (G.4's reading kept); three "No newline" cases.
+- **Structure:** several hunks and files; blank separators and empty context; three "No newline" cases.
+- **The confirmation review's cases:** C (git style, `@@ -6,0 +7,2 @@`, then an empty line and `diff --git`), A (an
+  insertion at the end followed by an empty line and the next file) and A2 (an extra newline at the end). Each is
+  refused, never moved, and the same insertion without the empty line is placed correctly (after line 6, at the
+  end). B (`@@ -10,1 +10,3 @@` with one added line and a trailing blank) is refused (`no_old_lines`). Three
+  blank-anchored variants (a one-space line before the end, an empty line before `@@`) are refused.
+- **The round-1 reviewer's example** (a hunk ending in an empty line where `long.py` has V04): under a wrong header
+  it is accepted at the same place as the correctly counted diff without that line (the disclosed difference from
+  git). With a header too large by exactly the trailing blank (3/3) it is refused (header first: the blank line is
+  context). With a header that excludes it (2/2) it is applied, G.4's reading.
+- **Fuzz** (3,000 seeded diffs in the test, more below): wrong counts, some wrong start lines, blank separators,
+  trailing empty and one-space lines, git and plain style. No placement differs from the correctly counted diff's.
 - **The disclosed residual** of §3.5 (m1), reproduced.
 - **Identity:** byte identity on more than 300 accepted random diffs; more than 300 perturbed headers restored
   exactly.
@@ -302,6 +330,41 @@ review minors on the final tips named in the hand-off, from a fresh scratch work
 - `g5_tasl.measurement_path_check` passes for both families: 308 measurement-path files unchanged;
   `engine_files_in_closure` `[]`; closure 15 files, unchanged. `g5_added` is the reports, `audit_g5.py`, the test
   files and `scripts/trackg_g4_reclassify.py`. `scripts/` is outside the measurement directories.
+
+**Fuzz of wrong-header diffs** (confirmation round; `fuzz_wrong_headers` in the test file, run outside the test with
+3 seeds × 8,000 cases). Files have 6-16 lines, 20 % blank and 7 % repeated lines. Diffs have one or two files and
+one or two hunks per file, with blank context written as a space or as an empty line. 80 % of headers get random
+counts (0-6); 30 % get a start line off by 1-3, in the correctly counted reference too. 35 % of file patches are
+followed by one or two empty lines, 10 % by a one-space line, and 25 % of diffs get an extra final newline. Each
+recounted diff is applied in memory (`parse_unified_diff` and `diff_support._apply_patch`) and compared with the
+correctly counted diff with the same start lines. The same diffs were run through round 1 (`e8a0dd65`) and round 2
+(`db9c3d95`):
+
+| Seed (diffs) | rule | same place | refused | **different place** | G.4 reading, unchanged text |
+|---|---|---|---|---|---|
+| 1 (7,699) | round 1 | 5,231 | 2,423 | **41** | 4 |
+| | round 2 | 2,887 | 4,668 | **140** | 4 |
+| | this revision | 5,098 | 2,597 | **0** | 4 |
+| 2 (7,703) | round 1 | 5,244 | 2,396 | **60** | 3 |
+| | round 2 | 2,877 | 4,664 | **159** | 3 |
+| | this revision | 5,079 | 2,621 | **0** | 3 |
+| 3 (7,716) | round 1 | 5,192 | 2,447 | **71** | 6 |
+| | round 2 | 2,837 | 4,699 | **174** | 6 |
+| | this revision | 5,124 | 2,586 | **0** | 6 |
+
+- **Differences from the reviewer's fuzz.** The reviewer's 8,000-diff fuzz found 0 wrong placements for round 1.
+  Mine finds 41-71 per seed, because it also writes blank context as an empty line at the end of a hunk, perturbs
+  start lines and adds trailing one-space lines. In those cases round 1 dropped a real blank context line, or kept
+  a one-space separator, and placed the hunk one line off or at another blank line. The guards of point 4 refuse
+  them.
+- **Liveness.** This revision places correctly 66 % of the fuzz diffs, against 68 % for round 1 and 37 % for round 2.
+  It refuses 608-654 diffs per seed that round 1 placed correctly. Of seed 1's 622: 584 are `blank_only_anchor`
+  (hunks placed only by blank lines, whose reading round 1 guessed right for these diffs and wrong for the 41 it
+  misplaced), 36 are `no_old_lines` (a trailing one-space line, now a separator, was their only old line) and 2
+  are other.
+- **"G.4 reading, unchanged text"** (3-6 per seed) are diffs the recount left as written, whose wrong header happens
+  to fit, so the strict parser accepts and places them exactly as G.4 would. They are not recount placements, and
+  header-first keeps them by design.
 
 ## 8. Offline re-classification of the G.4 refusals
 
@@ -381,13 +444,13 @@ and checked there.
 
 **The command on TASL-2.** It needs a harness checkout of this unit, the torch312 environment (which has the
 harness's dependencies) and the committed captures. A dedicated checkout (`harness_g4rc`) keeps `harness_g5` free for
-G.5. `SHA` below is the code commit of the review-minor round, `a983b4245fe35104ccba5c2d2bfcf14c3a4301f7`. It holds the
+G.5. `SHA` below is the code commit of the confirmation round, `f31050f52ba176fadd464010cfb9193c0d611458`. It holds the
 script and the engines at their final bytes. The final G5-7 tip (in the hand-off) adds only this report on top, so it
 may be used instead. The branch must first be published to `origin`; this unit does not push.
 
 ```
 cd /home/dowling/r1_tracks/t1_tasl
-SHA=a983b4245fe35104ccba5c2d2bfcf14c3a4301f7
+SHA=f31050f52ba176fadd464010cfb9193c0d611458
 H=/home/dowling/r1_tracks/t1_tasl/harness_g4rc
 test -e "$H" && exit 2                                  # a new checkout; nothing is replaced
 git clone --no-checkout https://github.com/dowlingwong/autoresearch_harness.git "$H"
@@ -471,6 +534,8 @@ refuse the rest as `malformed_diff`; some of the 33 may be count errors too.
 
 ## 11. Open points for the reviewer
 
+- **Trailing blank lines** before the next file or the end are separators here and context in git (§3.3); hunks left
+  placed only by blank lines are refused. Fuzz: 0 different placements in 23,118 diffs (§7).
 - **Header-first** (point 1) departs from "the header's counts are ignored", by design: it keeps every
   strict-accepted diff byte-identical, including the `-- `/`++ ` body case and trailing blank context. A pure
   git-style recount would change some diffs the strict parser accepted.
@@ -485,9 +550,44 @@ refuse the rest as `malformed_diff`; some of the 33 may be count errors too.
 
 | Finding | Fix |
 |---|---|
-| m2 (behaviour) — trailing blank lines dropped as separators under a wrong header | Code: every blank line of a recounted body is context, as in git; only the empty string after the final newline is not a line (§3.3). Header-first unchanged; the identity check still passes. Tests: the reviewer's example (refused under a wrong header and under a header too large by exactly the trailing blank), the same edit without the blank applies, and a header that excludes the blank keeps G.4's reading. |
+| m2 (behaviour) — trailing blank lines dropped as separators under a wrong header | Applied in round 2 (every blank body line as context, as in git), then **withdrawn in the confirmation round** (§13): it moved hunks to other blank lines. Round 1's separator rule is back, with fail-closed guards; the difference from git is disclosed (§3.3), and the round-1 example's behaviour is tested as disclosed. |
 | m1 — the docstring overstated "never applied elsewhere" | Docstring and §3.5 state the residual; a test reproduces it. The suggested refusal is not adopted, for the reason in §3.5. |
 | m3 — `diffs_recounted` counted occurrences | Now distinct diff texts, by sha256 of the manager's text; docstring and §5 match; test with a diff shared by three units' chains. |
 | m4 — refusal reasons can change in multi-hunk diffs | Docstring point 3 and §3.4 say so. |
 | m5 — the raw-hash claim | §5 reworded: the `_write_record` route, its cost, and why the chosen design is better. |
 | m6 — §8 steps, HEAD pin, scope, basis | Full checkout steps with the commit filled in and `test "$(git -C "$H" rev-parse HEAD)" = "$SHA" || exit 2`; the script refuses a `--harness-root` at another commit and records both commits; the scope of the acceptance; `new_rule` labelled per step against G.4's incumbents (`basis` in the output). |
+
+## 13. Confirmation round (NOT ACCEPTED `db9c3d95`/`fd87eeea`; cause: the m2 change)
+
+**Finding.** Counting trailing blank lines as context (round 2's m2) moved hunks on a 10-line file with a blank line
+at line 2:
+
+- **C:** a git-style `@@ -6,0 +7,2 @@` insertion followed by an empty line and `diff --git` went to line 2.
+- **A / A2:** an end-of-file insertion followed by an empty line (then the next file, or an extra newline) went to
+  line 2.
+- **B:** `@@ -10,1 +10,3 @@` with a trailing blank escaped `no_old_lines` and went to line 2.
+- **Fuzz:** about 2-5 per 1,000 wrong placements, and about 19-22 % of round 1's correct applications refused.
+
+**Fix** (code `f31050f5` / `a3ea5dd7`; m1, m3, m4, m5 and m6 kept):
+
+1. Round 1's rule is restored: blank lines (empty or whitespace only) directly before the next file header or the
+   end are separators in a recounted hunk. The one-space line is now included, because a kept one-space separator
+   placed hunks at other blank lines in my fuzz.
+2. Fail-closed guards (§3.4):
+   - `blank_only_anchor` refuses a recounted hunk with no non-blank old line that has blank context or lost
+     trailing blank lines;
+   - a recounted diff with a header-decided hunk placed only by blank lines is left as written.
+3. Header-first is unchanged; the identity check over more than 300 accepted diffs passes.
+
+**Tests.** Cases A, A2, B and C are refused, never moved, and the insertions without the blank line are placed
+correctly. The round-1 example asserts round-1 behaviour (accepted at the same place as the correctly counted diff
+without the blank; refused under the 3/3 header). A 3,000-diff fuzz asserts 0 different placements.
+
+**Counts** (§7): 0 different placements in 23,118 fuzz diffs, against 172 for round 1 and 473 for round 2 on the same
+diffs; 66 % placed correctly.
+
+**Departure from the instruction, for the reviewer.** The instruction was to restore round 1's rule exactly. My
+fuzz shows that round 1 itself places 0.5-0.9 % of these diffs at a different place. So the guards above go beyond
+round 1. They refuse A, A2 and C, which round 1 placed correctly: in those cases nothing in the text tells a blank
+separator from a blank context line, and the fuzz has both readings.
+
