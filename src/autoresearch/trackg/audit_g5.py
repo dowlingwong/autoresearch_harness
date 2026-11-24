@@ -58,7 +58,8 @@ The contract (``g5_job.engine_contract()``), item by item:
   ledger keeps the manager's text in ``proposal.diff`` (O1) and adds a ``diff_recount`` block per proposal; the
   audit re-materialises a unit from those texts through the same function, so rebuilt hashes equal the
   ledger's.  ``campaign_record.json`` and ``chunk_record.json`` name the rule (``diff_rule``); the chunk record
-  also counts its diffs whose headers were recounted (``diffs_recounted``).
+  also counts its distinct diff texts (by sha256 of the manager's text; a diff shared by several units' chains
+  counts once) whose headers were recounted (``diffs_recounted``).
 * Members: the job reads only the ledgers, ``out/chunk.json`` (its own file) and ``out/audit/rows.jsonl``.  The run
   directories under ``<out>`` (run records, logs, result channels; campaign working copies and code snapshots with
   any binaries a run wrote) stay in ``out.tar`` unread.  As in G.1b and G.4, a run record on disk keeps the sealed
@@ -725,7 +726,9 @@ def run_audit(data: dict[str, Any], harness_root: Path, out_dir: Path, *, gpu_uu
         record["memory_events_cgroup"] = str(mem_cgroup) if mem_cgroup is not None else None
         states_root.mkdir()
         record["diff_rule"] = DIFF_RECOUNT_RULE
-        record["diffs_recounted"] = sum(recount_hunk_headers(d).changed for u in data["units"] for d in u["diffs"])
+        distinct = {hashlib.sha256(d.encode("utf-8", errors="surrogateescape")).hexdigest(): d
+                    for u in data["units"] for d in u["diffs"]}
+        record["diffs_recounted"] = sum(recount_hunk_headers(d).changed for d in distinct.values())
         states = prepare_states(spec, node_dir, data, states_root)
         record["units_rematerialised"] = len(states)
         expected = {u["unit"]: u["code_state_sha256"] for u in data["units"]}

@@ -141,12 +141,6 @@ def _strict_end(lines: list[str], i: int, old_count: int, new_count: int) -> int
     return i
 
 
-def _separator(line: str) -> bool:
-    """A blank line that is not a context line: empty, or whitespace that does not start with a space (a line of
-    one space is the canonical empty context line and stays context)."""
-    return line.strip() == "" and not line.startswith(" ")
-
-
 def _is_pair(lines: list[str], i: int) -> bool:
     return lines[i].startswith("--- ") and i + 1 < len(lines) and lines[i + 1].startswith("+++ ")
 
@@ -181,13 +175,18 @@ def recount_hunk_headers(diff_text: Any) -> DiffRecount:
        starts with ``@@`` (the next hunk header, parsed or refused by the strict parser); a file-level git line
        (``diff --git``, ``index``, ``new file mode``, ``deleted file mode``, or a refused rename/copy/mode/binary
        line); in a file patch **without** a ``diff --git`` line, a ``--- `` line immediately followed by a ``+++ ``
-       line (the next file header); the end of the diff.  Blank lines just before a file header or the end (empty, or
-       whitespace not starting with a space) are separators, as the strict parser skips them between file patches;
-       a line of one space is always empty context, and elsewhere an empty line is empty context too (as in git).  Its old count is the context (`` ``, empty) plus removed (``-``) lines, its new count the
-       context plus added (``+``) lines; ``\\ No newline at end of file`` markers are not counted.  The header's
-       start lines and its trailing text are kept; only the two counts are rewritten (as ``start,count``).
-    3. **No safe recount: the hunk is left as it is**, the scan stops, and the strict parser refuses the diff with
-       the reason it gave before (``malformed_hunk`` or ``malformed_diff``):
+       line (the next file header); the end of the diff.  **Every blank line of the body is context** (an empty
+       line or a line of one space is an empty context line, as git counts ``'\\n'`` and ``' '``), including blank
+       lines just before the next file header or the end, so they must match blank lines of the file.  The only
+       line not read is the empty string after the diff's final newline, which the strict parser drops too.  (With
+       a header that fits, point 1, blank lines after the hunk stay the separators the strict parser skips, as in
+       G.4.)  Its old count is the context plus removed (``-``) lines, its new count the context plus added (``+``)
+       lines; ``\\ No newline at end of file`` markers are not counted.  The header's start lines and its trailing
+       text are kept; only the two counts are rewritten (as ``start,count``).
+    3. **No safe recount: the hunk is left as it is**, the scan stops, and the strict parser refuses the diff
+       (``malformed_hunk`` or ``malformed_diff``).  In a diff with several hunks, earlier hunks may already be
+       recounted, so the strict parser can reach a fault it did not reach before and the reason can differ from
+       G.4's (for example ``malformed_hunk`` where G.4 said ``malformed_diff``); the diff is refused either way:
 
        * a body line with a bad tag (a line that is none of the above and does not start with `` ``, ``-``,
          ``+`` or ``\\``);
@@ -205,10 +204,14 @@ def recount_hunk_headers(diff_text: Any) -> DiffRecount:
     **The ``-- ``/``++ `` rule.**  Where the patch has a ``diff --git`` line, a ``--- ``/``+++ `` pair inside a
     recounted body is body (a removed line, then an added line), as in git, whose recount ends a body only at
     ``@@ `` or ``diff ``; if it was in fact a second file's header without its ``diff --git`` line, the removed
-    line ``-- a/<path>`` must then match the first file exactly, so the diff is refused (``context_mismatch``),
-    never applied elsewhere.  Without a ``diff --git`` line (the prompt asks for ``--- a/``/``+++ b/`` headers),
-    such a pair followed by ``@@`` is a file header; the strict parser then checks it as one (paths, no rename,
-    a file only once).
+    line ``-- a/<path>`` must then match the first file exactly, so the diff is refused (``context_mismatch``).
+    Without a ``diff --git`` line (the prompt asks for ``--- a/``/``+++ b/`` headers), such a pair followed by
+    ``@@`` is a file header; the strict parser then checks it as one (paths, no rename, a file only once).
+    **Disclosed residual:** if such a pair was meant as body (a removed line ``-- a/P`` and an added line
+    ``++ b/P``, where ``P`` is another editable file), the hunks after it are applied to ``P`` whenever their context
+    matches ``P`` exactly; git's recount would have kept them in the current file.  No text-only test separates the
+    two readings without also refusing every wrong-count multi-file patch in the prompt's format, so this is not
+    refused (``tests/trackg/test_trackg_diff_recount.py`` builds such a case).
 
     Nothing else changes: the strict parser, the scope check, exact context matching with its unique-offset
     search, and the inert and duplicate checks all run on the copy as before.  Not text: returned as it is."""
@@ -254,27 +257,19 @@ def recount_hunk_headers(diff_text: Any) -> DiffRecount:
                 i = end
                 continue
             # the body decides
-            j, terminator = i + 1, "end"
+            j = i + 1
             while j < n:
                 body = lines[j]
-                if body.startswith("@@"):
-                    terminator = "hunk"
-                    break
-                if body.startswith(_FILE_LEVEL_PREFIXES):
-                    terminator = "file"
+                if body.startswith("@@") or body.startswith(_FILE_LEVEL_PREFIXES):
                     break
                 if not git_style and _is_pair(lines, j):
                     if j + 2 >= n or not lines[j + 2].startswith("@@"):
                         return stop("ambiguous_file_header_pair", j)
-                    terminator = "file"
                     break
                 if body.strip() and body[0] not in " -+\\":
                     return stop("bad_line_tag", j)
                 j += 1
-            stop_at = j
-            if terminator != "hunk":
-                while stop_at > i + 1 and _separator(lines[stop_at - 1]):
-                    stop_at -= 1
+            stop_at = j                    # every blank line of the body is context (as git counts it)
             b_old = b_new = 0
             for k in range(i + 1, stop_at):
                 body = lines[k]
