@@ -225,9 +225,11 @@ def recount_hunk_headers(diff_text: Any) -> DiffRecount:
     A hunk header that does not match the strict parser's pattern stops the scan too (``malformed_hunk`` follows),
     as does any line the strict parser refuses between file patches.
 
-    **A recounted diff keeps no blank-placed hunk.**  If any hunk of the diff is recounted, every hunk the header
-    decides (point 1) must also have a non-blank old line, or be a pure insertion with no blank line in or right after
-    it.  Otherwise the whole diff is left as written (``blank_only_anchor``) and the strict parser refuses it, as in
+    **A recounted diff keeps no blank-context-only hunk and none followed by a separator.**  If any hunk of the diff
+    is recounted, every hunk the header decides (point 1) must also have a non-blank old line, or be a pure insertion
+    with no blank line in or right after it.  (A header-fitting hunk whose only old lines are removed blank lines, or
+    an anchored one whose fitting header counts a trailing separator as context, is not flagged; it is read exactly as
+    the strict parser reads it.)  Otherwise the whole diff is left as written (``blank_only_anchor``) and the strict parser refuses it, as in
     G.4: a fitting header that counts a trailing blank line as context places such a hunk at a blank line of the file,
     which need not be where the manager meant.  A diff the strict parser accepts recounts no hunk, so this changes
     none of them.
