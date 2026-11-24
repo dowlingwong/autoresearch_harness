@@ -20,7 +20,11 @@ its bare ``out.tar``) this script
    ``write=False``, against the rebuilt incumbent and the duplicate registry rebuilt from the ledger) under the G.4
    rule (the manager's text) and under the new rule (the text after
    ``campaign_v2_diff.recount_hunk_headers``).  Nothing is trained, run or sent to a model.  For every other
-   proposal it checks that the recount leaves the text unchanged (the G.4 rule accepted it).
+   proposal it checks that the recount leaves the text unchanged (the G.4 rule accepted it).  The counts are per
+   step against G.4's actual incumbents (``basis`` in the output), not a G.4b trajectory.
+
+``--harness-root`` must be the checkout this script runs from, at the same commit (``git rev-parse HEAD``); the
+script refuses otherwise and records both commits and whether each checkout is clean.
 
 Output: JSON per node and in total (before, G.4-rule replay, after, by reason), on stdout and, with ``--out``, in a
 new file (never overwritten).
@@ -57,6 +61,9 @@ PILOT_SCHEMA = "trackg_g4_pilot/v1"
 LEDGER_SCHEMA = "trackg_v2_diff_campaign_ledger/v1"
 LEDGER_MEMBER = re.compile(r"^out/pilot/(instance_[A-Za-z0-9_.-]+)/campaign_ledger\.jsonl$")
 PILOT_MEMBER = "out/pilot.json"
+BASIS = ("per refused step, against the incumbent G.4 actually had at that step (rebuilt from the kit and G.4's kept "
+         "diffs) and the states G.4 had evaluated by then: a static, per-step re-classification, not a G.4b "
+         "trajectory (a proposal applied under the new rule would have run and could have changed later incumbents)")
 
 
 class ReclassifyStop(RuntimeError):
@@ -284,9 +291,27 @@ def reclassify_node(attempt: Path, captures: Path, harness_root: Path) -> dict[s
             **summarise_rows(rows), "steps": rows}
 
 
-def _harness_commit(root: Path) -> str | None:
-    res = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True)
+def _head(path: Path) -> str | None:
+    """HEAD of the git checkout that holds *path*, or None."""
+    res = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], capture_output=True, text=True)
     return res.stdout.strip() if res.returncode == 0 else None
+
+
+def _dirty(path: Path) -> bool | None:
+    res = subprocess.run(["git", "-C", str(path), "status", "--porcelain"], capture_output=True, text=True)
+    return bool(res.stdout.strip()) if res.returncode == 0 else None
+
+
+def check_checkouts(harness_root: Path) -> dict[str, Any]:
+    """The harness root must be a checkout at the commit this script runs from (fail closed: an unknown HEAD on
+    either side is a mismatch).  Both commits and whether each checkout is clean go into the output."""
+    script_dir = Path(__file__).resolve().parent
+    script_commit, root_commit = _head(script_dir), _head(Path(harness_root))
+    if script_commit is None or root_commit is None or script_commit != root_commit:
+        raise ReclassifyStop(f"STOP: --harness-root HEAD {root_commit} is not the commit this script runs from "
+                             f"({script_commit}); run the script of the harness checkout given as --harness-root")
+    return {"script_commit": script_commit, "harness_root_commit": root_commit,
+            "script_checkout_dirty": _dirty(script_dir), "harness_root_dirty": _dirty(Path(harness_root))}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -299,13 +324,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"STOP: {a.out} exists; never overwritten", file=sys.stderr)
         return 2
     try:
+        checkouts = check_checkouts(a.harness_root)
         nodes = [reclassify_node(attempt, caps, a.harness_root) for attempt, caps in a.pair]
     except (ReclassifyStop, OSError, ValueError, KeyError, tarfile.TarError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
     rows = [r for n in nodes for r in n["steps"]]
-    result = {"schema": SCHEMA, "label": "ENGINEERING_ONLY", "rule": DIFF_RECOUNT_RULE,
-              "harness_commit": _harness_commit(a.harness_root), "nodes": nodes,
+    result = {"schema": SCHEMA, "label": "ENGINEERING_ONLY", "rule": DIFF_RECOUNT_RULE, **checkouts,
+              "basis": BASIS, "nodes": nodes,
               "total": {"proposals": sum(n["proposals"] for n in nodes),
                         "accepted_by_g4_rule": sum(n["accepted_by_g4_rule"] for n in nodes),
                         "accepted_text_unchanged": sum(n["accepted_text_unchanged"] for n in nodes),

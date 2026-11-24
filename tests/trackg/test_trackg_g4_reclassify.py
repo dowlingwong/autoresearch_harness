@@ -36,10 +36,14 @@ REPLIES = [
 ]
 
 
-def _load_script():
+def _load_script(heads=("c" * 40, "c" * 40)):
+    """The script module; the synthetic harness root is not a git checkout, so the HEAD lookup is stubbed: the
+    script's own checkout gets heads[0], any other path heads[1]."""
     spec = importlib.util.spec_from_file_location("trackg_g4_reclassify", SCRIPT)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    script_dir = SCRIPT.parent.resolve()
+    module._head = lambda path: heads[0] if Path(path).resolve() == script_dir else heads[1]
     return module
 
 
@@ -111,6 +115,8 @@ def test_reclassifies_the_refused_proposals_offline(sealed, tmp_path, capsys):
     assert rc == 0, capsys.readouterr().err
     result = json.loads(out.read_text())
     assert result["schema"] == "trackg_g4_reclassify/v1" and result["label"] == "ENGINEERING_ONLY"
+    assert result["script_commit"] == result["harness_root_commit"] == "c" * 40
+    assert "not a G.4b trajectory" in result["basis"]
     node = result["nodes"][0]
     assert node["members_read"] == ["out/pilot.json", "out/pilot/instance_1/campaign_ledger.jsonl"]
     assert node["verification"]["out_tar_sha256"] == _sha(attempt / "out.tar")
@@ -170,3 +176,23 @@ def test_a_changed_kit_is_reported_not_classified(sealed, capsys):
     result = json.loads(capsys.readouterr().out)
     assert rc == 3 and result["nodes"][0]["instance_stops"]["instance_1"].startswith("the node kit")
     assert result["nodes"][0]["steps"] == []
+
+
+@pytest.mark.parametrize("heads", [("a" * 40, "b" * 40), ("a" * 40, None), (None, None)])
+def test_a_harness_root_at_another_commit_is_refused(sealed, capsys, heads):
+    """Review m6: --harness-root must be at the commit the script runs from; an unknown HEAD fails closed."""
+    harness, attempt, captures = sealed
+    assert _load_script(heads).main(["--harness-root", str(harness), "--pair", str(attempt), str(captures)]) == 2
+    assert "is not the commit this script runs from" in capsys.readouterr().err
+
+
+def test_the_real_head_lookup_matches_this_checkout():
+    """Without the stub, the script's own checkout and --harness-root = that checkout agree (this repository)."""
+    spec = importlib.util.spec_from_file_location("trackg_g4_reclassify_real", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    root = SCRIPT.parents[1]
+    if module._head(root) is None:
+        pytest.skip("not run from a git checkout")
+    out = module.check_checkouts(root)
+    assert out["script_commit"] == out["harness_root_commit"] == module._head(root)

@@ -290,7 +290,6 @@ def test_several_hunks_and_files_with_wrong_counts(env, tmp_path):
     right = ("--- a/model/long.py\n+++ b/model/long.py\n"
              "@@ -2,3 +2,3 @@\n V02 = 2\n-V03 = 3\n+V03 = 30\n V04 = 4\n"
              "@@ -40,2 +40,3 @@\n V40 = 40\n+V40b = 41\n V41 = 41\n"
-             "\n"
              "--- a/train.py\n+++ b/train.py\n@@ -8,1 +8,1 @@\n-LEARNING_RATE = 0.1\n+LEARNING_RATE = 0.2\n"
              "--- a/model/net.py\n+++ b/model/net.py\n@@ -1,3 +1,3 @@\n-WIDTH = 64\n+WIDTH = 128\n"
              " # width of the hidden layer\n DEPTH = 2\n")
@@ -305,17 +304,59 @@ def test_several_hunks_and_files_with_wrong_counts(env, tmp_path):
     assert normalised_diff_sha256(parse_unified_diff(rec.text)) == good.provenance["normalised_diff_sha256"]
 
 
-def test_blank_lines_before_the_next_file_or_the_end_are_separators_and_before_a_hunk_are_context(env):
+def test_blank_lines_in_a_recounted_body_are_context(env):
+    """Review m2: as in git, every blank line of a recounted body is context, also just before the next file
+    header or the end; only the empty string after the final newline is not a line."""
     text = ("--- a/model/long.py\n+++ b/model/long.py\n@@ -2,9 +2,9 @@\n V02 = 2\n-V03 = 3\n+V03 = 30\n\n\n"
             "--- a/train.py\n+++ b/train.py\n@@ -8,9 +8,9 @@\n-LEARNING_RATE = 0.1\n+LEARNING_RATE = 0.2\n\n")
     out = recount_hunk_headers(text).text.splitlines()
-    assert out[2] == "@@ -2,2 +2,2 @@" and out[10] == "@@ -8,1 +8,1 @@"
-    # a line of one space is the canonical empty context line: kept as context
+    assert out[2] == "@@ -2,4 +2,4 @@" and out[10] == "@@ -8,2 +8,2 @@"
     assert recount_hunk_headers(text.replace("+V03 = 30\n\n\n", "+V03 = 30\n \n")).text.splitlines()[2] \
         == "@@ -2,3 +2,3 @@"
-    # blank lines before a hunk header are empty context, as git counts them
+    # one final newline only: nothing extra is counted
+    single = "--- a/model/long.py\n+++ b/model/long.py\n@@ -2,9 +2,9 @@\n V02 = 2\n-V03 = 3\n+V03 = 30\n"
+    assert recount_hunk_headers(single).text.splitlines()[2] == "@@ -2,2 +2,2 @@"
     inner = "--- a/model/long.py\n+++ b/model/long.py\n@@ -2,9 +2,9 @@\n V02 = 2\n\n@@ -9 +9 @@\n-V09 = 9\n+V09 = 0\n"
     assert recount_hunk_headers(inner).text.splitlines()[2] == "@@ -2,2 +2,2 @@"
+
+
+TRAILING = "--- a/model/long.py\n+++ b/model/long.py\n@@ -2,{o} +2,{n} @@\n V02 = 2\n-V03 = 3\n+V03 = 30\n\n"
+
+
+@pytest.mark.parametrize("o, n", [(9, 9), (3, 3), (1, 5)])
+def test_a_trailing_empty_context_line_must_match_the_file(env, tmp_path, o, n):
+    """Review m2, the reviewer's example: the hunk ends with an empty line (the text ends with a blank line before
+    the final newline) but model/long.py has V04 there, not a blank line.  Recounted (any wrong header) or read with
+    a header too large by exactly the trailing blank (3/3), the empty line is context and the diff is refused."""
+    node, base, _ = env
+    text = TRAILING.format(o=o, n=n)                 # "...+V03 = 30\n\n": one empty line, then the final newline
+    assert text.split("\n")[-3:] == ["+V03 = 30", "", ""]
+    _, applied = apply_both(node, base, text, tmp_path)
+    assert applied.status == "refused" and applied.provenance["refusal"] == "context_mismatch"
+    # the same edit without the trailing empty line applies: the refusal is the empty context line's
+    assert apply_both(node, base, text[:-1].replace(f"-2,{o} +2,{n}", "-2,9 +2,9"), tmp_path, "nb")[1].applied
+
+
+def test_a_header_that_excludes_the_trailing_blank_keeps_g4s_reading(env, tmp_path):
+    """The header-first rule: counts that fit the hunk without the trailing blank line are the strict parser's
+    accepted reading (the blank line is a separator), exactly as in G.4."""
+    node, base, _ = env
+    text = TRAILING.format(o=2, n=2)
+    assert strict_ok(text) and recount_hunk_headers(text).text == text
+    raw, applied = apply_both(node, base, text, tmp_path)
+    assert raw.status == applied.status == "applied"
+
+
+def test_disclosed_residual_a_body_pair_before_a_hunk_header_is_read_as_a_file_header(env, tmp_path):
+    """Review m1: without ``diff --git``, a removed line ``-- a/P`` and an added line ``++ b/P`` followed by ``@@``
+    are read as a file header for P, and the next hunk goes to P when its context matches P.  git's recount would
+    keep the hunk in q.sql (where it does not apply).  Disclosed, not refused."""
+    node, base, _ = env
+    (node / "model" / "q.sql").write_text("-- header comment\nSELECT 1;\n-- a/model/net.py\nSELECT 2;\n")
+    text = ("--- a/model/q.sql\n+++ b/model/q.sql\n@@ -1,9 +1,9 @@\n -- header comment\n SELECT 1;\n"
+            "--- a/model/net.py\n+++ b/model/net.py\n@@ -1,1 +1,1 @@\n-WIDTH = 64\n+WIDTH = 128\n")
+    _, applied = apply_both(node, base, text, tmp_path)
+    assert applied.status == "applied" and applied.provenance["files_touched"] == ["model/net.py", "model/q.sql"]
 
 
 @pytest.mark.parametrize("right", [
@@ -424,6 +465,7 @@ class ScriptedChat:
 LR_WRONG = "--- a/train.py\n+++ b/train.py\n@@ -7,4 +7,6 @@\n MODE = \"ok\"\n-LEARNING_RATE = 0.1\n+LEARNING_RATE = 0.2\n"
 LR_RIGHT = LR_WRONG.replace("@@ -7,4 +7,6 @@", "@@ -7,2 +7,2 @@")
 LR_NEXT = "--- a/train.py\n+++ b/train.py\n@@ -8,1 +8,1 @@\n-LEARNING_RATE = 0.2\n+LEARNING_RATE = 0.3\n"
+LR_THIRD = "--- a/train.py\n+++ b/train.py\n@@ -8,4 +8,4 @@\n-LEARNING_RATE = 0.3\n+LEARNING_RATE = 0.4\n"
 
 
 def test_campaign_applies_the_recounted_copy_and_keeps_the_managers_text(env, tmp_path):
@@ -482,7 +524,8 @@ def test_audit_rematerialises_the_managers_texts_to_the_campaigns_states(env, tm
 
 
 def test_audit_chunk_record_names_the_rule(env, tmp_path, monkeypatch):
-    """The chunk record carries ``diff_rule`` and ``diffs_recounted`` (written before the states are built)."""
+    """The chunk record carries ``diff_rule`` and ``diffs_recounted``, the number of distinct diff texts whose
+    headers were recounted (written before the states are built)."""
     node, base, spec = env
     seen = {}
 
@@ -493,10 +536,13 @@ def test_audit_chunk_record_names_the_rule(env, tmp_path, monkeypatch):
     monkeypatch.setattr(audit_g5, "load_node", lambda data, root: (spec, node, {}))
     monkeypatch.setattr(audit_g5, "build_limits", lambda *a: LIMITS)
     data = {"node": "fake_task", "run_id": "r", "wave": 1, "chunk": 0, "K": 10, "runs": [], "cgroup_parent": "/nope",
-            "units": [{"unit": "u", "code_state_sha256": "0" * 64, "diffs": [LR_WRONG, LR_NEXT]}]}
+            "units": [{"unit": "u1", "code_state_sha256": "0" * 64, "diffs": [LR_WRONG]},
+                      {"unit": "u2", "code_state_sha256": "1" * 64, "diffs": [LR_WRONG, LR_NEXT]},
+                      {"unit": "u3", "code_state_sha256": "2" * 64, "diffs": [LR_WRONG, LR_NEXT, LR_THIRD]}]}
     rec = audit_g5.run_audit(data, tmp_path, tmp_path / "out", gpu_uuids=(), cpu_list=(0,))
     seen.update(rec)
-    assert seen["diff_rule"] == DIFF_RECOUNT_RULE and seen["diffs_recounted"] == 1 and "stop here" in seen["stop"]
+    # review m3: distinct diff texts (LR_WRONG and LR_THIRD), not the 4 occurrences in the units' chains
+    assert seen["diff_rule"] == DIFF_RECOUNT_RULE and seen["diffs_recounted"] == 2 and "stop here" in seen["stop"]
 
 
 def test_diff_support_itself_is_unchanged_and_still_strict():
