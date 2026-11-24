@@ -104,8 +104,14 @@ file header; `@@` lines are hunks. Per hunk:
    space (a tab, a carriage return) is a bad tag, as for the strict parser.
    - **This differs from git `--recount`,** which counts the trailing blank lines as context. Where a real trailing
      empty context line is dropped, a hunk that git refuses may be accepted here, with one context line fewer,
-     placed by its other old lines. It is never moved: a hunk left with no non-blank old line is refused (point 4,
-     `blank_only_anchor`). The fuzz in §7 found no placement different from the correctly counted diff's.
+     placed by its other old lines. A hunk left with no non-blank old line is refused (point 4,
+     `blank_only_anchor`). **Residual (second confirmation review, m1):** when a dropped trailing blank line was real
+     context of a hunk that still has a non-blank old line, the hunk can be placed elsewhere than the correctly
+     counted diff, if the header's start line is wrong and a line identical to the anchor sits at that wrong start
+     (for example a file `A = 1, z = 2, q = 3, A = 1, <blank>, w = 4` and the hunk `@@ -1,5 +1,5 @@`, ` A = 1`,
+     `+new = 0`, empty line: inserted after line 1, where the correctly counted `@@ -1,2 +1,3 @@` inserts after line 4).
+     It also existed under round 1; the placement follows the header's own start line and a non-blank line. The fuzz
+     in §7 found none in 23,118 diffs; the reviewer's adversarial generator found one in 5,000.
    - Round 2 counted the trailing blank lines as context, as git does (review m2). That moved insertions to other
      blank lines of the file (the confirmation review's cases A, A2, B and C; about 2 per 100 of my fuzz diffs), so
      it is withdrawn.
@@ -131,7 +137,11 @@ file header; `@@` lines are hunks. Per hunk:
      first. Nothing in the text decides which, so the hunk is refused (`malformed_hunk`). A pure insertion with no
      blank line at all keeps the header's own convention and is recounted (only its new count changes).
    - **Whole diff:** if any hunk of a diff is recounted, every hunk the header decides (point 1) must also have a
-     non-blank old line, or be a pure insertion with no blank line in it or right after it. Otherwise the whole diff
+     non-blank old line, or be a pure insertion with no blank line in it or right after it. This flags hunks that are
+     blank-context-only or followed by a separator; it does not flag a header-fitting hunk whose only old lines are
+     removed blank lines, or an anchored header-fitting hunk whose fitting header counts a trailing separator blank as
+     context. Both are read exactly as G.4's strict parser reads them when every header is right, so the recount
+     places nothing new (second confirmation review, m2). Otherwise the whole diff
      is left as written (`blank_only_anchor`), and the strict parser refuses it on its wrong-count hunks, as in G.4.
      A header that fits by counting a trailing blank line as context places such a hunk at a blank line of the file,
      which need not be where the manager meant. A diff the strict parser accepts recounts no hunk, so this changes
@@ -183,7 +193,7 @@ apply.
 | Header counts | ignored | used only where they fit the body exactly (point 1); then identical to the old rule |
 | `---`/`+++` pair in the body | body (multi-file patches without `diff --git` then break in git) | body with `diff --git`; file header (or an ambiguity refusal) without; disclosed residual in §3.5 |
 | Blank lines directly before the next file or the end, in a recounted hunk | context | separators (the strict parser's convention); a hunk then left with no non-blank old line is refused |
-| Hunk placed only by blank lines | applied where git's search finds the blanks | refused (`blank_only_anchor`), never moved |
+| Hunk placed only by blank lines | applied where git's search finds the blanks | refused (`blank_only_anchor`); see the residual in §3.3 for a dropped trailing context line next to a non-blank anchor |
 | Unexpected line, empty hunk | header kept (usually a later failure) | header kept, strict parser refuses (same in effect) |
 | Context-free insertion whose header had old lines | header start used | refused (`no_old_lines`) |
 | Matching | git's (newpos guess, beginning/end anchoring, options) | `diff_support`'s, unchanged (zero fuzz, exact context, unique offset) |
@@ -535,7 +545,9 @@ refuse the rest as `malformed_diff`; some of the 33 may be count errors too.
 ## 11. Open points for the reviewer
 
 - **Trailing blank lines** before the next file or the end are separators here and context in git (§3.3); hunks left
-  placed only by blank lines are refused. Fuzz: 0 different placements in 23,118 diffs (§7).
+  placed only by blank lines are refused. Fuzz: 0 different placements in 23,118 diffs (§7); one residual shape
+  remains (§3.3: a dropped trailing context line next to a non-blank anchor at a wrong start line), found once in the
+  reviewer's 5,000 adversarial diffs.
 - **Header-first** (point 1) departs from "the header's counts are ignored", by design: it keeps every
   strict-accepted diff byte-identical, including the `-- `/`++ ` body case and trailing blank context. A pure
   git-style recount would change some diffs the strict parser accepted.
@@ -591,3 +603,13 @@ fuzz shows that round 1 itself places 0.5-0.9 % of these diffs at a different pl
 round 1. They refuse A, A2 and C, which round 1 placed correctly: in those cases nothing in the text tells a blank
 separator from a blank context line, and the fuzz has both readings.
 
+
+## 14. Second confirmation round (ACCEPTED `a7646ec1`/`57434431`, no major): wording
+
+- **m1**: the absolute "never moved" / "0 different placements" claims now name the residual (§3.3, the git table,
+  §11): a dropped trailing context line next to a non-blank anchor, with a wrong header start line and a line
+  identical to the anchor at that start, can place a hunk elsewhere; it existed under round 1.
+- **m2**: the whole-diff rule's wording is narrowed (§3 point 4 and the `recount_hunk_headers` docstring) to hunks that
+  are blank-context-only or followed by a separator; the two unflagged header-fitting shapes behave exactly as G.4's
+  strict parser on correct headers.
+- Code behaviour is unchanged: only the docstring of `campaign_v2_diff.py` changes.
