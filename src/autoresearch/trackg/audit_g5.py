@@ -27,7 +27,8 @@ The contract (``g5_job.engine_contract()``), item by item:
   job's diagnostics) is an ``invalid_proposal`` (R1-EXAM-B1-TRUNCATION-INVALID): :class:`TruncationInvalidManager`
   applies it to G.5 campaigns only, so ``manager_v2_diff.py`` and G.4's pilot are unchanged.
 * ``audit --chunk <trackg_g5_audit_chunk/v1> --harness-root <h> --out <dir> [--gpu-uuid <uuid>]`` re-materialises
-  every unit (the baseline plus the unit's ordered diffs, applied with the runner's own diff code), checks that its
+  every unit (the baseline plus the unit's ordered diffs, each through the campaign's hunk-header recount and then
+  the runner's own diff code), checks that its
   normalised code-state hash equals the chunk's ``code_state_sha256`` before anything runs, and then runs each
   planned (unit, seed) through :class:`~autoresearch.trackg.runner.WorkingCopyRunner` with training seed = split
   seed = the audit seed (``split_policy: "vary"``) and the unisolated-run gate
@@ -51,6 +52,13 @@ The contract (``g5_job.engine_contract()``), item by item:
 * **Records** carry ``stop`` (text) and ``stop_kind``, one of ``refused`` (input, pins, node), ``deadline``,
   ``integrity``, ``unisolated``, ``transport``, ``baseline_failed``, ``runner`` (a host refusal outside a run
   attempt) and ``error`` (anything else, caught so that a record is always written).
+* **Hunk-header recount** (R1-G5-DIFF-RECOUNT, option A).  The campaign recomputes each hunk header's line counts
+  from the hunk body in a copy of the manager's diff (``campaign_v2_diff.recount_hunk_headers``,
+  ``git apply --recount`` semantics) and the runner applies the copy; ``diff_support`` is unchanged (P5).  The
+  ledger keeps the manager's text in ``proposal.diff`` (O1) and adds a ``diff_recount`` block per proposal; the
+  audit re-materialises a unit from those texts through the same function, so rebuilt hashes equal the
+  ledger's.  ``campaign_record.json`` and ``chunk_record.json`` name the rule (``diff_rule``); the chunk record
+  also counts its diffs whose headers were recounted (``diffs_recounted``).
 * Members: the job reads only the ledgers, ``out/chunk.json`` (its own file) and ``out/audit/rows.jsonl``.  The run
   directories under ``<out>`` (run records, logs, result channels; campaign working copies and code snapshots with
   any binaries a run wrote) stay in ``out.tar`` unread.  As in G.1b and G.4, a run record on disk keeps the sealed
@@ -83,7 +91,8 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from autoresearch.trackg import gpu_identity
-from autoresearch.trackg.campaign_v2_diff import V2DiffCampaignError, run_v2_diff_campaign
+from autoresearch.trackg.campaign_v2_diff import (DIFF_RECOUNT_RULE, V2DiffCampaignError, recount_hunk_headers,
+                                                 run_v2_diff_campaign)
 from autoresearch.trackg.diff_support import apply_diff, code_state_hashes
 from autoresearch.trackg.manager_v2_diff import Chat, ManagerTransportStop, V2DiffManager, openai_compatible_chat
 from autoresearch.trackg.node_template import TrackGNodeSpec, load_trackg_node_spec
@@ -423,6 +432,7 @@ def run_campaign(data: dict[str, Any], harness_root: Path, out_dir: Path, *, gpu
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=False)
     record: dict[str, Any] = {"schema": CAMPAIGN_RECORD_SCHEMA, "label": LABEL, "engine_contract": ENGINE_CONTRACT,
+                              "diff_rule": DIFF_RECOUNT_RULE,
                               "node": data["node"], "run_id": data["run_id"], "wave": data["wave"], "instances": [],
                               "stop": None, "stop_kind": None, "started_epoch": clock(), "gate": GATE_TEXT,
                               "truncation_invalid": f"completion_tokens >= {data['max_tokens']}"}
@@ -522,7 +532,12 @@ def prepare_states(spec: TrackGNodeSpec, node_dir: Path, data: dict[str, Any], r
     """Re-materialise every unit before anything runs: the incumbent is the node kit plus the unit's diffs but the
     last (each applied with the runner's diff code, as the campaign applied it), and the last diff must apply to it
     and give the chunk's normalised code-state hash.  Returns, per unit, the directory the runner copies and the
-    diff it applies (None for the baseline)."""
+    diff it applies (None for the baseline).
+
+    The chunk's diffs are the ledger's ``proposal.diff`` texts, the manager's text as written (D7-DIFF B, O1).  Each
+    goes through :func:`~autoresearch.trackg.campaign_v2_diff.recount_hunk_headers` first, exactly as the campaign
+    passed it to the runner (R1-G5-DIFF-RECOUNT), so the rebuilt code states equal the ledger's and the runner
+    applies the same text as in the campaign."""
     base_spec = spec.to_base_node_spec()
     interpreter = data["interpreter"]
     kit_state = code_state_hashes(node_dir, base_spec)[0]
@@ -536,8 +551,8 @@ def prepare_states(spec: TrackGNodeSpec, node_dir: Path, data: dict[str, Any], r
                 continue
             target = root / f"state_{len(built):04d}"
             shutil.copytree(built[prefix[:n - 1]], target, ignore=RUNNER_COPY_IGNORE, symlinks=True)
-            app = apply_diff(target, prefix[n - 1], base_spec, evaluated=None, allow_new_files=spec.allow_new_files,
-                             interpreter=interpreter)
+            app = apply_diff(target, recount_hunk_headers(prefix[n - 1]).text, base_spec, evaluated=None,
+                             allow_new_files=spec.allow_new_files, interpreter=interpreter)
             _need(app.applied, f"STOP: integrity: unit {index}: diff {n} of its chain does not apply "
                                f"({app.status}) when re-materialised", "integrity")
             built[key] = target
@@ -551,12 +566,13 @@ def prepare_states(spec: TrackGNodeSpec, node_dir: Path, data: dict[str, Any], r
             out[unit["unit"]] = (node_dir, None)
             continue
         inc = incumbent(tuple(diffs[:-1]), index)
-        app = apply_diff(inc, diffs[-1], base_spec, evaluated=None, write=False, allow_new_files=spec.allow_new_files,
+        last = recount_hunk_headers(diffs[-1]).text
+        app = apply_diff(inc, last, base_spec, evaluated=None, write=False, allow_new_files=spec.allow_new_files,
                          interpreter=interpreter)
         _need(app.applied and app.provenance.get("code_state_sha256") == expected,
               f"STOP: integrity: unit {index}: the re-materialised code state differs from the chunk's hash "
               f"({app.status})", "integrity")
-        out[unit["unit"]] = (inc, diffs[-1])
+        out[unit["unit"]] = (inc, last)
     return out
 
 
@@ -708,6 +724,8 @@ def run_audit(data: dict[str, Any], harness_root: Path, out_dir: Path, *, gpu_uu
         mem_cgroup = memory_limit_cgroup(data["cgroup_parent"])
         record["memory_events_cgroup"] = str(mem_cgroup) if mem_cgroup is not None else None
         states_root.mkdir()
+        record["diff_rule"] = DIFF_RECOUNT_RULE
+        record["diffs_recounted"] = sum(recount_hunk_headers(d).changed for u in data["units"] for d in u["diffs"])
         states = prepare_states(spec, node_dir, data, states_root)
         record["units_rematerialised"] = len(states)
         expected = {u["unit"]: u["code_state_sha256"] for u in data["units"]}
