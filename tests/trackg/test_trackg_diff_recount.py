@@ -290,6 +290,7 @@ def test_several_hunks_and_files_with_wrong_counts(env, tmp_path):
     right = ("--- a/model/long.py\n+++ b/model/long.py\n"
              "@@ -2,3 +2,3 @@\n V02 = 2\n-V03 = 3\n+V03 = 30\n V04 = 4\n"
              "@@ -40,2 +40,3 @@\n V40 = 40\n+V40b = 41\n V41 = 41\n"
+             "\n"
              "--- a/train.py\n+++ b/train.py\n@@ -8,1 +8,1 @@\n-LEARNING_RATE = 0.1\n+LEARNING_RATE = 0.2\n"
              "--- a/model/net.py\n+++ b/model/net.py\n@@ -1,3 +1,3 @@\n-WIDTH = 64\n+WIDTH = 128\n"
              " # width of the hidden layer\n DEPTH = 2\n")
@@ -304,47 +305,222 @@ def test_several_hunks_and_files_with_wrong_counts(env, tmp_path):
     assert normalised_diff_sha256(parse_unified_diff(rec.text)) == good.provenance["normalised_diff_sha256"]
 
 
-def test_blank_lines_in_a_recounted_body_are_context(env):
-    """Review m2: as in git, every blank line of a recounted body is context, also just before the next file
-    header or the end; only the empty string after the final newline is not a line."""
+def test_blank_lines_before_the_next_file_or_the_end_are_separators_and_before_a_hunk_are_context(env):
+    """Round 1's rule, restored after the confirmation review: in a recounted hunk, blank lines (empty or whitespace
+    only) directly before the next file header or the end are separators; blank lines before ``@@`` are context, as
+    in git."""
     text = ("--- a/model/long.py\n+++ b/model/long.py\n@@ -2,9 +2,9 @@\n V02 = 2\n-V03 = 3\n+V03 = 30\n\n\n"
             "--- a/train.py\n+++ b/train.py\n@@ -8,9 +8,9 @@\n-LEARNING_RATE = 0.1\n+LEARNING_RATE = 0.2\n\n")
     out = recount_hunk_headers(text).text.splitlines()
-    assert out[2] == "@@ -2,4 +2,4 @@" and out[10] == "@@ -8,2 +8,2 @@"
+    assert out[2] == "@@ -2,2 +2,2 @@" and out[10] == "@@ -8,1 +8,1 @@"
+    # a one-space line there is a separator too (what the strict parser skips between file patches)
     assert recount_hunk_headers(text.replace("+V03 = 30\n\n\n", "+V03 = 30\n \n")).text.splitlines()[2] \
-        == "@@ -2,3 +2,3 @@"
-    # one final newline only: nothing extra is counted
-    single = "--- a/model/long.py\n+++ b/model/long.py\n@@ -2,9 +2,9 @@\n V02 = 2\n-V03 = 3\n+V03 = 30\n"
-    assert recount_hunk_headers(single).text.splitlines()[2] == "@@ -2,2 +2,2 @@"
+        == "@@ -2,2 +2,2 @@"
     inner = "--- a/model/long.py\n+++ b/model/long.py\n@@ -2,9 +2,9 @@\n V02 = 2\n\n@@ -9 +9 @@\n-V09 = 9\n+V09 = 0\n"
     assert recount_hunk_headers(inner).text.splitlines()[2] == "@@ -2,2 +2,2 @@"
+
+
+# The confirmation review's file: ten lines, one blank line at line 2.
+TEN = ["a1 = 1", "", "a3 = 3", "a4 = 4", "a5 = 5", "a6 = 6", "a7 = 7", "a8 = 8", "a9 = 9", "a10 = 10"]
+TEN_HDR = "--- a/model/ten.py\n+++ b/model/ten.py\n"
+B_PATCH = "--- a/model/b.py\n+++ b/model/b.py\n@@ -1,1 +1,1 @@\n-B = 1\n+B = 2\n"
+
+
+@pytest.fixture()
+def ten(env):
+    node, base, spec = env
+    (node / "model" / "ten.py").write_text("\n".join(TEN) + "\n", encoding="utf-8")
+    (node / "model" / "b.py").write_text("B = 1\n", encoding="utf-8")
+    return node, base
+
+
+def applied_lines(node, tmp_path, text, name):
+    work = copy(node, tmp_path, name)
+    app = apply_diff(work, recount_hunk_headers(text).text, TrackGNodeSpec.from_mapping(spec_mapping())
+                     .to_base_node_spec())
+    return app, (work / "model" / "ten.py").read_text().split("\n")[:-1]
+
+
+def test_case_c_git_style_insertion_before_a_blank_line_is_refused_not_moved(ten, tmp_path):
+    """Case C: ``@@ -6,0 +7,2 @@`` with one added line, then an empty line, then the next ``diff --git``.  Round 2
+    inserted at line 2.  Whether the empty line is a separator (insert after line 6) or empty context (insert before
+    a blank line) is not in the text, and the fuzz has the second reading too, so it is refused (never moved).
+    Without the empty line the insertion is placed after line 6."""
+    node, _ = ten
+    git = "diff --git a/model/ten.py b/model/ten.py\n"
+    tail = "diff --git a/model/b.py b/model/b.py\n" + B_PATCH
+    text = git + TEN_HDR + "@@ -6,0 +7,2 @@\n+    h = 7\n\n" + tail
+    assert recount_hunk_headers(text).left == "blank_only_anchor"
+    app, lines = applied_lines(node, tmp_path, text, "c")
+    assert app.status == "refused" and lines == TEN
+    app, lines = applied_lines(node, tmp_path, git + TEN_HDR + "@@ -6,0 +7,2 @@\n+    h = 7\n" + tail, "c2")
+    assert app.applied and lines == TEN[:6] + ["    h = 7"] + TEN[6:]
+
+
+@pytest.mark.parametrize("tail", ["\n" + B_PATCH, "\n"], ids=["A_next_file", "A2_extra_newline"])
+def test_cases_a_and_a2_insertion_at_the_end_is_refused_not_moved(ten, tmp_path, tail):
+    """Cases A and A2: ``@@ -10,0 +11,3 @@`` with one added line, then an empty line before the next file or an extra
+    newline at the end.  Round 2 inserted at line 2.  Refused for the same reason as case C; without the empty line
+    the insertion is appended at the end."""
+    node, _ = ten
+    text = TEN_HDR + "@@ -10,0 +11,3 @@\n+x = 1\n" + tail
+    assert recount_hunk_headers(text).left == "blank_only_anchor"
+    app, lines = applied_lines(node, tmp_path, text, "a")
+    assert app.status == "refused" and lines == TEN
+    plain = TEN_HDR + "@@ -10,0 +11,3 @@\n+x = 1\n" + (tail[1:] if tail != "\n" else "")
+    app, lines = applied_lines(node, tmp_path, plain, "a2")
+    assert app.applied and lines == TEN + ["x = 1"]
+
+
+def test_case_b_context_free_insertion_under_a_header_with_old_lines_is_refused(ten, tmp_path):
+    node, _ = ten
+    text = TEN_HDR + "@@ -10,1 +10,3 @@\n+x = 1\n\n"
+    assert recount_hunk_headers(text).left == "no_old_lines"
+    app, lines = applied_lines(node, tmp_path, text, "b")
+    assert app.provenance["refusal"] == "malformed_hunk" and lines == TEN
+
+
+@pytest.mark.parametrize("text", [
+    TEN_HDR + "@@ -10,0 +11,3 @@\n+x = 1\n \n",                                  # a one-space line before the end
+    TEN_HDR + "@@ -10,1 +10,3 @@\n+x = 1\n \n",
+    TEN_HDR + "@@ -6,0 +7,2 @@\n+    h = 7\n\n@@ -9,1 +9,1 @@\n-a9 = 9\n+a9 = 90\n",  # an empty line before @@
+], ids=["space_end", "space_end_old1", "blank_before_hunk"])
+def test_a_hunk_anchored_only_by_blank_lines_with_a_changed_old_count_is_refused(ten, tmp_path, text):
+    """The confirmation review's mechanism: a hunk placed only by blank lines (blank context, or trailing blank lines
+    whose role nothing decides) lets the offset search pick another blank line of the file.  Such a hunk is refused
+    (``blank_only_anchor``, or ``no_old_lines`` under a header with old lines), never moved."""
+    node, _ = ten
+    assert recount_hunk_headers(text).left in ("blank_only_anchor", "no_old_lines")
+    app, lines = applied_lines(node, tmp_path, text, "g")
+    assert app.status == "refused" and lines == TEN
 
 
 TRAILING = "--- a/model/long.py\n+++ b/model/long.py\n@@ -2,{o} +2,{n} @@\n V02 = 2\n-V03 = 3\n+V03 = 30\n\n"
 
 
-@pytest.mark.parametrize("o, n", [(9, 9), (3, 3), (1, 5)])
-def test_a_trailing_empty_context_line_must_match_the_file(env, tmp_path, o, n):
-    """Review m2, the reviewer's example: the hunk ends with an empty line (the text ends with a blank line before
-    the final newline) but model/long.py has V04 there, not a blank line.  Recounted (any wrong header) or read with
-    a header too large by exactly the trailing blank (3/3), the empty line is context and the diff is refused."""
+@pytest.mark.parametrize("o, n", [(9, 9), (1, 5)])
+def test_round1_example_a_dropped_trailing_empty_line_is_accepted_at_the_same_place(env, tmp_path, o, n):
+    """The round-1 reviewer's example, disclosed: the hunk ends with an empty line where model/long.py has V04.  git
+    refuses it; here the trailing empty line is a separator, so the hunk applies with one context line fewer, at the
+    place the correctly counted diff without that line applies (never elsewhere)."""
     node, base, _ = env
-    text = TRAILING.format(o=o, n=n)                 # "...+V03 = 30\n\n": one empty line, then the final newline
+    text = TRAILING.format(o=o, n=n)
     assert text.split("\n")[-3:] == ["+V03 = 30", "", ""]
     _, applied = apply_both(node, base, text, tmp_path)
-    assert applied.status == "refused" and applied.provenance["refusal"] == "context_mismatch"
-    # the same edit without the trailing empty line applies: the refusal is the empty context line's
-    assert apply_both(node, base, text[:-1].replace(f"-2,{o} +2,{n}", "-2,9 +2,9"), tmp_path, "nb")[1].applied
+    good = apply_diff(copy(node, tmp_path, "good"), TRAILING.format(o=2, n=2)[:-1], base, write=False)
+    assert applied.applied and same_application(applied, good)
 
 
-def test_a_header_that_excludes_the_trailing_blank_keeps_g4s_reading(env, tmp_path):
-    """The header-first rule: counts that fit the hunk without the trailing blank line are the strict parser's
-    accepted reading (the blank line is a separator), exactly as in G.4."""
+def test_round1_example_with_a_header_too_large_by_the_trailing_blank_is_refused(env, tmp_path):
+    """Header first: counts 3/3 fit the body including the empty line, so it is context and must match (refused);
+    counts 2/2 fit it without the empty line, G.4's accepted reading (applied).  Disclosed inconsistency."""
     node, base, _ = env
+    assert apply_both(node, base, TRAILING.format(o=3, n=3), tmp_path, "t3")[1].provenance["refusal"] \
+        == "context_mismatch"
     text = TRAILING.format(o=2, n=2)
     assert strict_ok(text) and recount_hunk_headers(text).text == text
-    raw, applied = apply_both(node, base, text, tmp_path)
-    assert raw.status == applied.status == "applied"
+    assert apply_both(node, base, text, tmp_path, "t2")[1].applied
+
+
+def _fuzz_file(rng, n):
+    lines = []
+    for k in range(n):
+        r = rng.random()
+        lines.append("" if r < 0.2 else "return x" if r < 0.27 else f"v{k} = {k}")
+    return lines
+
+
+def _fuzz_hunks(rng, src):
+    """1-2 non-overlapping hunks over *src*: (start index, pre, cut, adds, post)."""
+    hunks, pos = [], 0
+    for _ in range(rng.randint(1, 2)):
+        if pos > len(src):
+            break
+        s = rng.randint(pos, len(src))
+        pre = rng.randint(0, min(2, s - pos))
+        cut = rng.randint(0, min(2, len(src) - s))
+        post = rng.randint(0, min(2, len(src) - s - cut))
+        adds = [f"new_{s}_{k} = {rng.randint(0, 99)}" for k in range(rng.randint(0 if cut else 1, 3))]
+        hunks.append((s, pre, cut, adds, post))
+        pos = s + cut + post + 1
+    return hunks
+
+
+def _fuzz_patch(rng, path, src, git):
+    out = ([f"diff --git a/{path} b/{path}"] if git else []) + [f"--- a/{path}", f"+++ b/{path}"]
+    headers = []
+    for s, pre, cut, adds, post in _fuzz_hunks(rng, src):
+        ctx = (lambda x: (" " + x) if x else rng.choice([" ", ""]))
+        body = [ctx(x) for x in src[s - pre:s]] + ["-" + x for x in src[s:s + cut]] + ["+" + x for x in adds]
+        body += [ctx(x) for x in src[s + cut:s + cut + post]]
+        oc, nc = pre + cut + post, pre + len(adds) + post
+        start = s - pre + 1 if oc else s
+        headers.append((len(out), start, oc, nc))
+        out.append(f"@@ -{start},{oc} +{start},{nc} @@")
+        out += body
+    return out, headers
+
+
+def _apply_in_memory(text, files):
+    from autoresearch.trackg.diff_support import _apply_patch
+    try:
+        patches = parse_unified_diff(text)
+        return {p.path: _apply_patch("\n".join(files[p.path]) + "\n", p)[0] for p in patches}
+    except DiffRefused as error:
+        return error.reason
+
+
+def fuzz_wrong_headers(seed, cases):
+    """Wrong-count diffs (some with wrong start lines too) with blank separators, trailing blank lines and one-space
+    lines: where does each apply, compared with the correctly counted diff with the same start lines?  Returns counts
+    of the outcomes; ``unchanged_g4`` is a diff the recount left as written and the strict parser reads as in G.4."""
+    rng = random.Random(seed)
+    counts = {"same_place": 0, "refused": 0, "wrong_place": 0, "right_refused": 0, "skipped": 0, "unchanged_g4": 0}
+    for _ in range(cases):
+        files = {"model/a.py": _fuzz_file(rng, rng.randint(6, 16)), "model/b.py": _fuzz_file(rng, rng.randint(4, 10))}
+        git = rng.random() < 0.4
+        right, wrong = [], []
+        for path in rng.sample(sorted(files), rng.randint(1, 2)):
+            lines, headers = _fuzz_patch(rng, path, files[path], git)
+            for idx, start, oc, nc in headers:          # a wrong start line too, in the reference as well
+                if rng.random() < 0.3:
+                    start = max(0 if oc == 0 else 1, start + rng.choice([-3, -2, -1, 1, 2, 3]))
+                    lines[idx] = f"@@ -{start},{oc} +{start},{nc} @@"
+            right += lines
+            bad = list(lines)
+            for idx, start, oc, nc in headers:
+                if rng.random() < 0.8:
+                    start = int(lines[idx].split(",")[0][4:])
+                    bad[idx] = f"@@ -{start},{rng.randint(0, 6)} +{start},{rng.randint(0, 6)} @@"
+            r = rng.random()
+            if r < 0.35:
+                bad += [""] * rng.randint(1, 2)        # blank separators before the next file or the end
+            elif r < 0.45:
+                bad += [" "]                           # a one-space line (context by rule) before the next file/end
+            wrong += bad
+        right_text = "\n".join(right) + "\n"
+        wrong_text = "\n".join(wrong) + "\n" + "\n" * (rng.random() < 0.25)
+        if right_text == wrong_text:
+            counts["skipped"] += 1
+            continue
+        rec = recount_hunk_headers(wrong_text)
+        want, got = _apply_in_memory(right_text, files), _apply_in_memory(rec.text, files)
+        if isinstance(got, str):
+            counts["refused"] += 1
+            counts["right_refused"] += isinstance(want, str)
+        elif got == want:
+            counts["same_place"] += 1
+        elif not rec.changed and got == _apply_in_memory(wrong_text, files):
+            counts["unchanged_g4"] += 1
+        else:
+            counts["wrong_place"] += 1
+    return counts
+
+
+def test_fuzz_no_wrong_header_diff_applies_anywhere_else_than_the_correctly_counted_diff():
+    counts = fuzz_wrong_headers(20261124, 3000)
+    assert counts["wrong_place"] == 0, counts
+    assert counts["same_place"] > 1500, counts
 
 
 def test_disclosed_residual_a_body_pair_before_a_hunk_header_is_read_as_a_file_header(env, tmp_path):
