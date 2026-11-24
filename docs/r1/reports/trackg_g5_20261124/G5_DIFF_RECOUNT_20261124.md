@@ -2,7 +2,8 @@
 
 **Status.** Coded, committed locally on two branches and unit-tested in a CPU container. Nothing is pushed. Nothing
 ran on a GPU, on TASL-2 or on TASL-7. No label, evaluation value, sealed file, G.1b or G.5 output was read. The
-report is ENGINEERING_ONLY. AI-assisted (Claude). The unit is awaiting independent review.
+report is ENGINEERING_ONLY. AI-assisted (Claude). The independent review ACCEPTED `e8a0dd65`/`04914a54` with no
+major finding; its six minors are applied in one code commit and this revised report (§12 maps each one).
 
 **Authority.** PLAN row `R1-G5-DIFF-RECOUNT` (paper `main` `3024db3f`, `docs/r1/PLAN.md` line 1508), option A: the
 G.5 harness commits apply a manager diff after recomputing each hunk header's line counts from the hunk body
@@ -14,18 +15,18 @@ user's task text for this unit, and the coordinator's constraint (below) that th
 
 | Family | Base (reviewed G.5 tip, READY 95) | Branch | Code commit | Report commit |
 |---|---|---|---|---|
-| G5-7 | `52e3c0b0` | `mac-trackg-g5-7-20261124` | `9eb0eb40` | this file's commit, on top |
-| G5-AR | `00829da1` | `mac-trackg-g5-ar-20261124` | `197d3ecb` (`cherry-pick -x` of `9eb0eb40`) | cherry-pick of the report commit |
+| G5-7 | `52e3c0b0` | `mac-trackg-g5-7-20261124` | `9eb0eb40`; review minors `a983b424` | `e8a0dd65` (accepted); this revision on top |
+| G5-AR | `00829da1` | `mac-trackg-g5-ar-20261124` | `197d3ecb`; review minors `326b4dcb` (`cherry-pick -x` of each) | `04914a54`; cherry-pick of this revision |
 
 The files the unit adds or changes are byte-identical in both families:
 
 | File | sha256 (both families) |
 |---|---|
-| `src/autoresearch/trackg/campaign_v2_diff.py` (changed; was `904e498b…`) | `6a2beb4df3a2d31fd16688f3ab9d4a29209a07ccc4a476a1bd82ddcdae3c3fbc` |
-| `src/autoresearch/trackg/audit_g5.py` (changed; was `1089dbac…`) | `d25ff41285111657b4399dd90051b1de77bc4602f6934412745f19f716567e99` |
-| `scripts/trackg_g4_reclassify.py` (new) | `8c1e1619b5ce13776f7132324e45bbfcf0eba8287a9942baca37d4895d9f2c43` |
-| `tests/trackg/test_trackg_diff_recount.py` (new) | `1071397534cd0347d121e1ec4cda17aeed995e1a352ec409dfd9a61b1d884efb` |
-| `tests/trackg/test_trackg_g4_reclassify.py` (new) | `2b17410b095af1322a3d81c4f9f5248d23236d6bfaaf8ad7f94bd905b8384d6c` |
+| `src/autoresearch/trackg/campaign_v2_diff.py` (changed; was `904e498b…`) | `d179858f127f5fc17cc49d4bc5816b51d69b98d69fab820eb26dc9f239f201b3` |
+| `src/autoresearch/trackg/audit_g5.py` (changed; was `1089dbac…`) | `5f384204c34e297191281bb3981db57607d58333222adab6def97e8d099e2690` |
+| `scripts/trackg_g4_reclassify.py` (new) | `af1b3368c77ded6383d0b63ef1cc1b145b8b3ccc5e38e346714ea93a9a35804d` |
+| `tests/trackg/test_trackg_diff_recount.py` (new) | `289768b89a062d7a26b73ce3bc5c7eee3ce5449fce4d98df3b67d1e66dbf0997` |
+| `tests/trackg/test_trackg_g4_reclassify.py` (new) | `e699b51d8b2f2b21caef4e92bdf9bc6c294351b520cea471a9ad88e067eafbb4` |
 | `docs/r1/reports/trackg_g5_20261124/G5_DIFF_RECOUNT_20261124.md` (new) | this file |
 
 ## 2. Where the recount lives, and why (P5)
@@ -94,14 +95,23 @@ file header; `@@` lines are hunks. Per hunk:
    added (`+`) lines. A context line starts with a space or is empty. `\ No newline at end of file` markers are not
    counted. The header's start lines and its trailing text (for example a function name) are kept; only the counts
    are rewritten, as `start,count`.
-3. **Blank lines.**
-   - Before the next file header or the end of the diff, empty lines and whitespace lines that do not start with a
-     space are separators. That is how the strict parser treats them between file patches.
-   - A line of one space is always empty context (the canonical form).
-   - Blank lines before an `@@` line are empty context, as git counts them. The strict parser refused that layout, so
-     this widens nothing it accepted.
-4. **No safe recount: the hunk is left as it is**, the scan stops, and the strict parser refuses the diff with the
-   reason it gave before. That happens for:
+3. **Blank lines** (revised after review m2). In a recounted body **every blank line is context**, as git counts
+   `'\n'` and `' '` lines. That includes blank lines just before the next file header, before an `@@` line, or at the
+   end of the diff, so each must match a blank line of the file. The only text not read as a line is the empty
+   string after the diff's final newline, which the strict parser drops too. A whitespace line that does not start
+   with a space (a tab, a carriage return) is a bad tag, as for the strict parser.
+   - This is the narrowest rule that fails closed. The first version treated trailing blank lines before a file
+     header or the end as separators. That dropped a real trailing empty context line, applying hunks that git
+     refuses, and it was inconsistent: the same diff was refused when its header happened to be too large by exactly
+     the trailing blanks. Both cases are now refused when the file has no blank line there (tested).
+   - Header-first still decides first: where the header's counts fit the hunk without the trailing blank lines, the
+     strict parser's accepted reading is kept and those lines stay the separators it skips, exactly as in G.4. The
+     identity check on more than 300 accepted diffs still passes.
+4. **No safe recount: the hunk is left as it is**, the scan stops, and the strict parser refuses the diff. In a
+   one-hunk diff the reason is the one G.4 gave. In a diff with several hunks, earlier hunks may already be
+   recounted, so the strict parser can reach a fault it did not reach before, and the reason can differ from G.4's
+   (for example `malformed_hunk` where G.4 said `malformed_diff`, or the reverse). The diff is refused either way
+   (review m4). This happens for:
    - `bad_line_tag`: a body line that starts with none of space, `-`, `+` or `\`, and is not a terminator. A tab line
      counts here, as it does for the strict parser. Refused `malformed_hunk` (or `malformed_diff`, as before).
    - `empty_body`: no counted line. Refused `malformed_hunk`.
@@ -123,9 +133,15 @@ file header; `@@` lines are hunks. Per hunk:
      by an `@@` line is a file header, and the strict parser checks it as one (safe path, no rename, each file once).
      A pair that is not followed by `@@` could be either a removed `-- …` line plus an added `++ …` line, or a header
      with no hunks. That is ambiguous, so it is left and refused (tested).
-   - Remaining risk: a body pair followed by `@@` is read as a header. That needs a removed line `-- a/P` and an added
-     line `++ b/P` naming an editable file P, other than the current file, whose next hunk's context then matches P
-     exactly. Then the edit would apply to P. I judge this negligible, but it is not impossible.
+   - **Disclosed residual** (review m1). In a patch without `diff --git`, a removed line `-- a/P` and an added line
+     `++ b/P`, followed by `@@`, are read as a file header for P. When P is another editable file and the next hunk's
+     context matches P exactly, that hunk is applied to P, where git's recount would have kept it in the current
+     file (where it may not apply at all). The reviewer built such a case, and
+     `test_disclosed_residual_a_body_pair_before_a_hunk_header_is_read_as_a_file_header` reproduces it. It needs a
+     line whose text is `-- a/<path of another editable file>` at that place. I did not adopt the suggested refusal
+     (a would-be header that names another file and is not preceded by a blank separator): a second file header in
+     the prompt's format normally follows the previous hunk directly, so that rule would refuse every wrong-count
+     multi-file patch. After m2 a blank line there is context anyway, so the rule would no longer be coherent.
 6. **Zero hunks.** A correctly counted `@@ -0,0 +0,0 @@` with no body is a no-op hunk that the strict parser accepts.
    The header fits, so it is left as before. An empty body under a non-zero header is refused (`empty_body`).
 7. **Matching is not loosened.** Context matching, the unique-offset search, ambiguity refusal, the scope check, path
@@ -148,8 +164,8 @@ apply.
 | Counting | context ` `/empty, `-`, `+`; `\` skipped | the same |
 | Body ends at | `@@ ` or `diff ` | `@@`, any file-level git line, end; a `---`/`+++` pair followed by `@@` only in patches without `diff --git` |
 | Header counts | ignored | used only where they fit the body exactly (point 1); then identical to the old rule |
-| `---`/`+++` pair in the body | body (multi-file patches without `diff --git` then break in git) | body with `diff --git`; file header (or an ambiguity refusal) without |
-| Blank lines before the next file or the end | context | separators (the strict parser's convention); a one-space line is context |
+| `---`/`+++` pair in the body | body (multi-file patches without `diff --git` then break in git) | body with `diff --git`; file header (or an ambiguity refusal) without; disclosed residual in §3.5 |
+| Blank lines in a recounted body (also before the next file or the end) | context | context (the same; revised after review m2) |
 | Unexpected line, empty hunk | header kept (usually a later failure) | header kept, strict parser refuses (same in effect) |
 | Context-free insertion whose header had old lines | header start used | refused (`no_old_lines`) |
 | Matching | git's (newpos guess, beginning/end anchoring, options) | `diff_support`'s, unchanged (zero fuzz, exact context, unique offset) |
@@ -189,7 +205,9 @@ apply.
   runner applied. That is the recounted copy when `changed` is true, and the manager's text otherwise. This is the
   runner's own field, written by the unchanged `runner.py`.
 - **`campaign_record.json`:** `diff_rule`.
-- **`chunk_record.json`:** `diff_rule` and `diffs_recounted`.
+- **`chunk_record.json`:** `diff_rule` and `diffs_recounted`: the number of distinct diff texts in the chunk (by
+  sha256 of the manager's text) whose headers were recounted. A diff shared by several units' chains counts once
+  (review m3; tested).
 - **Audit rows** (`trackg_g5_audit_row/v1`): unchanged.
 
 **Paper readers checked:**
@@ -215,8 +233,12 @@ The end-to-end test of `test_trackg_audit_g5.py` passes 63 of 63 at both tips wi
   `normalised_diff_sha256` hashes the parsed hunk lines, so it is also the same (tested).
 - **`diff_sha256`** (in the run record): the hash of the text given to `apply_diff`. That is the recounted copy when
   headers were rewritten, so it is **not** the hash of the manager's raw text in that case. The raw hash is in
-  `diff_recount.raw_diff_sha256`. `diff_sha256` could not be kept as the raw hash without changing `runner.py` or
-  `diff_support.py`, which P5 forbids.
+  `diff_recount.raw_diff_sha256`. (Revised after review m5.) For G.5 alone the raw text and hash could have been put
+  back into the run record, by overriding `G5CampaignRunner._write_record`. But the record would then claim that
+  `apply_diff` applied a text it did not apply, the record on disk and the ledger copy would need the same patch,
+  and G.4's default `WorkingCopyRunner` would still record the copy, so G.4b and G.5 records would disagree. The
+  chosen design keeps every run record true to what the runner applied, the same in G.4b and G.5. The ledger keeps
+  both texts' hashes in `diff_recount`, and the manager's text itself in `proposal.diff`.
 
 ## 6. O1 compliance (D7-DIFF B review, item O1)
 
@@ -234,8 +256,8 @@ counts on both worktrees):
 
 | File | Result |
 |---|---|
-| `tests/trackg/test_trackg_diff_recount.py` (new) | 54 passed |
-| `tests/trackg/test_trackg_g4_reclassify.py` (new) | 5 passed |
+| `tests/trackg/test_trackg_diff_recount.py` (new) | 59 passed |
+| `tests/trackg/test_trackg_g4_reclassify.py` (new) | 9 passed (1 of them uses the real git lookup of this checkout) |
 | `test_trackg_diff_support.py` | 27 passed |
 | `test_trackg_campaign_v2_diff.py` | 16 passed |
 | `test_trackg_pilot_g4.py` | 31 passed |
@@ -259,14 +281,19 @@ counts on both worktrees):
   header after a recounted hunk; empty bodies; context-free insertions; the zero-zero hunk.
 - **The `-- `/`++ ` cases:** right counts; the ambiguous pair; a pair before `@@` in three variants, each refused;
   git style; a missing `diff --git` line refused.
-- **Structure:** several hunks and files; blank-line separators and empty context; three "No newline" cases.
+- **Structure:** several hunks and files; blank lines as context, including the reviewer's m2 example (a hunk
+  ending in an empty line where the file has none, refused under a wrong header and under a header too large by
+  exactly the trailing blank) and the header that excludes it (G.4's reading kept); three "No newline" cases.
+- **The disclosed residual** of §3.5 (m1), reproduced.
 - **Identity:** byte identity on more than 300 accepted random diffs; more than 300 perturbed headers restored
   exactly.
 - **Campaign:** ledger and record fields; a refusal left to the strict parser.
-- **Audit:** re-materialisation; the chunk record fields; `diff_support` still strict.
+- **Audit:** re-materialisation; the chunk record fields, `diffs_recounted` counting distinct diffs (m3);
+  `diff_support` still strict.
 
 **Paper checks** (scratch detached worktree of paper `origin/main` `3024db3f` at `/tmp/hrcdev/paper`; harness git dir
-`/tmp/pb/harness`; code tips `9eb0eb40`/`197d3ecb`; repeated on the final tips, see the hand-off):
+`/tmp/pb/harness`; run on the code tips `9eb0eb40`/`197d3ecb`, on `e8a0dd65`/`04914a54`, and again after the
+review minors on the final tips named in the hand-off, from a fresh scratch worktree):
 
 - `g5_pin_check.py /tmp/pb/harness <G5-7> <G5-AR>` exits 0. `g5_changes` are the two G.5 reports already there,
   `audit_g5.py`, `campaign_v2_diff.py`, `test_trackg_audit_g5.py`, and this unit's script, two test files and
@@ -317,7 +344,17 @@ only be re-classified on TASL-2, from `sealed_g4/g4-tasl-20261121-a/<node>/attem
    - `by_reason` (before -> after);
    - `with_recounted_headers` and `left_to_strict_parser`;
    - `accepted_by_g4_rule` and `accepted_text_unchanged`;
-   - `incumbent_unverified` and per-step rows (instance, step, before, old, new; no diff text and no metric).
+   - `incumbent_unverified` and per-step rows (instance, step, before, old, new; no diff text and no metric);
+   - `basis`, `script_commit`, `harness_root_commit` and whether each checkout is clean.
+
+   **What the counts mean** (review m6). `new_rule` and `by_reason` are per refused step, each against the
+   incumbent G.4 actually had at that step and the states G.4 had evaluated by then. They are a static, per-step
+   re-classification, **not a G.4b trajectory**: under the new rule an applied proposal would have run, and if kept
+   it would have changed every later incumbent. The output says so in `basis`. Diff liveness under the new rule is
+   measured by the G.4b re-pilot.
+6. **It pins its own checkout** (review m6). `--harness-root` must be a git checkout at the same commit as the
+   checkout the script runs from (`git rev-parse HEAD` of both). An unknown HEAD on either side counts as a
+   mismatch. On a mismatch it STOPs (exit 2). Both commits go into the output.
 
    Exit 0 when complete and consistent; 3 when an instance stopped, an incumbent did not verify or the G.4-rule
    replay disagreed with the ledger. `--out` writes a new file, never an existing one.
@@ -335,17 +372,32 @@ directory holds the sums and the receipt. The test expects:
 - no diff text or metric in the output.
 
 Also tested: a tampered receipt or tar STOPs; another node spec STOPs; a changed kit is reported and classifies
-nothing.
+nothing; a `--harness-root` at another commit, or with an unknown HEAD, STOPs; with the real git lookup, this
+checkout given as its own `--harness-root` passes.
 
-**The command on TASL-2.** It needs a harness checkout at the final G5-7 tip (for example `harness_g5`, which the
-G.5 spec names), the torch312 environment (which has the harness's dependencies) and the committed captures:
+**Scope of the acceptance.** A review of this unit accepts the script and its tests. It does not accept a
+re-classification result: there is none yet. The result comes from TASL-2 (the command below), and it is reported
+and checked there.
+
+**The command on TASL-2.** It needs a harness checkout of this unit, the torch312 environment (which has the
+harness's dependencies) and the committed captures. A dedicated checkout (`harness_g4rc`) keeps `harness_g5` free for
+G.5. `SHA` below is the code commit of the review-minor round, `a983b4245fe35104ccba5c2d2bfcf14c3a4301f7`. It holds the
+script and the engines at their final bytes. The final G5-7 tip (in the hand-off) adds only this report on top, so it
+may be used instead. The branch must first be published to `origin`; this unit does not push.
 
 ```
 cd /home/dowling/r1_tracks/t1_tasl
-H=/home/dowling/r1_tracks/t1_tasl/harness_g5          # detached at the final G5-7 tip, clean
-git -C "$H" rev-parse HEAD; git -C "$H" status --porcelain
+SHA=a983b4245fe35104ccba5c2d2bfcf14c3a4301f7
+H=/home/dowling/r1_tracks/t1_tasl/harness_g4rc
+test -e "$H" && exit 2                                  # a new checkout; nothing is replaced
+git clone --no-checkout https://github.com/dowlingwong/autoresearch_harness.git "$H"
+git -C "$H" fetch origin mac-trackg-g5-7-20261124
+git -C "$H" checkout --detach "$SHA"
+test "$(git -C "$H" rev-parse HEAD)" = "$SHA" || exit 2
+test -z "$(git -C "$H" status --porcelain)" || exit 2
 git -C paper_g4 fetch origin ops-tasl-20261116
-mkdir -p /tmp/g4caps && git -C paper_g4 archive origin/ops-tasl-20261116 \
+test -e /tmp/g4caps && exit 2
+mkdir /tmp/g4caps && git -C paper_g4 archive origin/ops-tasl-20261116 \
   docs/r1/reports/tasl_chain_20261122/G4_TASL_PILOT_RESULT_20261122_captures | tar -x -C /tmp/g4caps
 C=/tmp/g4caps/docs/r1/reports/tasl_chain_20261122/G4_TASL_PILOT_RESULT_20261122_captures
 S=sealed_g4/g4-tasl-20261121-a
@@ -368,7 +420,8 @@ under jax312, but the parse/apply step does not import the task code, so torch31
 - `g4_rule_replay.matches_ledger` 155 with no mismatch;
 - `incumbent_unverified` 0;
 - `accepted_by_g4_rule` 25 (22 ran + 3 duplicates) with `accepted_text_unchanged` 25;
-- `new_rule` and `by_reason` are the measurement.
+- `script_commit` = `harness_root_commit` = `SHA`, both checkouts clean;
+- `new_rule` and `by_reason` are the measurement (per step against G.4's incumbents, see above).
 
 The 33 `malformed_diff` are included because a header smaller than its body makes the strict parser stop early and
 refuse the rest as `malformed_diff`; some of the 33 may be count errors too.
@@ -421,11 +474,20 @@ refuse the rest as `malformed_diff`; some of the 33 may be count errors too.
 - **Header-first** (point 1) departs from "the header's counts are ignored", by design: it keeps every
   strict-accepted diff byte-identical, including the `-- `/`++ ` body case and trailing blank context. A pure
   git-style recount would change some diffs the strict parser accepted.
-- **Trailing blank lines** before a file header or the end are separators here, but context in git. Choosing git's
-  convention would refuse more diffs (a context line that must match a blank line), and never apply one wrongly.
-- **The residual risk in point 5** (a body pair followed by `@@`, in a patch without `diff --git`) is documented, not
-  eliminated.
+- **The residual in §3.5** (a body pair followed by `@@`, in a patch without `diff --git`) is disclosed and
+  reproduced by a test, not eliminated.
 - **`diff_sha256`** in run records is the applied copy's hash when headers were rewritten (§5).
 - **The pre-pass imports three private names** from `diff_support` (frozen by P5).
-- **The paper worktree** used for the checks was added with `git worktree add --detach` from `/tmp/pb/repo`, which
-  writes worktree metadata under that repository's `.git`. It was not removed.
+- **The scratch paper worktree** used for the checks (`/tmp/hrcdev/paper`, added with `git worktree add --detach`
+  from `/tmp/pb/repo`) was removed after the final checks with `git worktree remove --force` and `git worktree prune`.
+
+## 12. Review round 1 (ACCEPTED `e8a0dd65`/`04914a54`, no major): the minors
+
+| Finding | Fix |
+|---|---|
+| m2 (behaviour) — trailing blank lines dropped as separators under a wrong header | Code: every blank line of a recounted body is context, as in git; only the empty string after the final newline is not a line (§3.3). Header-first unchanged; the identity check still passes. Tests: the reviewer's example (refused under a wrong header and under a header too large by exactly the trailing blank), the same edit without the blank applies, and a header that excludes the blank keeps G.4's reading. |
+| m1 — the docstring overstated "never applied elsewhere" | Docstring and §3.5 state the residual; a test reproduces it. The suggested refusal is not adopted, for the reason in §3.5. |
+| m3 — `diffs_recounted` counted occurrences | Now distinct diff texts, by sha256 of the manager's text; docstring and §5 match; test with a diff shared by three units' chains. |
+| m4 — refusal reasons can change in multi-hunk diffs | Docstring point 3 and §3.4 say so. |
+| m5 — the raw-hash claim | §5 reworded: the `_write_record` route, its cost, and why the chosen design is better. |
+| m6 — §8 steps, HEAD pin, scope, basis | Full checkout steps with the commit filled in and `test "$(git -C "$H" rev-parse HEAD)" = "$SHA" || exit 2`; the script refuses a `--harness-root` at another commit and records both commits; the scope of the acceptance; `new_rule` labelled per step against G.4's incumbents (`basis` in the output). |
