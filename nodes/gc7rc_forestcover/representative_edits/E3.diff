@@ -1,0 +1,12 @@
+--- a/train.py
++++ b/train.py
+@@ -22,3 +22,3 @@
+     "batch_size": 4096,  # the paper's Task 5 batch size
+-    "grad_clip": None,
++    "grad_clip": 1.0,
+     "amp_bf16": False,
+@@ -60,3 +60,3 @@
+ def training_step(model, batch, step):
+-    return F.cross_entropy(model(batch["x"]), batch["y"])
++    return F.cross_entropy(model(batch["x"]), batch["y"], label_smoothing=0.1)
+ 

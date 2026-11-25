@@ -1,0 +1,108 @@
+# Track G node (trackg_node/v1): 1GC-7RC Task 5, Forest Cover Type 7-class classification, isolated
+# fixed-step port. Port kit: TRACKG_PORT_CHECKLIST.md (paper repo, section F for licence/provenance);
+# harness mac-trackg-t1-tasl-20261121 @ c025f89a (accepted T1 TASL harness; base of this branch); isolated
+# per R1-HARNESS-ISOLATION (core mac-harness-isolation-20261117 @ 68cdd1a + fix mac-harness-isolation-fix-20261119
+# @ 5403392e, both merged in the base).
+schema: trackg_node/v1
+name: gc7rc_forestcover
+description: >-
+  1GC-7RC Task 5 (public UCI Covertype dataset; the 1GC-7RC suite repository itself is not public, so the port
+  follows the paper's stated public dataset/task semantics, not suite code): seven-class tabular classification
+  on Forest Cover Type (581,012 rows, 54 features: 10 continuous + 44 binary one-hot; stratified 80/10/10 split,
+  StandardScaler-normalised), scored by accuracy. The editable train.py holds the paper's baseline (a 3-layer MLP
+  128-256-128 with BatchNorm, ReLU and dropout 0.3), its optimizer and loss; the frozen parent and worker hold
+  the data, the stratified split, the standardisation fitted on the training rows, the fixed-step loop and the
+  accuracies (validation accuracy selected on; test accuracy sealed). The fixed budget is 8,000 optimizer steps
+  at batch size 4,096 (about 71 epochs of the 464,810 training rows), a short fixed-step stand-in for the
+  paper's 40-minute agent budget (R1-BX-D5); the port measured the baseline chain on the CPU and the census
+  measures it on the GPU.
+suite: 1gc7rc
+domain: tabular
+
+editable_paths:
+  - train.py
+frozen_paths:
+  - run_fixed_budget.py
+  - ar_worker.py
+  - ar_parent.py
+  - ar_isolated.py
+  - ar_fixed_loop.py
+  - ar_data.py
+  - prepare_data.py
+  - requirements.txt
+  - LICENCES.md
+  - README.md
+  - data/
+  - representative_edits/
+allow_new_files: false
+
+setup_command: 'test -n "$AR_TRACKG_DATA_ROOT" && python3 prepare_data.py --out "$AR_TRACKG_DATA_ROOT/gc7rc_forestcover"'
+run_command: "python3 run_fixed_budget.py --steps {budget}"
+# R1-HARNESS-ISOLATION: the runner starts the frozen parent directly (no shell); the parent holds the
+# result channel and starts ar_worker.py, the only process that imports the editable code.
+isolation:
+  entry: run_fixed_budget.py
+  args: ["--steps", "{budget}"]
+
+metric_name: val_accuracy
+metric_direction: maximize
+metric:
+  metric_regex: '^AR_METRIC val_accuracy=(\S+)$'
+  loss_regex: '^step \d+ loss (\S+)$'
+  steps_regex: '^step (\d+) loss \S+$'
+  test_metric_regex: '^AR_TEST test_accuracy=(\S+)$'
+  infrastructure_log_patterns:
+    # the worker's GPU check, printed before the editable code is imported (no AR_DEVICE line before it)
+    - '\A(?:(?!AR_DEVICE ).*\n)*?AR_INFRA a GPU was assigned \(CUDA_VISIBLE_DEVICES set\) but CUDA is unavailable$'
+
+run_budget:
+  kind: steps
+  value: 8000
+
+workers:
+  dataloader_workers: 0
+  threads: 4
+
+selection:
+  test_scored: true
+  selection_split: validation
+  test_metric_name: test_accuracy
+
+determinism:
+  cudnn_benchmark: false
+  deterministic_algorithms: true
+  cublas_workspace_config: ":4096:8"
+  pythonhashseed: "0"
+  deterministic_warn_only: false
+
+seed_env:
+  train: AR_TRAIN_SEED
+  split: AR_SPLIT_SEED
+
+default_budget:
+  trials: 20
+
+failure_categories:
+  - syntax_error
+  - runtime_error
+  - metric_missing
+  - invalid_edit_scope
+  - divergent
+  - infrastructure_failure
+
+external_benchmark:
+  name: 1GC-7RC (public datasets; not a suite, R1-1GC-FALLBACK)
+  paper: 'arXiv:2605.17046v2, Task 5'
+  repository: https://archive.ics.uci.edu/dataset/31/covertype (the public dataset; the paper-named suite repository returned 404, U1 audit)
+  doi: 10.24432/C50K5N
+  task: Forest Cover Type, seven-class tabular classification, accuracy
+  license: dataset CC BY 4.0 (UCI page); data downloaded, never redistributed; see LICENCES.md
+  data: UCI covertype.zip sha256 89a975c2457cd48e824238ae43c5a3cb762e42c4b4078d9b44a4514055105f6d (member covtype.data.gz sha256 614360d0257557dd1792834a85a1cdebfadc3c4f30b011d56afee7ffb5b15771)
+
+notes:
+  python_env: torch (baseline is an MLP; CPU smoke runs and U2 census may run on the GPU)
+  requirements: requirements.txt
+  data_location: setup links data/ to $AR_TRACKG_DATA_ROOT/gc7rc_forestcover (outside the node); the raw zip is setup-only
+  budget_semantics: 8,000 optimizer steps at batch 4,096 (about 71 epochs of the 464,810 training rows); fixed before the census
+  split: stratified 80/10/10 with a fixed split seed 42 (paper Task 5); the split seed env var is recorded but does not change the split
+  suite_status: 1GC-7RC is not a suite (R1-1GC-FALLBACK); this is the candidate-4 extra task of R1-T1-NODE-EXPANSION

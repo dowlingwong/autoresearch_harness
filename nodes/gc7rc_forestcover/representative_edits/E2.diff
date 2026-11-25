@@ -1,0 +1,7 @@
+--- a/train.py
++++ b/train.py
+@@ -25,3 +25,3 @@
+ }
+-LEARNING_RATE = 1e-3
++LEARNING_RATE = 5e-3
+ 

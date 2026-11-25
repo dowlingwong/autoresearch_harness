@@ -1,0 +1,7 @@
+--- a/train.py
++++ b/train.py
+@@ -27,3 +27,3 @@
+ 
+-HIDDEN = (128, 256, 128)  # the paper's 3-layer baseline widths
++HIDDEN = (256, 512, 256)  # wider 3-layer head (architecture edit)
+ DROPOUT = 0.3             # the paper's dropout
