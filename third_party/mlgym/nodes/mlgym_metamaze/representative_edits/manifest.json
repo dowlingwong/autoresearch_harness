@@ -1,0 +1,59 @@
+{
+  "allow_new_files": false,
+  "baseline_code_state_raw_sha256": "b1036d1b518e1057c5c3fab9c1491c59a7134e0881ec96d33977fb9b672a8422",
+  "baseline_code_state_sha256": "8f42c96eae88261f0cdeb3093640f09e5a0234f134c637b8963132340199131b",
+  "edits": [
+    {
+      "code_state_sha256": "612d738cd8b406dca3f4d8f5976298912aa5d54f5a024c42dea38735653da60e",
+      "file": "E1.diff",
+      "files_touched": [
+        "config.yaml"
+      ],
+      "id": "E1",
+      "incumbent_code_state_sha256": "8f42c96eae88261f0cdeb3093640f09e5a0234f134c637b8963132340199131b",
+      "normalised_diff_sha256": "57eeb576b2407e7c61be775a81dd5a114ecdba9afc65dc2c22541c23533dc1a6",
+      "sha256": "9aacd7fd568e8bff3670efe1193b4cc29891afd431842d04c5f73a015c6137d5"
+    },
+    {
+      "code_state_sha256": "d19281a49eb0e241fad1419987577c3882f050a24b578cc4f7d290e0739403fa",
+      "file": "E2.diff",
+      "files_touched": [
+        "config.yaml"
+      ],
+      "id": "E2",
+      "incumbent_code_state_sha256": "8f42c96eae88261f0cdeb3093640f09e5a0234f134c637b8963132340199131b",
+      "normalised_diff_sha256": "a77a87bfa63142789f7e6fac04197ea4632609cb8bc46f02e71e90e933746281",
+      "sha256": "ff4cd594788fa908ac26f2713c9bf5e7bf2b480325e8e89ca3aef13219474703"
+    },
+    {
+      "code_state_sha256": "8e64c79c106813165004d90f7356b84ee51f47febd53b264dc08610891b7342e",
+      "file": "E3.diff",
+      "files_touched": [
+        "config.yaml"
+      ],
+      "id": "E3",
+      "incumbent_code_state_sha256": "8f42c96eae88261f0cdeb3093640f09e5a0234f134c637b8963132340199131b",
+      "normalised_diff_sha256": "2fbfa40e0c7e092e0c05d6d3a8d1f7e90c5ba1df006ca3bff2047e5631c1b3f8",
+      "sha256": "c76634e908b787e4bc397294b750aef28a25fa2c0c426def3544b8dee02d2a53"
+    },
+    {
+      "code_state_sha256": "821398a93416a78725ac1cbd2b249fc951b6c7c42128dd852ad89649992a07cf",
+      "file": "E4.diff",
+      "files_touched": [
+        "networks.py"
+      ],
+      "id": "E4",
+      "incumbent_code_state_sha256": "8f42c96eae88261f0cdeb3093640f09e5a0234f134c637b8963132340199131b",
+      "normalised_diff_sha256": "b48609f972bc77cf114db5c2acfced04dbb8b52ed249c2c00aada6961f757186",
+      "sha256": "ec73a85a98c0690191e22be3cca97106c7daca51ba773ae484f696c01fb9f918"
+    }
+  ],
+  "measured": false,
+  "node": "mlgym_metamaze",
+  "node_spec_sha256": "d97bb182a6469cc4381262960bccf58eec984996cb9a8cd89c39083b4679dbb9",
+  "run_budget": {
+    "kind": "steps",
+    "value": 2000000
+  },
+  "schema": "trackg_representative_edits/v1"
+}

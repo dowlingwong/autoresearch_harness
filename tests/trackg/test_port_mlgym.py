@@ -1,12 +1,14 @@
 """Port kit U3, suite MLGym: nodes mlgym_cifar10, mlgym_fmnist, mlgym_houseprice, mlgym_breakout_minatar (under
-third_party/mlgym, CC BY-NC 4.0; isolated per R1-HARNESS-ISOLATION).
+third_party/mlgym, CC BY-NC 4.0; isolated per R1-HARNESS-ISOLATION), plus mlgym_metamaze (T1 expansion
+candidate 3, R1-T1-NODE-EXPANSION; the same suite's rlMetaMazeMisc task).
 
 Static checks always run.  The synthetic smoke needs the node's runtime
 packages in the interpreter running the tests (torch for the image nodes;
 pandas and scikit-learn for mlgym_houseprice; jax, flax, optax, gymnax and
-tensorflow-probability for mlgym_breakout_minatar).  It uses random data of the
-real shapes (a random table with a few House Prices column names), never the
-task data, and a reduced step budget.
+tensorflow-probability for mlgym_breakout_minatar and mlgym_metamaze).  It uses
+random data of the real shapes (a random table with a few House Prices column
+names, a synthetic copy of the pinned MLGym asset snapshot), never the task
+data, and a reduced step budget.
 """
 from __future__ import annotations
 
@@ -19,7 +21,7 @@ import pytest
 
 from . import port_support as ps
 
-NODES = ["mlgym_cifar10", "mlgym_fmnist", "mlgym_houseprice", "mlgym_breakout_minatar"]
+NODES = ["mlgym_cifar10", "mlgym_fmnist", "mlgym_houseprice", "mlgym_breakout_minatar", "mlgym_metamaze"]
 
 
 @pytest.mark.parametrize("node", NODES)
@@ -45,6 +47,7 @@ INTERACTING = {
     "mlgym_fmnist": {"E1+E3", "E1+E4", "E2+E3", "E2+E4", "E3+E4"},
     "mlgym_houseprice": {"E1+E3", "E2+E3", "E3+E4"},
     "mlgym_breakout_minatar": {"E1+E3", "E2+E3", "E3+E4"},
+    "mlgym_metamaze": {"E1+E3", "E1+E4", "E2+E3", "E2+E4", "E3+E4"},
 }
 
 
@@ -96,6 +99,18 @@ def house_data(d: Path) -> dict:
     return {"shapes": "random table with a few House Prices column names"}
 
 
+METAMAZE_ASSETS = ("config.yaml", "__init__.py", "evaluate.py", "helpers.py", "networks.py", "policy.py",
+                   "requirements.txt", "rlMetaMaze.yaml", "train.py")
+
+
+def metamaze_assets(d: Path) -> dict:
+    """Synthetic copy of the pinned MLGym task/package snapshot: the node's setup downloads the real one (no
+    task data exist), so the smoke only needs the same file names for the manifest path."""
+    for name in METAMAZE_ASSETS:
+        (d / name).write_text(f"# synthetic MLGym asset {name} (the smoke never reads it)\n")
+    return {"shapes": "synthetic copy of the 9-file pinned MLGym task/package snapshot"}
+
+
 SMOKE = {
     "mlgym_cifar10": dict(make=image_data((5400, 32, 32, 3), (300, 32, 32, 3)),
                           files=["train_x.npy", "train_y.npy", "test_x.npy", "test_y.npy"], budget=30,
@@ -117,6 +132,12 @@ SMOKE = {
                                    broken=("        pi = tfp.distributions.Categorical(logits=logits)\n",
                                            "        pi = tfp.distributions.Categorical(logits=logits * jnp.nan)\n",
                                            "networks.py")),
+    "mlgym_metamaze": dict(make=metamaze_assets, files=list(METAMAZE_ASSETS), budget=33000,
+                           modules=("jax", "flax", "optax", "gymnax", "tensorflow_probability", "dotmap"),
+                           divergent=set(), torch_node=False,
+                           broken=("        pi = tfp.distributions.Categorical(logits=logits)\n",
+                                   "        pi = tfp.distributions.Categorical(logits=logits * jnp.nan)\n",
+                                   "networks.py")),
 }
 
 
@@ -130,6 +151,67 @@ def test_synthetic_smoke(node, tmp_path, monkeypatch):
     work = ps.smoke_copy(node, tmp_path, cfg["make"], cfg["files"])
     records, per_edit = ps.run_smoke(node, tmp_path, work, cfg["budget"], ps.broken_diff(node, *cfg["broken"]))
     ps.check_smoke(records, per_edit, cfg["divergent"], torch_node=cfg["torch_node"])
+
+
+def test_metamaze_config_leaves_wrapper_keys_out():
+    text = (ps.node_dir("mlgym_metamaze") / "config.yaml").read_text()
+    for key in ("num_train_steps", "evaluate_every_epochs", "num_test_rollouts"):
+        assert f"  {key}:" not in text
+
+
+def test_metamaze_task_and_suitability_record():
+    """Candidate 3 (R1-T1-NODE-EXPANSION): the node ports MLGym rlMetaMazeMisc at the pinned commit, its
+    snapshot file set is the one prepare_data pins and the parent/worker verify, the budget is the declared
+    fixed step budget, and the MountainCarContinuous rejection is recorded (U3 + README)."""
+    if not ps.have(*SMOKE["mlgym_metamaze"]["modules"]):
+        pytest.skip("needs the JAX packages")
+    import ast
+
+    node = ps.node_dir("mlgym_metamaze")
+    prepare = (node / "prepare_data.py").read_text()
+    assert "9d40c1b5035202018cd7091fb4e83a9c68b377c0" in prepare and "rlMetaMazeMisc" in prepare
+    assert "MetaMaze-misc" in (node / "run_fixed_budget.py").read_text()
+
+    def assigned(path: Path, name: str):
+        for item in ast.parse(path.read_text()).body:
+            if isinstance(item, ast.Assign) and any(getattr(target, "id", "") == name for target in item.targets):
+                return ast.literal_eval(item.value)
+        raise AssertionError(f"{path} has no {name}")
+
+    files = assigned(node / "prepare_data.py", "FILES")
+    assert sorted(files) == sorted(METAMAZE_ASSETS)
+    assert sorted(assigned(node / "run_fixed_budget.py", "ASSET_FILES")) == sorted(files)
+    assert sorted(assigned(node / "ar_worker.py", "ASSET_FILES")) == sorted(files)
+
+    import yaml
+
+    spec = ps.load("mlgym_metamaze")
+    assert spec.run_budget.kind == "steps" and spec.run_budget.value == 2_000_000
+    assert spec.metric_name == "val_return" and spec.metric_direction == "maximize"
+    assert spec.selection.test_scored and spec.selection.test_metric_name == "test_return"
+    raw = yaml.safe_load(ps.spec_path("mlgym_metamaze").read_text())
+    assert raw["external_benchmark"]["task"].startswith("rlMetaMazeMisc")
+    licences = (node / "LICENCES.md").read_text()
+    assert "CC BY-NC 4.0" in licences
+    readme = (node / "README.md").read_text()
+    assert "MountainCarContinuous" in readme and "solved/not-solved" in readme
+    # no task data or bundled snapshot in the branch
+    committed = [p for p in node.rglob("*") if p.suffix in {".csv", ".npy", ".npz"}]
+    assert not committed, f"task data looks committed: {committed}"
+
+
+def test_metamaze_parent_refuses_a_changed_snapshot(tmp_path, monkeypatch):
+    """The frozen parent verifies the hashed snapshot before it starts the worker: a changed file ends the run
+    (ar_data exit 5) with no metric line."""
+    if not ps.have(*SMOKE["mlgym_metamaze"]["modules"]):
+        pytest.skip("needs the JAX packages")
+    monkeypatch.setenv("PATH", os.path.dirname(sys.executable) + os.pathsep + os.environ.get("PATH", ""))
+    work = ps.smoke_copy("mlgym_metamaze", tmp_path, metamaze_assets, list(METAMAZE_ASSETS))
+    (work / "data").resolve().joinpath("config.yaml").write_text("changed after setup\n")
+    code, out, channel = ps.run_parent(work, ["run_fixed_budget.py", "--steps", "33000"],
+                                       dict(os.environ, AR_TRAIN_SEED="8001", AR_SPLIT_SEED="8001"))
+    assert code == 5, (code, out[-2000:])
+    assert "AR_ERROR data" in out and not channel
 
 
 @pytest.mark.parametrize("node", ["mlgym_cifar10", "mlgym_fmnist"])

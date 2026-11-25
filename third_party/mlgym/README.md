@@ -7,7 +7,7 @@ took from gymnax and gymnax-blines (Breakout's PPO code) are Apache-2.0; a copy 
 `LICENSE-APACHE-2.0` here. Files written for this repository (the
 frozen parents and workers, the shared node library, the data setup scripts; each node's `LICENCES.md` lists them
 under "Written by the port") are the repository's own and stay under its MIT licence. CC BY-NC 4.0 grants no patent
-rights; use in the paper is non-commercial. It holds the four Track G nodes
+rights; use in the paper is non-commercial. It holds the five Track G nodes
 ported from MLGym (https://github.com/facebookresearch/MLGym, Meta Platforms) and their node specs:
 
 | node | spec | MLGym task |
@@ -16,6 +16,7 @@ ported from MLGym (https://github.com/facebookresearch/MLGym, Meta Platforms) an
 | `nodes/mlgym_fmnist` | `configs/trackg/nodes/mlgym_fmnist.yaml` | imageClassificationFMnist |
 | `nodes/mlgym_houseprice` | `configs/trackg/nodes/mlgym_houseprice.yaml` | regressionKaggleHousePrice |
 | `nodes/mlgym_breakout_minatar` | `configs/trackg/nodes/mlgym_breakout_minatar.yaml` | rlBreakoutMinAtar |
+| `nodes/mlgym_metamaze` | `configs/trackg/nodes/mlgym_metamaze.yaml` | rlMetaMazeMisc (T1 expansion candidate 3) |
 
 Each node's `LICENCES.md` records its sources and the data's own terms (the data are never committed; setup
 writes them outside the repository). The House Prices table is the user's own Kaggle download, passed to setup with

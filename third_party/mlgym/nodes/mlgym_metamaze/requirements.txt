@@ -1,0 +1,14 @@
+# Runs (a JAX environment, separate from the torch nodes): versions of the port's local CPU check
+# (25 Nov 2026, the pins the accepted JAX node mlgym_breakout_minatar fixed on 17 Nov 2026), chosen because tensorflow-probability 0.25 fails to import with newer jax. On the GPU host
+# install requirements_gpu.txt instead (jax[cuda12]==0.4.35; the CPU jax below would make the wrapper stop with
+# AR_INFRA when a GPU is assigned).
+jax[cpu]==0.4.35
+flax==0.10.2
+optax==0.2.4
+chex==0.1.88
+gymnax==0.0.9
+tensorflow-probability==0.25.0
+dotmap==1.3.30
+PyYAML
+tqdm==4.70.1  # imported by the wrapper and policy.py (progress bars, disabled)
+numpy==2.5.4
