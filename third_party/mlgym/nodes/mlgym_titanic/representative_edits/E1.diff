@@ -1,0 +1,11 @@
+--- a/train.py
++++ b/train.py
+@@ -30,7 +30,7 @@
+ }
+ HIDDEN = (256, 128)
+ DROPOUT = 0.2
+-LEARNING_RATE = 1e-3
++LEARNING_RATE = 3e-4
+ WEIGHT_DECAY = 1e-4
+ WARMUP_STEPS = 500
+ 

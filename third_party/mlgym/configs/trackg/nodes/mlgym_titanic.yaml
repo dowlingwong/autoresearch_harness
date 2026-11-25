@@ -1,0 +1,100 @@
+# Track G node (trackg_node/v1): MLGym titanicSurvival, fixed-step port (R1-T1-NODE-EXPANSION candidate 1).
+# Port kit: TRACKG_PORT_CHECKLIST.md (paper repo); isolated per R1-HARNESS-ISOLATION (harness
+# mac-trackg-t1-tasl-20261121, which carries the accepted isolation core 68cdd1a and fix 5403392e).
+schema: trackg_node/v1
+name: mlgym_titanic
+description: >-
+  MLGym task titanicSurvival (CC BY-NC 4.0): binary classification of passenger survival on the Kaggle
+  "Titanic - Machine Learning from Disaster" tables MLGym forwards (train.csv 891 rows with the Survived
+  label, unlabelled test.csv 418 rows, ground_truth.csv with the test labels; downloaded by setup from
+  MLGym's pinned commit, never redistributed). The editable train.py holds the port's baseline (MLGym ships
+  no baseline script for this task): engineered tabular features and a small ReLU MLP with dropout, AdamW and
+  cross-entropy. The frozen parent and worker hold the data, the split (20 % of train.csv as validation,
+  drawn by the split seed; the task's test.csv as the sealed test set, labels aligned by PassengerId), the
+  fixed step budget bounding the training, the isolated loop and the accuracies. Selection is the validation
+  accuracy; the sealed test accuracy is recorded separately.
+suite: mlgym
+domain: tabular
+
+editable_paths:
+  - train.py
+frozen_paths:
+  - run_fixed_budget.py
+  - ar_worker.py
+  - ar_parent.py
+  - ar_isolated.py
+  - ar_fixed_loop.py
+  - ar_data.py
+  - prepare_data.py
+  - requirements.txt
+  - LICENCES.md
+  - README.md
+  - data/
+  - representative_edits/
+allow_new_files: false
+
+setup_command: 'test -n "$AR_TRACKG_DATA_ROOT" && python3 prepare_data.py --out "$AR_TRACKG_DATA_ROOT/mlgym_titanic"'
+run_command: "python3 run_fixed_budget.py --steps {budget}"
+# R1-HARNESS-ISOLATION: the runner starts the frozen parent directly (no shell); the parent holds the
+# result channel and starts ar_worker.py, the only process that imports the editable code.
+isolation:
+  entry: run_fixed_budget.py
+  args: ["--steps", "{budget}"]
+
+metric_name: val_accuracy
+metric_direction: maximize
+metric:
+  metric_regex: '^AR_METRIC val_accuracy=(\S+)$'
+  loss_regex: '^step \d+ loss (\S+)$'
+  steps_regex: '^step (\d+) loss \S+$'
+  test_metric_regex: '^AR_TEST test_accuracy=(\S+)$'
+  infrastructure_log_patterns: []
+
+run_budget:
+  kind: steps
+  value: 150000
+
+workers:
+  dataloader_workers: 0
+  threads: 4
+
+selection:
+  test_scored: true
+  selection_split: validation
+  test_metric_name: test_accuracy
+
+determinism:
+  cudnn_benchmark: false
+  deterministic_algorithms: true
+  cublas_workspace_config: ":4096:8"
+  pythonhashseed: "0"
+  deterministic_warn_only: false
+
+seed_env:
+  train: AR_TRAIN_SEED
+  split: AR_SPLIT_SEED
+
+default_budget:
+  trials: 20
+
+failure_categories:
+  - syntax_error
+  - runtime_error
+  - metric_missing
+  - invalid_edit_scope
+  - divergent
+  - infrastructure_failure
+
+external_benchmark:
+  name: MLGym
+  repository: https://github.com/facebookresearch/MLGym
+  commit: 9d40c1b5035202018cd7091fb4e83a9c68b377c0
+  task: titanicSurvival
+  license: CC-BY-NC-4.0 (non-commercial; attribution and changes in LICENCES.md)
+  data: Kaggle "Titanic - Machine Learning from Disaster" tables (train.csv, test.csv, ground_truth.csv) from MLGym's pinned commit; downloaded by the frozen setup_command, pinned sha256 checked at setup, never redistributed
+
+notes:
+  python_env: torch (CPU only; numpy, pandas and torch; this node never uses a GPU)
+  requirements: requirements.txt
+  data_location: setup links data/ to $AR_TRACKG_DATA_ROOT/mlgym_titanic (outside the node)
+  budget_semantics: exactly run_budget.value optimizer steps; an edit can change the compute per step but not the step count

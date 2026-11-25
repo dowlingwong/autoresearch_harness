@@ -1,0 +1,12 @@
+--- a/train.py
++++ b/train.py
+@@ -105,7 +105,8 @@
+         layers = []
+         width = n_features
+         for hidden_width in hidden:
+-            layers += [nn.Linear(width, hidden_width), nn.ReLU(), nn.Dropout(dropout)]
++            layers += [nn.Linear(width, hidden_width), nn.BatchNorm1d(hidden_width),
++                       nn.ReLU(), nn.Dropout(dropout)]
+             width = hidden_width
+         layers += [nn.Linear(width, 2)]
+         self.layers = nn.Sequential(*layers)

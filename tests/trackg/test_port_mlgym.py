@@ -1,16 +1,19 @@
 """Port kit U3, suite MLGym: nodes mlgym_cifar10, mlgym_fmnist, mlgym_houseprice, mlgym_breakout_minatar (under
-third_party/mlgym, CC BY-NC 4.0; isolated per R1-HARNESS-ISOLATION).
+third_party/mlgym, CC BY-NC 4.0; isolated per R1-HARNESS-ISOLATION), plus the R1-T1-NODE-EXPANSION candidate 1
+node mlgym_titanic (MLGym titanicSurvival, CPU-only).
 
 Static checks always run.  The synthetic smoke needs the node's runtime
-packages in the interpreter running the tests (torch for the image nodes;
-pandas and scikit-learn for mlgym_houseprice; jax, flax, optax, gymnax and
-tensorflow-probability for mlgym_breakout_minatar).  It uses random data of the
-real shapes (a random table with a few House Prices column names), never the
-task data, and a reduced step budget.
+packages in the interpreter running the tests (torch for the image nodes and
+mlgym_titanic; pandas and scikit-learn for mlgym_houseprice; jax, flax, optax,
+gymnax and tensorflow-probability for mlgym_breakout_minatar).  It uses random
+data of the real shapes (a random table with a few House Prices column names; a
+random table with the Titanic columns), never the task data, and a reduced step
+budget.
 """
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -19,7 +22,7 @@ import pytest
 
 from . import port_support as ps
 
-NODES = ["mlgym_cifar10", "mlgym_fmnist", "mlgym_houseprice", "mlgym_breakout_minatar"]
+NODES = ["mlgym_cifar10", "mlgym_fmnist", "mlgym_houseprice", "mlgym_breakout_minatar", "mlgym_titanic"]
 
 
 @pytest.mark.parametrize("node", NODES)
@@ -45,6 +48,7 @@ INTERACTING = {
     "mlgym_fmnist": {"E1+E3", "E1+E4", "E2+E3", "E2+E4", "E3+E4"},
     "mlgym_houseprice": {"E1+E3", "E2+E3", "E3+E4"},
     "mlgym_breakout_minatar": {"E1+E3", "E2+E3", "E3+E4"},
+    "mlgym_titanic": {"E1+E3", "E1+E4", "E2+E3", "E2+E4", "E3+E4"},
 }
 
 
@@ -96,6 +100,39 @@ def house_data(d: Path) -> dict:
     return {"shapes": "random table with a few House Prices column names"}
 
 
+def titanic_data(d: Path) -> dict:
+    """Random tables with the Titanic task's columns (never the task data): train.csv with the Survived
+    label, an unlabelled test.csv and a ground_truth.csv over the same PassengerIds."""
+    import pandas as pd
+
+    rng = np.random.RandomState(0)
+    titles = ["Mr", "Mrs", "Miss", "Master", "Dr"]
+
+    def table(n: int, first_id: int) -> pd.DataFrame:
+        return pd.DataFrame({
+            "PassengerId": np.arange(first_id, first_id + n),
+            "Pclass": rng.randint(1, 4, n),
+            "Name": [f"Test, {titles[i % len(titles)]}. Passenger {i}" for i in range(n)],
+            "Sex": rng.choice(["male", "female"], n),
+            "Age": np.where(rng.rand(n) < 0.2, np.nan, rng.uniform(1, 80, n)),
+            "SibSp": rng.randint(0, 5, n),
+            "Parch": rng.randint(0, 4, n),
+            "Ticket": [f"T{i % 40}" for i in range(n)],
+            "Fare": np.where(rng.rand(n) < 0.1, np.nan, rng.uniform(1, 200, n)),
+            "Cabin": rng.choice([None, "C85", "B42"], n),
+            "Embarked": rng.choice(["S", "C", "Q", None], n),
+        })
+
+    train = table(300, 1)
+    train.insert(1, "Survived", rng.randint(0, 2, len(train)))
+    test = table(120, 1001)
+    truth = pd.DataFrame({"PassengerId": test["PassengerId"], "Survived": rng.randint(0, 2, len(test))})
+    train.to_csv(d / "train.csv", index=False)
+    test.to_csv(d / "test.csv", index=False)
+    truth.to_csv(d / "ground_truth.csv", index=False)
+    return {"shapes": "random Titanic-shaped tables (train 300, test/ground_truth 120)"}
+
+
 SMOKE = {
     "mlgym_cifar10": dict(make=image_data((5400, 32, 32, 3), (300, 32, 32, 3)),
                           files=["train_x.npy", "train_y.npy", "test_x.npy", "test_y.npy"], budget=30,
@@ -117,6 +154,10 @@ SMOKE = {
                                    broken=("        pi = tfp.distributions.Categorical(logits=logits)\n",
                                            "        pi = tfp.distributions.Categorical(logits=logits * jnp.nan)\n",
                                            "networks.py")),
+    "mlgym_titanic": dict(make=titanic_data, files=["train.csv", "test.csv", "ground_truth.csv"], budget=30,
+                          modules=("torch", "pandas"), divergent=set(), torch_node=True,
+                          broken=('    return F.cross_entropy(model(batch["x"]), batch["y"])\n',
+                                  '    return F.cross_entropy(model(batch["x"]), batch["y"]) * float("nan")\n')),
 }
 
 
@@ -237,3 +278,30 @@ def test_houseprice_parent_requires_the_users_download_and_prints_its_hashes(tmp
             assert f"AR_DATA houseprice_sha256={sha} md5={md5} " in out and "AR_METRIC val_rmse=" in channel
         else:
             assert "not set up from the user's Kaggle download" in out and not channel
+
+
+def test_titanic_setup_pins_the_mlgym_commit_files():
+    """Checklist F: the frozen setup downloads the three tables from MLGym's pinned commit (no user file, no
+    --from-file), checks the three sha256 values pinned in the script before writing anything, and records them
+    in the data manifest.  Nothing here downloads: the hashes are known from the pinned upstream commit."""
+    if not ps.have("pandas"):
+        pytest.skip("needs pandas")
+    node = ps.node_dir("mlgym_titanic")
+    sys.path.insert(0, str(node))
+    try:
+        prep = ps.load_node_module("mlgym_titanic", "prepare_data")
+    finally:
+        sys.path.pop(0)
+    spec = ps.load("mlgym_titanic")
+    assert 'python3 prepare_data.py --out "$AR_TRACKG_DATA_ROOT/mlgym_titanic"' in spec.setup_command
+    assert "urllib" in (node / "prepare_data.py").read_text()
+    assert prep.COMMIT == "9d40c1b5035202018cd7091fb4e83a9c68b377c0"
+    assert prep.REPOSITORY == "https://github.com/facebookresearch/MLGym"
+    assert prep.TASK == "titanicSurvival" and prep.DATASET == "titanic"
+    assert sorted(prep.FILES) == ["ground_truth.csv", "test.csv", "train.csv"]
+    assert set(prep.PINS) == set(prep.FILES) and all(re.fullmatch(r"[0-9a-f]{64}", v) for v in prep.PINS.values())
+    assert prep.BASE_URL.endswith(f"{prep.COMMIT}/data/titanic/data")
+    wrong = {name: b"not the task table" for name in prep.FILES}
+    with pytest.raises(SystemExit, match="differs from the pinned"):
+        prep.check_files(wrong)
+

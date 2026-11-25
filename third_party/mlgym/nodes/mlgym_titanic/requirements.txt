@@ -1,0 +1,6 @@
+# Runs: numpy, pandas, torch (CPU; this node never uses a GPU). Setup: numpy, pandas (the download and the
+# manifest check).
+# Versions of the port's local CPU check (25 Nov 2026); the deployment records its versions in the census.
+numpy==2.5.4
+pandas==3.1.1
+torch==2.6.0

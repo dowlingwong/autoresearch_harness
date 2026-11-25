@@ -24,7 +24,7 @@ from pathlib import Path
 from . import port_support as ps
 
 SUITE_MODULES = ("test_port_mlagentbench", "test_port_mlgym", "test_port_autoresearch")
-CPU_ONLY_NODES = frozenset({"mlgym_houseprice"})  # the only port node that runs without a GPU
+CPU_ONLY_NODES = frozenset({"mlgym_houseprice", "mlgym_titanic"})  # the port nodes that run without a GPU
 
 
 def smoke_entry(node: str) -> dict:

@@ -1,0 +1,24 @@
+--- a/train.py
++++ b/train.py
+@@ -9,9 +9,9 @@
+ loop: the frozen parent and worker hold the data, the split, the step budget and the accuracies; this file
+ holds the feature engineering, the model, the optimizer, the schedule and the loss.
+ 
+-The baseline: seventeen engineered features (ticket class, sex, age with a missing-value flag, siblings and
+-parents aboard, family size, an alone flag, log fare, three embarked indicators, four name-title indicators
+-and a cabin-known flag), standardised with the training rows' mean and standard deviation, and a
++The baseline: nineteen engineered features (ticket class, sex, age with a missing-value flag, siblings and
++parents aboard, family size, an alone flag, log fare, three embarked indicators, four name-title indicators,
++a cabin-known flag, a family-size bucket and a sex-by-class interaction), standardised with the training rows' mean and standard deviation, and a
+ two-hidden-layer ReLU MLP with dropout, trained with AdamW and cross-entropy for the fixed step budget.  The
+ model returns two logits; the frozen parent computes the argmax accuracy.  Nothing is selected on the test
+ set: the frozen parent scores the validation split's accuracy as the selection metric and the sealed
+@@ -59,6 +59,8 @@
+     out["IsAlone"] = (out["FamilySize"] == 1).astype(np.float64)
+     out["Fare"] = np.log1p(frame["Fare"].astype(np.float64))
+     out["CabinKnown"] = frame["Cabin"].notna().astype(np.float64)
++    out["FamilyBucket"] = np.minimum(out["FamilySize"], 4.0)
++    out["SexPclass"] = out["Sex"] * out["Pclass"]
+     embarked = frame["Embarked"].fillna("Missing")
+     out["Embarked_C"] = (embarked == "C").astype(np.float64)
+     out["Embarked_Q"] = (embarked == "Q").astype(np.float64)
