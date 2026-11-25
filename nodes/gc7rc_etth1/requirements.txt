@@ -1,0 +1,6 @@
+# Node gc7rc_etth1 (frozen). Runs: torch, numpy. Setup only: the Python standard library (urllib) downloads
+# the pinned ETTh1.csv; no extra package is needed.
+# Versions of the port's local CPU check (25 Nov 2026, Python 3.12.16 in the T1 TASL torch312 environment);
+# the deployment pins its own CUDA build and records the versions in the census and run records.
+torch==2.6.0
+numpy==2.5.4

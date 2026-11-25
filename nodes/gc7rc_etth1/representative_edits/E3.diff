@@ -1,0 +1,12 @@
+--- a/train.py
++++ b/train.py
+@@ -16,3 +16,3 @@
+     "batch_size": 128,
+-    "grad_clip": None,
++    "grad_clip": 1.0,
+     "amp_bf16": False,
+@@ -56,3 +56,3 @@
+ def training_step(model, batch, step):
+-    return F.mse_loss(model(batch["x"]), batch["y"])
++    return F.l1_loss(model(batch["x"]), batch["y"])
+ 

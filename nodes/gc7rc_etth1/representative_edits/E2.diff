@@ -1,0 +1,7 @@
+--- a/train.py
++++ b/train.py
+@@ -19,3 +19,3 @@
+ }
+-LEARNING_RATE = 1e-3
++LEARNING_RATE = 5e-3
+ KERNEL_SIZE = 25  # DLinear's moving-average kernel, as stated for the 1GC-7RC Task 6 baseline

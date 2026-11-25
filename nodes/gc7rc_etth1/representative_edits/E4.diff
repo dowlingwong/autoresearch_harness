@@ -1,0 +1,41 @@
+--- a/train.py
++++ b/train.py
+@@ -23,24 +23,15 @@
+ 
+-class DLinear(nn.Module):
+-    """DLinear (Zeng et al. 2023): channel-independent linear projections of the trend and seasonal parts."""
++class MLPForecaster(nn.Module):
++    """A two-layer MLP over the flattened look-back: an architecture change a proposer may try."""
+ 
+-    def __init__(self, seq_len, horizon, n_features, kernel_size=KERNEL_SIZE):
++    def __init__(self, seq_len, horizon, n_features, hidden=256):
+         super().__init__()
+-        self.kernel_size = kernel_size
+-        self.linear_seasonal = nn.Linear(seq_len, horizon)
+-        self.linear_trend = nn.Linear(seq_len, horizon)
+-
+-    def decomposition(self, x):
+-        """x (B, L, C) -> (seasonal, trend), each (B, L, C); the moving average is replicate-padded to L."""
+-        channels = x.permute(0, 2, 1)  # (B, C, L)
+-        pad = (self.kernel_size - 1) // 2
+-        padded = F.pad(channels, (pad, pad), mode="replicate")
+-        trend = F.avg_pool1d(padded, self.kernel_size, stride=1)
+-        return x - trend.permute(0, 2, 1), trend.permute(0, 2, 1)
++        self.horizon = horizon
++        self.n_features = n_features
++        self.fc1 = nn.Linear(seq_len * n_features, hidden)
++        self.fc2 = nn.Linear(hidden, horizon * n_features)
+ 
+     def forward(self, x):
+-        seasonal, trend = self.decomposition(x)
+-        seasonal = self.linear_seasonal(seasonal.permute(0, 2, 1))  # shared over channels
+-        trend = self.linear_trend(trend.permute(0, 2, 1))
+-        return (seasonal + trend).permute(0, 2, 1)  # (B, horizon, C)
++        h = F.gelu(self.fc1(x.reshape(len(x), -1)))
++        return self.fc2(h).reshape(len(x), self.horizon, self.n_features)
+ 
+@@ -48,3 +39,3 @@
+ def build_model(info):
+-    return DLinear(info["seq_len"], info["horizon"], info["n_features"], KERNEL_SIZE).to(info["device"])
++    return MLPForecaster(info["seq_len"], info["horizon"], info["n_features"]).to(info["device"])
+ 

@@ -1,0 +1,59 @@
+{
+  "allow_new_files": false,
+  "baseline_code_state_raw_sha256": "52cba5811d11a5d3e943baa9c8874def8b7c1ca249a9bf7a57f574a0dea431b7",
+  "baseline_code_state_sha256": "c6fda54c440f00e61fa8b3bfe3b20aeba5a519c3fda65aeef9ec50bc436867cf",
+  "edits": [
+    {
+      "code_state_sha256": "249c95c379c29df408333f329a5f8198ee3455f59b5bf8b65f5c805a2ed10614",
+      "file": "E1.diff",
+      "files_touched": [
+        "train.py"
+      ],
+      "id": "E1",
+      "incumbent_code_state_sha256": "c6fda54c440f00e61fa8b3bfe3b20aeba5a519c3fda65aeef9ec50bc436867cf",
+      "normalised_diff_sha256": "68995def14aa22b7102a31b54d91473cf469fe7385dbf01a9d7a766892bdb56d",
+      "sha256": "b5f985f3be4894170201ea716b455e00e9338277756d1a00a3c32cade8ab375a"
+    },
+    {
+      "code_state_sha256": "d6c46270c3cf27e0cdc58fe870bc2d592f8ba9b77cb73b8c0c5d3cfe80cf5886",
+      "file": "E2.diff",
+      "files_touched": [
+        "train.py"
+      ],
+      "id": "E2",
+      "incumbent_code_state_sha256": "c6fda54c440f00e61fa8b3bfe3b20aeba5a519c3fda65aeef9ec50bc436867cf",
+      "normalised_diff_sha256": "61ad2c716d6a695dd4f0b768cb99cea559dc3213cff18e4bd97936b560e1c283",
+      "sha256": "763ca217d5fa326f25ebcfbd88e14b95649aa4d7118eb4b7c16823bc23a7d792"
+    },
+    {
+      "code_state_sha256": "0cfcb5a422998330a1c2b781c53ab60289a049269acf94598c851bb6d9016dc2",
+      "file": "E3.diff",
+      "files_touched": [
+        "train.py"
+      ],
+      "id": "E3",
+      "incumbent_code_state_sha256": "c6fda54c440f00e61fa8b3bfe3b20aeba5a519c3fda65aeef9ec50bc436867cf",
+      "normalised_diff_sha256": "01dcc25b696bfaea984913c96cf15e08e33c8003a7e3c71c0699b198a605ff6c",
+      "sha256": "b261661afbd08b7ebe1d130e8862f348d676da342eabfd1efb5f4847ef6ab1e0"
+    },
+    {
+      "code_state_sha256": "5873d6ce7a9c77803ebd15e73a8c0ecce45ec78a5347763fed429767caf39275",
+      "file": "E4.diff",
+      "files_touched": [
+        "train.py"
+      ],
+      "id": "E4",
+      "incumbent_code_state_sha256": "c6fda54c440f00e61fa8b3bfe3b20aeba5a519c3fda65aeef9ec50bc436867cf",
+      "normalised_diff_sha256": "e6cb9349cb585ce3f52284a48d8d66f329bae2ac0dc0ee5e7c9aace7c6345951",
+      "sha256": "f7666b876682b70f1de541770990a10d5b3eee6bb076596379deed9f6ce411ac"
+    }
+  ],
+  "measured": false,
+  "node": "gc7rc_etth1",
+  "node_spec_sha256": "8f874c50f66273e0655bfc9ccdad24a50c0fdb629f88ba7d4d60b13f2fcf2e0c",
+  "run_budget": {
+    "kind": "steps",
+    "value": 2000
+  },
+  "schema": "trackg_representative_edits/v1"
+}
