@@ -109,6 +109,7 @@ class CampaignSnapshot:
     # R1-SKIP-DISPLAY: the campaign's memory display of control-plane skips;
     # ``None`` means historical and keeps the manifest free of the field.
     skip_display: str | None = None
+    verify_seed_base: int = _campaign.DEFAULT_VERIFY_SEED_BASE
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +286,7 @@ def capture_snapshot(
         seen_active_hashes=tuple(context.seen_active_hashes),
         action_versions=(dict(context.action_versions) if context.action_versions is not None else None),
         skip_display=getattr(context, "skip_display", None),
+        verify_seed_base=context.verify_seed_base,
     )
     snapshot.layer_hashes = _layer_hashes(snapshot)
     return snapshot
@@ -383,6 +385,8 @@ def write_snapshot(snapshot: CampaignSnapshot, out_dir: str | Path) -> Path:
         manifest["action_versions"] = dict(snapshot.action_versions)
     if snapshot.skip_display is not None:
         manifest["skip_display"] = snapshot.skip_display
+    if snapshot.verify_seed_base != _campaign.DEFAULT_VERIFY_SEED_BASE:
+        manifest["verify_seed_base"] = snapshot.verify_seed_base
     manifest_path = out / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return manifest_path
@@ -453,6 +457,9 @@ def read_snapshot(out_dir: str | Path) -> CampaignSnapshot:
             dict(manifest["action_versions"]) if manifest.get("action_versions") is not None else None
         ),
         skip_display=(str(manifest["skip_display"]) if manifest.get("skip_display") is not None else None),
+        verify_seed_base=_campaign._validate_verify_seed_base(
+            manifest.get("verify_seed_base", _campaign.DEFAULT_VERIFY_SEED_BASE)
+        ),
     )
 
 
@@ -911,6 +918,7 @@ def _complete_captured_trial(
                 incumbent_snapshot=incumbent_snapshot, base_budget_index=budget_index,
                 verify_runs=snapshot.verify_runs, compute_budget=restored.compute_budget,
                 verify_split_policy=snapshot.verify_split_policy,
+                verify_seed_base=snapshot.verify_seed_base,
                 action_versions=action_versions, prior=_decision_prior(record),
             )
             # Keep the verify evidence and charge its re-runs, exactly as the live E2 path does.
@@ -1098,6 +1106,7 @@ def resume_campaign(
             compute_budget=restored.compute_budget,
             verify_runs=snapshot.verify_runs,
             verify_split_policy=snapshot.verify_split_policy,
+            verify_seed_base=snapshot.verify_seed_base,
             initial_current_best=restored.current_best,
             initial_incumbent_stack=restored.incumbent_stack,
             **resume_seeds,
@@ -1145,6 +1154,7 @@ def resume_campaign(
             compute_budget=restored.compute_budget,
             verify_runs=snapshot.verify_runs,
             verify_split_policy=snapshot.verify_split_policy,
+            verify_seed_base=snapshot.verify_seed_base,
             initial_current_best=(
                 first_record.parsed_metrics.get(restored.node_spec.metric_name)
                 if first_record.decision == TrialDecision.KEPT

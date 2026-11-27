@@ -98,6 +98,14 @@ from autoresearch.worker.base import DryRunWorker, Worker, WorkerResult
 # is an LLM call charged to the LLM-call cap; no worker run is ever spent.
 MAX_INACTIVE_KEY_REVISIONS = 2
 
+DEFAULT_VERIFY_SEED_BASE = 1000
+
+
+def _validate_verify_seed_base(value: int) -> int:
+    if type(value) is not int or value < 0:
+        raise ValueError("verify_seed_base must be a non-negative integer")
+    return value
+
 
 class SeedInjectionUnsupportedError(RuntimeError):
     """Raised when a seeded (verify) run is requested from a worker without seed support."""
@@ -421,6 +429,7 @@ class SnapshotContext:
     # R1-SKIP-DISPLAY: the manager-memory display of control-plane skips
     # (``None`` = historical; snapshots then carry no ``skip_display`` field).
     skip_display: str | None = None
+    verify_seed_base: int = DEFAULT_VERIFY_SEED_BASE
 
 
 def _invoke_snapshot_hook(snapshot_hook: object | None, **kwargs: object) -> None:
@@ -693,6 +702,7 @@ def _run_verify(
     verify_runs: int,
     compute_budget: ComputeBudget,
     verify_split_policy: Literal["fixed", "vary"] = "fixed",
+    verify_seed_base: int = DEFAULT_VERIFY_SEED_BASE,
     action_versions: ActionVersions | None = None,
     prior: KeepPrior | None = None,
 ) -> tuple[TrialRecord, dict[str, Any]]:
@@ -718,7 +728,7 @@ def _run_verify(
     direction = node_spec.metric_direction
     candidate_snapshot = _snapshot_editable_state(worker, node_spec)
     candidate_hash_before = _editable_state_hash(worker, node_spec)
-    seeds = [1000 + base_budget_index * 10 + index for index in range(verify_runs)]
+    seeds = [verify_seed_base + base_budget_index * 10 + index for index in range(verify_runs)]
     noedit = _noedit_proposal(proposal)
 
     candidate_metrics: list[float | None] = []
@@ -1135,6 +1145,7 @@ def run_real_campaign(
     t_min: int = 3,
     verify_runs: int = 2,
     verify_split_policy: Literal["fixed", "vary"] | None = None,
+    verify_seed_base: int = DEFAULT_VERIFY_SEED_BASE,
     snapshot_hook: object | None = None,
     initial_current_best: float | None = None,
     initial_incumbent_stack: list[_IncumbentEntry] | None = None,
@@ -1189,6 +1200,8 @@ def run_real_campaign(
       when the worker has ``run_trial_at_seed``.  *verify_split_policy*
       ``"fixed"`` (default) varies only the training seed; ``"vary"`` moves the
       split seed with it.  The policy is recorded in ``extra.control.verify``.
+      *verify_seed_base* defaults to 1000. Each pair uses
+      ``verify_seed_base + 10 * budget_index + pair_index``.
     - ``demote`` pops the top of the incumbent stack and is feasible only when
       that top entry is an unverified keep; verified keeps are never reverted.
 
@@ -1221,6 +1234,7 @@ def run_real_campaign(
     skip in the ledger but an executed, discarded trial for the controller.
     """
     check_skip_display(skip_display)
+    _validate_verify_seed_base(verify_seed_base)
 
     def _controller_prefix(prefix: list[TrialRecord]) -> list[TrialRecord]:
         return prefix if controller_ledger_view is None else list(controller_ledger_view(prefix))
@@ -1348,6 +1362,7 @@ def run_real_campaign(
             incumbent_stack=incumbent_stack, budget_state=budget_state, compute_budget=compute_budget,
             controller=controller, manager=manager, memory_mode=memory_mode, manager_mode=manager_mode,
             t_min=t_min, verify_runs=verify_runs, verify_split_policy=verify_split_policy,
+            verify_seed_base=verify_seed_base,
             action_versions=action_versions_dict, skip_display=skip_display,
             seen_effective_hashes=tuple(sorted(seen_effective_hashes)),
             seen_active_hashes=tuple(sorted(seen_active_hashes)),
@@ -1541,6 +1556,7 @@ def run_real_campaign(
                 compute_budget=compute_budget, controller=controller, manager=manager,
                 memory_mode=memory_mode, manager_mode=manager_mode, t_min=t_min,
                 verify_runs=verify_runs, verify_split_policy=verify_split_policy,
+                verify_seed_base=verify_seed_base,
                 action_versions=action_versions_dict, skip_display=skip_display,
                 seen_effective_hashes=tuple(sorted(seen_effective_hashes)),
                 seen_active_hashes=tuple(sorted(seen_active_hashes)),
@@ -1855,6 +1871,7 @@ def run_real_campaign(
                 compute_budget=compute_budget, controller=controller, manager=manager,
                 memory_mode=memory_mode, manager_mode=manager_mode, t_min=t_min,
                 verify_runs=verify_runs, verify_split_policy=verify_split_policy,
+                verify_seed_base=verify_seed_base,
                 action_versions=action_versions_dict, skip_display=skip_display,
                 seen_effective_hashes=tuple(sorted(seen_effective_hashes)),
                 seen_active_hashes=tuple(sorted(seen_active_hashes)),
@@ -1896,6 +1913,7 @@ def run_real_campaign(
                     verify_runs=verify_runs,
                     compute_budget=compute_budget,
                     verify_split_policy=verify_split_policy,
+                    verify_seed_base=verify_seed_base,
                     action_versions=action_versions,
                     prior=decision_prior,
                 )

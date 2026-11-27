@@ -279,6 +279,26 @@ class TestVerifyVersions(unittest.TestCase):
         self.assertEqual(verify["split_policy"], "fixed")
         self.assertNotIn("action_versions", verify)
 
+    def test_verify_seed_base_changes_only_the_pair_seeds(self):
+        with tempfile.TemporaryDirectory() as legacy, tempfile.TemporaryDirectory() as shifted:
+            plain, _ = self._verify(legacy, [0.80, 0.81])
+            custom, _ = self._verify(shifted, [0.80, 0.81], verify_seed_base=20002)
+        default_verify = plain[1].extra["control"]["verify"]
+        shifted_verify = custom[1].extra["control"]["verify"]
+        self.assertEqual(default_verify["seeds"], [1020, 1021])
+        self.assertEqual(shifted_verify["seeds"], [20022, 20023])
+        self.assertEqual(
+            shifted_verify, {**default_verify, "seeds": [20022, 20023]}
+        )
+        self.assertEqual(plain[1].decision, custom[1].decision)
+
+    def test_invalid_verify_seed_base_is_refused_before_a_trial(self):
+        for invalid in (True, -1, "20000", 20000.0):
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaisesRegex(ValueError, "verify_seed_base"):
+                    self._verify(tmp, [0.80, 0.81], verify_seed_base=invalid)
+                self.assertFalse((Path(tmp) / "trials.jsonl").exists())
+
     def test_new_campaign_split_is_vary(self):
         with tempfile.TemporaryDirectory() as tmp:
             records, _ = self._verify(tmp, [0.80, 0.81], action_versions=ActionVersions.new_campaign())
@@ -338,7 +358,32 @@ class TestSnapshotsCarryVersions(unittest.TestCase):
             path = self._snap(tmp)
             manifest = json.loads(path.read_text())
             self.assertNotIn("action_versions", manifest)
+            self.assertNotIn("verify_seed_base", manifest)
+            self.assertEqual(read_snapshot(path.parent).verify_seed_base, 1000)
             self.assertIsNone(read_snapshot(path.parent).action_versions)
+
+    def test_verify_seed_base_is_preserved_on_resume(self):
+        from autoresearch.control_plane.snapshot import resume_campaign
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._snap(tmp, verify_seed_base=20000, verify_split_policy="vary")
+            self.assertEqual(json.loads(path.read_text())["verify_seed_base"], 20000)
+            snapshot = read_snapshot(path.parent)
+            into = Path(tmp) / "branch"
+            worker = Worker(into, [])
+            seeded_calls = []
+            run_at_seed = worker.run_trial_at_seed
+
+            def record_call(*args, train_seed, split_seed=None):
+                seeded_calls.append((train_seed, split_seed))
+                return run_at_seed(*args, train_seed=train_seed, split_seed=split_seed)
+
+            worker.run_trial_at_seed = record_call
+            result = resume_campaign(snapshot, into, first_action="verify", worker=worker,
+                                     manager=StaticBackend(_proposal(_spec())))
+            verify = result.first_record.extra["control"]["verify"]
+            self.assertEqual(verify["seeds"], [20020, 20021])
+            self.assertEqual(seeded_calls, [(20020, 20020), (20021, 20021)] * 2)
 
     def test_resume_applies_the_declared_verify_failed_policy(self):
         from autoresearch.control_plane.snapshot import resume_campaign
